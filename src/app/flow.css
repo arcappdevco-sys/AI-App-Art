@@ -809,3 +809,40 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+.ff-omni-note {
+  display: block;
+  margin: 5px 10px 0;
+  color: #84938e;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-omni-warning {
+  color: #e5bf7c;
+}
+
+.ff-omni-add {
+  display: block;
+  width: calc(100% - 20px);
+  min-height: 28px;
+  margin: 7px 10px 0;
+  border: 1px solid #3b4a45;
+  border-radius: 5px;
+  background: #202b28;
+  color: #dce8e2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ff-omni-add:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ff-omni-add:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}

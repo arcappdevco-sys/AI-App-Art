@@ -3,6 +3,7 @@ import { fal } from "@fal-ai/client";
 import type { NodeDef, PortType } from "./types";
 import { SEEDANCE_MODELS, buildSeedanceRequest } from "./seedance";
 import { VEO_MODELS, buildVeoRequest } from "./veo";
+import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_TASKS, buildOmniRequest } from "./omni";
 
 fal.config({ proxyUrl: "/api/fal/proxy" });
 
@@ -475,7 +476,106 @@ const veoVideo: NodeDef = {
     throw new Error("Veo generation is a UI placeholder until API setup is complete.");
   },
 };
-const googleOmniVideo = videoPlaceholder("video/google-omni", "Google Omni");
+const googleOmniVideo: NodeDef = {
+  ...videoPlaceholder("video/google-omni", "Gemini Omni"),
+  inputs: {
+    prompt: "text",
+    image: "image",
+    last_image: "image",
+    reference_images: "image",
+    reference_video_1: "video",
+    reference_video_2: "video",
+    reference_video_3: "video",
+    video: "video",
+  },
+  params: [
+    {
+      key: "model",
+      label: "Model",
+      kind: "select",
+      options: Object.values(OMNI_MODELS),
+      optionLabels: Object.fromEntries(Object.entries(OMNI_MODELS).map(([label, value]) => [value, label])),
+      default: OMNI_DEFAULTS.model,
+    },
+    {
+      key: "task",
+      label: "Task",
+      kind: "select",
+      options: Object.values(OMNI_TASKS),
+      optionLabels: Object.fromEntries(Object.entries(OMNI_TASKS).map(([label, value]) => [value, label])),
+      optionsByParam: {
+        param: "model",
+        values: {
+          [OMNI_MODELS["Gemini Omni 1.1 Flash"]]: Object.values(OMNI_TASKS),
+          [OMNI_MODELS["Gemini Omni Flash (original)"]]: Object.values(OMNI_TASKS)
+            .filter((task) => task !== OMNI_TASKS["Extend video"]),
+        },
+      },
+      default: OMNI_DEFAULTS.task as string,
+    },
+    {
+      key: "duration",
+      label: "Duration",
+      kind: "select",
+      options: ["3", "4", "5", "6", "7", "8", "9", "10"],
+      default: OMNI_DEFAULTS.duration as string,
+    },
+    {
+      key: "aspect_ratio",
+      label: "Aspect ratio",
+      kind: "select",
+      options: ["16:9", "9:16"],
+      default: OMNI_DEFAULTS.aspect_ratio as string,
+    },
+    {
+      key: "resolution",
+      label: "Resolution",
+      kind: "select",
+      options: ["360p", "720p", "1080p", "4k"],
+      optionLabels: {
+        "360p": "360p draft, fast and cheap, for previewing a shot",
+        "1080p": "1080p (upscaled from native frames)",
+        "4k": "4k (upscaled from native frames)",
+      },
+      optionsByParam: {
+        param: "model",
+        values: {
+          [OMNI_MODELS["Gemini Omni 1.1 Flash"]]: ["360p", "720p", "1080p", "4k"],
+          [OMNI_MODELS["Gemini Omni Flash (original)"]]: ["720p"],
+        },
+      },
+      default: OMNI_DEFAULTS.resolution as string,
+    },
+    {
+      key: "thinking_level",
+      label: "Thinking level",
+      kind: "select",
+      options: ["low", "default", "high"],
+      optionLabels: { low: "Low", default: "Default", high: "High" },
+      default: OMNI_DEFAULTS.thinking_level as string,
+      helperText: "Higher can improve complex prompts but is slower.",
+    },
+    {
+      key: "seed",
+      label: "Seed",
+      kind: "number",
+      default: OMNI_DEFAULTS.seed as number,
+      helperText: "With several variations, each run uses seed + its index so results differ.",
+    },
+    {
+      key: "variations",
+      label: "Variations",
+      kind: "select",
+      options: ["1", "2", "3", "4"],
+      default: OMNI_DEFAULTS.variations as string,
+      helperText: "Each variation is a separate paid generation.",
+    },
+  ],
+  execute: async ({ inputs, params }) => {
+    buildOmniRequest({ params }, inputs);
+    throw new Error("Gemini Omni generation is a UI placeholder until API setup is complete.");
+  },
+};
 
 export const registry: Record<string, NodeDef> = Object.fromEntries(
   [

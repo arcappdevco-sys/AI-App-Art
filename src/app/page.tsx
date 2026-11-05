@@ -10,6 +10,7 @@ import {
 import { registry } from "@/lib/registry";
 import { runGraph } from "@/lib/executor";
 import { normalizeVeoParams } from "@/lib/veo";
+import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "@/lib/omni";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode from "@/components/WorkflowNode";
 
@@ -56,6 +57,9 @@ export default function Page() {
               ...node.data,
               ...(node.data.type === "video/veo"
                 ? { params: normalizeVeoParams((node.data.params ?? {}) as Record<string, unknown>) }
+                : {}),
+              ...(node.data.type === "video/google-omni"
+                ? { params: normalizeOmniParams((node.data.params ?? {}) as Record<string, unknown>) }
                 : {}),
               status: "idle",
               log: "",
@@ -163,17 +167,36 @@ export default function Page() {
       const condition = targetDef.conditionalInputs?.[c.targetHandle];
       const targetParams = (t.data as { params?: Record<string, unknown> }).params ?? {};
       if (condition && targetParams[condition.param] !== condition.value) return false;
+      if (targetType === "video/google-omni") {
+        const task = String(targetParams.task);
+        const original = targetParams.model === OMNI_MODELS["Gemini Omni Flash (original)"];
+        const handle = c.targetHandle;
+        const available = handle === "prompt"
+          || (task === OMNI_TASKS["Image to video"] && (handle === "image" || (handle === "last_image" && !original)))
+          || (task === OMNI_TASKS["Ingredients to video"]
+            && (handle === "reference_images" || (!original && /^reference_video_[1-3]$/.test(handle))))
+          || ([OMNI_TASKS["Edit video"], OMNI_TASKS["Extend video"]].includes(task as never)
+            && (handle === "video" || handle === "reference_images"));
+        if (!available) return false;
+        if (handle === "reference_images") {
+          const currentCount = edges.filter((edge) => edge.target === c.target && edge.targetHandle === handle
+            && edge.source !== c.source).length;
+          const maximum = original ? 5 : 10;
+          if (currentCount >= maximum) return false;
+        }
+      }
       const b = targetDef.inputs[c.targetHandle];
       return a === b || a === "any" || b === "any";
     },
-    [nodes]
+    [edges, nodes]
   );
 
   const onConnect = useCallback(
     (c: Connection) => {
       const target = nodes.find((node) => node.id === c.target);
       const targetType = (target?.data as { type?: string } | undefined)?.type;
-      const allowsMultipleReferences = targetType === "video/seedance" && c.targetHandle === "reference_images";
+      const allowsMultipleReferences = ["video/seedance", "video/google-omni"].includes(targetType ?? "")
+        && c.targetHandle === "reference_images";
       setEdges((es) => addEdge(
         c,
         allowsMultipleReferences
@@ -245,6 +268,9 @@ export default function Page() {
           ...(legacyModel ? { type: "openai/gpt-image", params: { ...data.params, model: legacyModel } } : {}),
           ...(data.type === "video/veo"
             ? { params: normalizeVeoParams(data.params ?? {}) }
+            : {}),
+          ...(data.type === "video/google-omni"
+            ? { params: normalizeOmniParams(data.params ?? {}) }
             : {}),
           status: "idle",
           outputs: {},
@@ -395,18 +421,29 @@ export default function Page() {
             const deletedVideoModelIds = new Set(deletedNodes
               .filter((node) => ["video/seedance", "video/veo"].includes((node.data as { type?: string }).type ?? ""))
               .map((node) => node.id));
-            if (deletedVideoModelIds.size === 0) return;
+            const deletedOmniIds = new Set(deletedNodes
+              .filter((node) => (node.data as { type?: string }).type === "video/google-omni")
+              .map((node) => node.id));
+            if (deletedVideoModelIds.size === 0 && deletedOmniIds.size === 0) return;
             const autoInputIds = new Set(nodes.filter((node) => {
               const meta = node.data as { autoCreatedFor?: string; autoInputFor?: string; autoFrameFor?: string };
               const owner = meta.autoCreatedFor ?? meta.autoInputFor ?? meta.autoFrameFor;
               return owner && deletedVideoModelIds.has(owner);
             }).map((node) => node.id));
+            const omniInputIds = new Set(nodes.filter((node) => {
+              const meta = node.data as { omniAutoCreatedFor?: string; omniRole?: string };
+              return meta.omniAutoCreatedFor && deletedOmniIds.has(meta.omniAutoCreatedFor)
+                && Boolean(meta.omniRole);
+            }).map((node) => node.id));
+            for (const inputId of omniInputIds) autoInputIds.add(inputId);
             setNodes((current) => current.filter((node) => !autoInputIds.has(node.id)));
             setEdges((current) => current.filter((edge) =>
               !autoInputIds.has(edge.source)
               && !autoInputIds.has(edge.target)
               && !deletedVideoModelIds.has(edge.source)
               && !deletedVideoModelIds.has(edge.target)
+              && !deletedOmniIds.has(edge.source)
+              && !deletedOmniIds.has(edge.target)
             ));
           }}
           onConnect={onConnect} isValidConnection={isValidConnection}
