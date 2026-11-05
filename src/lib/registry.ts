@@ -4,6 +4,7 @@ import type { NodeDef, PortType } from "./types";
 import { SEEDANCE_MODELS, buildSeedanceRequest } from "./seedance";
 import { VEO_MODELS, buildVeoRequest } from "./veo";
 import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_TASKS, buildOmniRequest } from "./omni";
+import { KLING_DEFAULTS, KLING_MODELS, KLING_TASKS, buildKlingRequest } from "./kling";
 
 fal.config({ proxyUrl: "/api/fal/proxy" });
 
@@ -25,6 +26,88 @@ async function callFal(endpoint: string, input: Record<string, unknown>, log: (m
       : "";
     throw new Error(detail ? `${message}: ${detail}` : message);
   }
+}
+
+async function callAtlasSeedance(input: Record<string, unknown>, log: (message: string) => void, signal?: AbortSignal) {
+  const submitResponse = await fetch("/api/atlas/seedance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    signal,
+  });
+  const submitData = await submitResponse.json() as { predictionId?: unknown; error?: unknown };
+  if (!submitResponse.ok || typeof submitData.predictionId !== "string") {
+    throw new Error(typeof submitData.error === "string" ? submitData.error : "Atlas Cloud could not start the Seedance generation.");
+  }
+
+  const predictionId = submitData.predictionId;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 10 * 60 * 1000) {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        window.clearTimeout(timeout);
+        reject(new Error("Generation cancelled."));
+      };
+      const timeout = window.setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, 3000);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        window.clearTimeout(timeout);
+        signal.removeEventListener("abort", onAbort);
+        reject(new Error("Generation cancelled."));
+      }
+    });
+
+    const statusResponse = await fetch(`/api/atlas/seedance?prediction_id=${encodeURIComponent(predictionId)}`, { signal });
+    const statusPayload = await statusResponse.json() as {
+      data?: Record<string, unknown>;
+      error?: unknown;
+    };
+    if (!statusResponse.ok || !statusPayload.data) {
+      throw new Error(typeof statusPayload.error === "string" ? statusPayload.error : "Atlas Cloud could not check the Seedance generation.");
+    }
+
+    const status = String(statusPayload.data.status ?? "").toLowerCase();
+    if (status === "completed" || status === "succeeded" || status === "success") {
+      const findVideoUrl = (value: unknown, depth = 0): string => {
+        if (depth > 4 || value == null) return "";
+        if (typeof value === "string") return /^https?:\/\//i.test(value) ? value : "";
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            const url = findVideoUrl(item, depth + 1);
+            if (url) return url;
+          }
+          return "";
+        }
+        if (typeof value === "object") {
+          const record = value as Record<string, unknown>;
+          for (const key of ["url", "video", "outputs", "output", "data"]) {
+            const url = findVideoUrl(record[key], depth + 1);
+            if (url) return url;
+          }
+        }
+        return "";
+      };
+      const videoUrl = findVideoUrl(statusPayload.data.outputs)
+        || findVideoUrl(statusPayload.data.output)
+        || findVideoUrl(statusPayload.data.video);
+      if (!videoUrl) throw new Error("Atlas Cloud completed the generation without returning a video URL.");
+      return videoUrl;
+    }
+    if (status === "failed" || status === "error" || status === "cancelled") {
+      const error = statusPayload.data.error;
+      const message = typeof error === "string"
+        ? error
+        : typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
+          ? error.message
+          : "Atlas Cloud Seedance generation failed.";
+      throw new Error(message);
+    }
+    log(`Atlas Cloud generation status: ${status || "processing"}`);
+  }
+  throw new Error("Atlas Cloud Seedance generation timed out after 10 minutes.");
 }
 
 export const PORT_COLORS: Record<PortType, string> = {
@@ -230,6 +313,7 @@ function videoPlaceholder(type: string, label: string, models: string[] = []): N
 
 const seedanceVideo: NodeDef = {
   ...videoPlaceholder("video/seedance", "Seedance"),
+  integration: undefined,
   inputs: {
     prompt: "text",
     image: "image",
@@ -369,12 +453,109 @@ const seedanceVideo: NodeDef = {
       helperText: "Each variation is a separate paid generation.",
     },
   ],
-  execute: async ({ inputs, params }) => {
-    buildSeedanceRequest({ params }, inputs);
-    throw new Error("Seedance generation is a UI placeholder until API setup is complete.");
+  execute: async ({ inputs, params, log, signal }) => {
+    const model = String(params.model ?? "");
+    const task = String(params.task ?? "");
+    if (model !== SEEDANCE_MODELS["Seedance 2.5"] || !["text-to-video", "image-to-video"].includes(task)) {
+      throw new Error("Atlas Cloud integration currently supports Seedance 2.5 Text to video and Image to video only.");
+    }
+
+    const request = buildSeedanceRequest({ params }, inputs);
+    const variations = request.variations;
+    const outputs: Record<string, string> = {};
+    for (let index = 0; index < variations; index++) {
+      log(`Generating variation ${index + 1} of ${variations}`);
+      const videoUrl = await callAtlasSeedance(request.body, log, signal);
+      outputs[index === 0 ? "video" : `variation_${index + 1}`] = videoUrl;
+    }
+    return outputs;
   },
 };
-const klingVideo = videoPlaceholder("video/kling", "Kling");
+const klingVideo: NodeDef = {
+  ...videoPlaceholder("video/kling", "Kling"),
+  autoPrompt: true,
+  inputs: {
+    prompt: "text",
+    image: "image",
+    middle_images: "image",
+    last_image: "image",
+    end_image: "image",
+    reference_images: "image",
+    video: "video",
+    reference_video_1: "video",
+    reference_video_2: "video",
+    reference_video_3: "video",
+    reference_video_4: "video",
+    reference_video_5: "video",
+  },
+  params: [
+    {
+      key: "model",
+      label: "Model",
+      kind: "select",
+      options: Object.values(KLING_MODELS),
+      optionLabels: Object.fromEntries(Object.entries(KLING_MODELS).map(([label, value]) => [value, label])),
+      default: KLING_DEFAULTS.model,
+    },
+    {
+      key: "task",
+      label: "Task",
+      kind: "select",
+      options: Object.values(KLING_TASKS),
+      optionLabels: Object.fromEntries(Object.entries(KLING_TASKS).map(([label, value]) => [value, label])),
+      optionsByParam: {
+        param: "model",
+        values: {
+          [KLING_MODELS["Kling 4.0"]]: Object.values(KLING_TASKS),
+          [KLING_MODELS["Kling V3.0 Pro"]]: [KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]],
+          [KLING_MODELS["Kling V3.0 Std"]]: [KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]],
+        },
+      },
+      default: KLING_DEFAULTS.task as string,
+    },
+    {
+      key: "duration",
+      label: "Duration",
+      kind: "select",
+      options: Array.from({ length: 28 }, (_, index) => String(index + 3)),
+      optionsByParam: {
+        param: "model",
+        values: {
+          [KLING_MODELS["Kling 4.0"]]: Array.from({ length: 28 }, (_, index) => String(index + 3)),
+          [KLING_MODELS["Kling V3.0 Pro"]]: ["5", "10"],
+          [KLING_MODELS["Kling V3.0 Std"]]: ["5", "10"],
+        },
+      },
+      default: KLING_DEFAULTS.duration as string,
+    },
+    {
+      key: "aspect_ratio",
+      label: "Aspect ratio",
+      kind: "select",
+      options: ["16:9", "9:16", "1:1", "21:9"],
+      default: KLING_DEFAULTS.aspect_ratio as string,
+    },
+    {
+      key: "resolution",
+      label: "Resolution",
+      kind: "select",
+      options: ["720p", "1080p", "1080p-esr", "2k-esr", "4k-esr"],
+      optionGroups: [
+        { label: "Native", options: ["720p", "1080p"] },
+        { label: "Enhanced (upscaled, costs more)", options: ["1080p-esr", "2k-esr", "4k-esr"] },
+      ],
+      default: KLING_DEFAULTS.resolution as string,
+    },
+    { key: "sound", label: "Generate sound", kind: "toggle", default: KLING_DEFAULTS.sound },
+    { key: "cfg_scale", label: "CFG scale", kind: "number", default: KLING_DEFAULTS.cfg_scale,
+      helperText: "Higher follows the prompt more strictly; lower gives more natural motion." },
+    { key: "negative_prompt", label: "Negative prompt", kind: "textarea", default: "" },
+  ],
+  execute: async ({ inputs, params }) => {
+    buildKlingRequest({ params }, inputs);
+    throw new Error("Kling generation is a UI placeholder until API setup is complete.");
+  },
+};
 const veoVideo: NodeDef = {
   ...videoPlaceholder("video/veo", "Veo"),
   inputs: {

@@ -1,44 +1,18 @@
 "use client";
-import { Fragment, useState } from "react";
+import { Fragment } from "react";
 import { Handle, Position, useEdges, useReactFlow, type NodeProps } from "@xyflow/react";
 import { fal } from "@fal-ai/client";
 import { registry, PORT_COLORS } from "@/lib/registry";
 import { SEEDANCE_MODELS, SEEDANCE_RATES } from "@/lib/seedance";
 import { VEO_MODELS, VEO_RATES } from "@/lib/veo";
 import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_RATES, OMNI_TASKS } from "@/lib/omni";
+import { KLING_DEFAULTS, KLING_MODELS, KLING_RATES, KLING_TASKS } from "@/lib/kling";
 
 function Media({ value }: { value: unknown }) {
-  const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState("");
   if (typeof value !== "string" || !value) return null;
   const isVideo = /\.(mp4|webm|mov)(\?|$)/i.test(value);
   const isImage = /^data:image\//.test(value) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(value);
   if (!isVideo && !isImage) return null;
-
-  const download = async () => {
-    setDownloading(true);
-    setDownloadError("");
-    try {
-      const response = await fetch(value);
-      if (!response.ok) throw new Error(`Download failed (${response.status})`);
-      const blob = await response.blob();
-      const pathname = new URL(value, window.location.href).pathname;
-      const extension = pathname.match(/\.(png|jpe?g|webp|gif|mp4|webm|mov)$/i)?.[0]
-        ?? (isVideo ? ".mp4" : ".png");
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `generated-media${extension}`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) {
-      setDownloadError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setDownloading(false);
-    }
-  };
 
   return (
     <>
@@ -48,14 +22,7 @@ function Media({ value }: { value: unknown }) {
         <img className="ff-media" src={value} alt="" />
       )}
       <div className="ff-media-actions">
-        <button className="ff-download" type="button" onClick={download} disabled={downloading}>
-          {downloading ? "Preparing…" : "Download"}
-        </button>
-        {downloadError && (
-          <span className="ff-download-error" role="status">
-            {downloadError}. <a href={value} target="_blank" rel="noreferrer">Open media</a>
-          </span>
-        )}
+        <a className="ff-download" href={value} target="_blank" rel="noreferrer">Download</a>
       </div>
     </>
   );
@@ -67,12 +34,26 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const d = data as any;
   const def = registry[d.type];
   const isSeedance = d.type === "video/seedance";
+  const seedanceAtlasTask = isSeedance
+    && d.params.model === SEEDANCE_MODELS["Seedance 2.5"]
+    && ["text-to-video", "image-to-video"].includes(String(d.params.task));
+  const seedanceImageToVideo = seedanceAtlasTask && d.params.task === "image-to-video";
   const isVeo = d.type === "video/veo";
   const isOmni = d.type === "video/google-omni";
+  const isKling = d.type === "video/kling";
+  const isSeedanceImage = d.type === "input/image" && renderedEdges.some((edge) =>
+    edge.source === id
+    && (getNode(edge.target)?.data as { type?: string } | undefined)?.type === "video/seedance"
+  );
   const isOmniImage = d.type === "input/image" && (
     d.omniAutoCreatedFor
     || renderedEdges.some((edge) => edge.source === id
       && (getNode(edge.target)?.data as { type?: string } | undefined)?.type === "video/google-omni")
+  );
+  const isKlingImage = d.type === "input/image" && (
+    d.klingAutoCreatedFor
+    || renderedEdges.some((edge) => edge.source === id
+      && (getNode(edge.target)?.data as { type?: string } | undefined)?.type === "video/kling")
   );
 
   const setParam = (key: string, value: any) =>
@@ -375,6 +356,281 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     }
   };
 
+  const syncKlingInputs = async (requestedTask: string, requestedModel = String(d.params.model)) => {
+    const isV3 = requestedModel !== KLING_MODELS["Kling 4.0"];
+    const allowedTasks = isV3
+      ? [KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]]
+      : Object.values(KLING_TASKS);
+    const task = (allowedTasks as string[]).includes(requestedTask) ? requestedTask : KLING_TASKS["Text to video"];
+    const currentNodes = getNodes();
+    const existing = currentNodes.filter((candidate) =>
+      (candidate.data as { klingAutoCreatedFor?: string }).klingAutoCreatedFor === id
+    );
+    const roleOf = (candidate: typeof existing[number]) =>
+      (candidate.data as { klingRole?: string }).klingRole ?? "";
+    const existingMiddle = existing.map(roleOf)
+      .filter((role) => /^middle_\d+$/.test(role))
+      .sort((a, b) => Number(a.split("_")[1]) - Number(b.split("_")[1]));
+    const existingIngredients = existing.map(roleOf)
+      .filter((role) => /^ingredient_\d+$/.test(role))
+      .sort((a, b) => Number(a.split("_")[1]) - Number(b.split("_")[1]));
+    const existingReferences = existing.map(roleOf)
+      .filter((role) => /^reference_image_\d+$/.test(role))
+      .sort((a, b) => Number(a.split("_")[2]) - Number(b.split("_")[2]));
+    const wantedRoles = new Set<string>();
+    if (task === KLING_TASKS["Image to video"]) {
+      wantedRoles.add("first_frame");
+      wantedRoles.add("last_frame");
+      if (!isV3) existingMiddle.forEach((role) => wantedRoles.add(role));
+    } else if (task === KLING_TASKS["Ingredients to video"]) {
+      for (let index = 1; index <= Math.max(3, Math.min(10, existingIngredients.length)); index++) {
+        wantedRoles.add(`ingredient_${index}`);
+      }
+      for (const role of existingMiddle) wantedRoles.add(role);
+      if (existing.some((candidate) => roleOf(candidate) === "first_frame")) wantedRoles.add("first_frame");
+      if (existing.some((candidate) => roleOf(candidate) === "last_frame")) wantedRoles.add("last_frame");
+    } else if (task === KLING_TASKS["Edit video"]) {
+      existingReferences.slice(0, 10).forEach((role) => wantedRoles.add(role));
+    }
+
+    const handleFor = (role: string) => {
+      if (role === "first_frame") return "image";
+      if (role === "last_frame") return isV3 ? "end_image" : "last_image";
+      if (/^middle_\d+$/.test(role)) return "middle_images";
+      if (/^ingredient_\d+$/.test(role) || /^reference_image_\d+$/.test(role)) return "reference_images";
+      return "";
+    };
+    const validHandles = new Set<string>(["prompt"]);
+    if (task === KLING_TASKS["Image to video"]) {
+      validHandles.add("image");
+      validHandles.add(isV3 ? "end_image" : "last_image");
+      if (!isV3 && existingMiddle.length) validHandles.add("middle_images");
+    } else if (task === KLING_TASKS["Ingredients to video"]) {
+      validHandles.add("reference_images");
+      validHandles.add("middle_images");
+      validHandles.add("image");
+      validHandles.add("last_image");
+      for (let index = 1; index <= 5; index++) validHandles.add(`reference_video_${index}`);
+    } else if (task === KLING_TASKS["Edit video"]) {
+      validHandles.add("video");
+      validHandles.add("reference_images");
+      for (let index = 1; index <= 4; index++) validHandles.add(`reference_video_${index}`);
+    }
+    const obsolete = existing.filter((candidate) => !wantedRoles.has(roleOf(candidate)));
+    const obsoleteIds = new Set(obsolete.map(({ id: inputId }) => inputId));
+    const staleEdges = getEdges().filter((edge) =>
+      (edge.target === id && !validHandles.has(edge.targetHandle ?? "")) || obsoleteIds.has(edge.source)
+    );
+    if (obsolete.length || staleEdges.length) {
+      await deleteElements({
+        nodes: obsolete.map(({ id: inputId }) => ({ id: inputId })),
+        edges: staleEdges,
+      });
+    }
+    if (String(d.params.model) !== requestedModel) setParam("model", requestedModel);
+    setParam("task", task);
+    if (task !== KLING_TASKS["Ingredients to video"] && task !== KLING_TASKS["Edit video"]) {
+      setParam("elements", []);
+      setParam("voice_ids", []);
+    }
+    if (task === KLING_TASKS["Ingredients to video"]) {
+      setParam("aspect_ratio", d.params.aspect_ratio === "Auto" ? "Auto" : "Auto");
+    }
+    const defaultRoles = task === KLING_TASKS["Image to video"]
+      ? ["first_frame", "last_frame"]
+      : task === KLING_TASKS["Ingredients to video"]
+        ? Array.from({ length: 3 }, (_, index) => `ingredient_${index + 1}`)
+        : [];
+    const desiredRoles = [...new Set([...defaultRoles, ...wantedRoles])];
+    const present = new Set(existing
+      .filter((candidate) => !obsoleteIds.has(candidate.id))
+      .map(roleOf));
+    const labels: Record<string, string> = {
+      first_frame: "First frame",
+      last_frame: "Last frame",
+    };
+    const position = getNode(id)?.position ?? { x: 400, y: 200 };
+    const additions = desiredRoles.filter((role) => !present.has(role)).map((role) => {
+      const index = Number(role.split("_").at(-1)) || 1;
+      const label = role.startsWith("middle_") ? `Middle keyframe ${index}`
+        : role.startsWith("ingredient_") ? `Ingredient ${index}`
+          : role.startsWith("reference_image_") ? `Reference image ${index}`
+            : labels[role];
+      const targetHandle = handleFor(role) || (role === "last_frame" && isV3 ? "end_image" : "");
+      const inputId = `input/image-${crypto.randomUUID()}`;
+      return {
+        node: {
+          id: inputId,
+          type: "workflow",
+          position: { x: position.x - 360, y: position.y + (index - 2) * 145 },
+          data: {
+            type: "input/image",
+            params: { url: "" },
+            status: "idle",
+            outputs: {},
+            log: "",
+            title: label,
+            paramLabels: { url: `${label} image (upload or paste URL)` },
+            klingAutoCreatedFor: id,
+            klingRole: role,
+          },
+        },
+        edge: {
+          id: `${inputId}-${id}-${role}`,
+          source: inputId,
+          sourceHandle: "image",
+          target: id,
+          targetHandle,
+        },
+      };
+    });
+    const retainedEdges = getEdges().filter((edge) =>
+      edge.target === id && edge.source && !obsoleteIds.has(edge.source)
+    );
+    const rewired: typeof retainedEdges = [];
+    for (const candidate of existing.filter((node) => wantedRoles.has(roleOf(node)))) {
+      const role = roleOf(candidate);
+      const desiredHandle = handleFor(role);
+      if (!desiredHandle) continue;
+      const old = retainedEdges.find((edge) => edge.source === candidate.id);
+      if (old && old.targetHandle !== desiredHandle) {
+        rewired.push({
+          ...old,
+          id: `${old.source}-${id}-${role}-${desiredHandle}`,
+          targetHandle: desiredHandle,
+        });
+      } else if (!old) {
+        rewired.push({
+          id: `${candidate.id}-${id}-${role}`,
+          source: candidate.id,
+          sourceHandle: "image",
+          target: id,
+          targetHandle: desiredHandle,
+        });
+      }
+    }
+    if (rewired.length) {
+      const remove = getEdges().filter((edge) => rewired.some((replacement) =>
+        replacement.source === edge.source && replacement.target === edge.target
+          && replacement.id !== edge.id
+      ));
+      if (remove.length) await deleteElements({ edges: remove });
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const currentParams = (getNode(id)?.data as { params?: Record<string, unknown> } | undefined)?.params;
+          if (currentParams?.task === task && currentParams?.model === requestedModel) addEdges(rewired);
+        });
+      });
+    }
+    if (!additions.length) return;
+    addNodes(additions.map(({ node }) => node));
+    const edgesToAdd = additions.map(({ edge }) => edge);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const current = (getNode(id)?.data as { params?: Record<string, unknown> } | undefined)?.params;
+        if (current?.task === task && current?.model === requestedModel) addEdges(edgesToAdd);
+      });
+    });
+  };
+
+  const addKlingImageInput = (role: string, label: string, targetHandle: string) => {
+    const klingImageHandles = ["image", "middle_images", "last_image", "end_image", "reference_images"];
+    const currentEdges = getEdges().filter((edge) => edge.target === id);
+    const ownedImageNodes = getNodes().filter((candidate) => {
+      const meta = candidate.data as { klingAutoCreatedFor?: string; klingRole?: string };
+      return meta.klingAutoCreatedFor === id
+        && Boolean(meta.klingRole && /^(first_frame|last_frame|middle_\d+|ingredient_\d+|reference_image_\d+)$/.test(meta.klingRole));
+    });
+    const ownedIds = new Set(ownedImageNodes.map((candidate) => candidate.id));
+    const manualImageEdges = currentEdges.filter((edge) =>
+      klingImageHandles.includes(edge.targetHandle ?? "") && !ownedIds.has(edge.source)
+    );
+    if (ownedImageNodes.length + manualImageEdges.length >= 10) return;
+    if (role.startsWith("middle_")
+      && ownedImageNodes.filter((candidate) => (candidate.data as { klingRole?: string }).klingRole?.startsWith("middle_")).length >= 8) return;
+    if (ownedImageNodes.some((candidate) => (candidate.data as { klingRole?: string }).klingRole === role)) return;
+    if ((role === "first_frame" && currentEdges.some((edge) => edge.targetHandle === "image"))
+      || (role === "last_frame" && currentEdges.some((edge) => ["last_image", "end_image"].includes(edge.targetHandle ?? "")))) return;
+    const inputId = `input/image-${crypto.randomUUID()}`;
+    const position = getNode(id)?.position ?? { x: 400, y: 200 };
+    const ownedCount = getNodes().filter((candidate) =>
+      (candidate.data as { klingAutoCreatedFor?: string }).klingAutoCreatedFor === id
+    ).length;
+    const node = {
+      id: inputId,
+      type: "workflow",
+      position: { x: position.x - 360, y: position.y + (ownedCount - 1) * 130 },
+      data: {
+        type: "input/image",
+        params: { url: "" },
+        status: "idle",
+        outputs: {},
+        log: "",
+        title: label,
+        paramLabels: { url: `${label} image (upload or paste URL)` },
+        klingAutoCreatedFor: id,
+        klingRole: role,
+      },
+    };
+    addNodes(node);
+    const edge = {
+      id: `${inputId}-${id}-${role}`,
+      source: inputId,
+      sourceHandle: "image",
+      target: id,
+      targetHandle,
+    };
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => addEdges(edge)));
+  };
+
+  const setKlingSubject = (index: number, patch: Record<string, unknown>) => {
+    const current = Array.isArray(d.params.elements) ? [...d.params.elements] : [];
+    current[index] = { ...(current[index] as Record<string, unknown>), ...patch };
+    setParam("elements", current);
+  };
+
+  const setKlingSubjectImage = async (
+    index: number,
+    field: "frontal_image" | "reference_video" | "extra_images",
+    file?: File,
+    extraIndex = 0
+  ) => {
+    if (!file) return;
+    try {
+      const isVideo = field === "reference_video";
+      const allowedTypes = isVideo ? ["video/mp4", "video/quicktime"] : ["image/jpeg", "image/png"];
+      const maximumBytes = isVideo ? 300 * 1024 * 1024 : 30 * 1024 * 1024;
+      if (!allowedTypes.includes(file.type)) throw new Error(isVideo ? "Subject video must be MP4 or MOV." : "Subject images must be JPG, JPEG, or PNG.");
+      if (file.size > maximumBytes) throw new Error(isVideo ? "Videos must be 300 MB or smaller." : "Images must be 30 MB or smaller.");
+      if (!isVideo) {
+        const bitmap = await createImageBitmap(file);
+        const ratio = bitmap.width / bitmap.height;
+        if (bitmap.width < 300 || bitmap.height < 300 || ratio < 0.4 || ratio > 2.5) {
+          bitmap.close();
+          throw new Error("Images must be at least 300 px on each side with a 2:5 to 5:2 aspect ratio.");
+        }
+        bitmap.close();
+      }
+      const localValue = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Unable to read media file."));
+        reader.onerror = () => reject(new Error("Unable to read media file."));
+        reader.readAsDataURL(file);
+      });
+      if (field === "extra_images") {
+        const subject = d.params.elements[index] as Record<string, unknown>;
+        const extra = Array.isArray(subject.extra_images) ? [...subject.extra_images] : [];
+        extra[extraIndex] = localValue;
+        setKlingSubject(index, { extra_images: extra });
+      } else {
+        setKlingSubject(index, { [field]: localValue });
+      }
+      updateNodeData(id, { log: "" });
+    } catch (error) {
+      updateNodeData(id, { status: "error", log: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   const addOmniImageInput = (role: string, label: string) => {
     const inputId = `input/image-${crypto.randomUUID()}`;
     const position = getNode(id)?.position ?? { x: 400, y: 200 };
@@ -411,6 +667,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
 
   const setSelectParam = (key: string, value: string) => {
     if (isSeedance && key === "task") {
+      if (value === "image-to-video" && !["480p", "720p", "1080p"].includes(String(d.params.resolution))) {
+        setParam("resolution", "720p");
+      }
       void syncSeedanceInputs(value);
       return;
     }
@@ -421,6 +680,33 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     }
     if (isOmni && key === "task") {
       void syncOmniInputs(value);
+      return;
+    }
+    if (isKling && key === "task") {
+      if (value === KLING_TASKS["Ingredients to video"]) setParam("aspect_ratio", "Auto");
+      else if (d.params.aspect_ratio === "Auto" || d.params.aspect_ratio === "21:9" && String(d.params.model) !== KLING_MODELS["Kling 4.0"]) {
+        setParam("aspect_ratio", "16:9");
+      }
+      void syncKlingInputs(value);
+      return;
+    }
+    if (isKling && key === "model") {
+      const currentTask = String(d.params.task);
+      const nextIsV3 = value !== KLING_MODELS["Kling 4.0"];
+      const task = nextIsV3 && ![KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]].includes(currentTask as never)
+        ? KLING_TASKS["Text to video"]
+        : currentTask;
+      const currentDuration = String(d.params.duration);
+      if (nextIsV3 && !["5", "10"].includes(currentDuration)) setParam("duration", "5");
+      setParam("resolution", "1080p");
+      setParam("sound", false);
+      setParam("cfg_scale", 0.5);
+      setParam("negative_prompt", "");
+      if (nextIsV3 && (String(d.params.aspect_ratio) === "21:9" || String(d.params.aspect_ratio) === "Auto")) {
+        setParam("aspect_ratio", "16:9");
+      }
+      if (task === KLING_TASKS["Ingredients to video"]) setParam("aspect_ratio", "Auto");
+      void syncKlingInputs(task, value);
       return;
     }
     setParam(key, value);
@@ -492,6 +778,30 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     if (!file) return;
     updateNodeData(id, { log: "Uploading…" });
     try {
+      if (isKlingImage) {
+        if (!["image/jpeg", "image/png"].includes(file.type)) {
+          throw new Error("Images must be JPG, JPEG, or PNG.");
+        }
+        if (file.size > 30 * 1024 * 1024) throw new Error("Images must be 30 MB or smaller.");
+        const bitmap = await createImageBitmap(file);
+        const ratio = bitmap.width / bitmap.height;
+        if (bitmap.width < 300 || bitmap.height < 300 || ratio < 0.4 || ratio > 2.5) {
+          bitmap.close();
+          throw new Error("Images must be at least 300 px on each side with a 2:5 to 5:2 aspect ratio.");
+        }
+        bitmap.close();
+        const localImage = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => typeof reader.result === "string"
+            ? resolve(reader.result)
+            : reject(new Error("Unable to read image file."));
+          reader.onerror = () => reject(new Error("Unable to read image file."));
+          reader.readAsDataURL(file);
+        });
+        setParam(key, localImage);
+        updateNodeData(id, { log: "" });
+        return;
+      }
       if (isOmniImage) {
         if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
           throw new Error("Images must be PNG, JPEG, JPG, or WebP; HEIC is not supported.");
@@ -506,6 +816,18 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           reader.readAsDataURL(file);
         });
         setParam(key, localImage);
+        updateNodeData(id, { log: "" });
+        return;
+      }
+      if (isSeedanceImage) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch("/api/atlas/upload", { method: "POST", body: formData });
+        const result = await response.json() as { url?: unknown; error?: unknown };
+        if (!response.ok || typeof result.url !== "string") {
+          throw new Error(typeof result.error === "string" ? result.error : "Atlas Cloud image upload failed.");
+        }
+        setParam(key, result.url);
         updateNodeData(id, { log: "" });
         return;
       }
@@ -636,6 +958,97 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     reference_videos: "Reference video",
     reference_audios: "Reference audio (coming soon)",
   };
+  const klingTask = String(d.params?.task ?? KLING_TASKS["Text to video"]);
+  const klingModel = String(d.params?.model ?? KLING_MODELS["Kling 4.0"]);
+  const klingIsV3 = klingModel !== KLING_MODELS["Kling 4.0"];
+  const klingIsImageTask = klingTask === KLING_TASKS["Image to video"];
+  const klingIsIngredients = klingTask === KLING_TASKS["Ingredients to video"];
+  const klingIsEdit = klingTask === KLING_TASKS["Edit video"];
+  const klingIncoming = renderedEdges.filter((edge) => edge.target === id);
+  const klingConnectedHandles = new Set(klingIncoming.map((edge) => edge.targetHandle));
+  const klingKeyframeEdges = klingIncoming.filter((edge) =>
+    ["image", "middle_images", "last_image", "end_image"].includes(edge.targetHandle ?? "")
+  );
+  const klingReferenceImageEdges = klingIncoming.filter((edge) => edge.targetHandle === "reference_images");
+  const klingReferenceVideoEdges = klingIncoming.filter((edge) => /^reference_video_[1-5]$/.test(edge.targetHandle ?? ""));
+  const klingSourceVideoEdge = klingIncoming.find((edge) => edge.targetHandle === "video");
+  const klingPromptEdge = klingIncoming.find((edge) => edge.targetHandle === "prompt");
+  const klingPromptNode = klingPromptEdge ? getNode(klingPromptEdge.source) : undefined;
+  const klingPrompt = String((klingPromptNode?.data as { params?: { text?: unknown } } | undefined)?.params?.text ?? "");
+  const klingSubjects = Array.isArray(d.params?.elements) ? d.params.elements as Record<string, unknown>[] : [];
+  const klingVoiceIds = Array.isArray(d.params?.voice_ids) ? d.params.voice_ids as string[] : [];
+  const klingInputCount = klingKeyframeEdges.length + klingReferenceImageEdges.length
+    + klingReferenceVideoEdges.length + Number(Boolean(klingSourceVideoEdge))
+    + klingSubjects.length + klingVoiceIds.filter(Boolean).length
+    + klingSubjects.reduce((count, subject) => count
+      + (subject.kind === "new" && subject.type === "video"
+        ? Number(Boolean(subject.reference_video))
+        : subject.kind === "new" && subject.type === "image"
+          ? Number(Boolean(subject.frontal_image)) + (Array.isArray(subject.extra_images)
+            ? subject.extra_images.filter(Boolean).length
+            : 0)
+          : 0), 0);
+  const klingDuration = Number(d.params?.duration ?? KLING_DEFAULTS.duration);
+  const klingRate = KLING_RATES[klingModel] ?? 0;
+  const klingCost = `~$${(klingDuration * klingRate).toFixed(3)} (${klingDuration}s × $${klingRate.toFixed(3)}/s)`;
+  const klingOwnedNodes = getNodes().filter((candidate) =>
+    (candidate.data as { klingAutoCreatedFor?: string }).klingAutoCreatedFor === id
+  );
+  const klingRoleIndices = (prefix: string) => klingOwnedNodes
+    .map((candidate) => (candidate.data as { klingRole?: string }).klingRole ?? "")
+    .filter((role) => new RegExp(`^${prefix}_\\d+$`).test(role))
+    .map((role) => Number(role.split("_").at(-1)));
+  const klingNextRole = (prefix: string) => {
+    return Math.max(0, ...klingRoleIndices(prefix)) + 1;
+  };
+  const klingImageTotal = klingKeyframeEdges.length + klingReferenceImageEdges.length;
+  const klingInputVisible = (name: string) => {
+    if (name === "prompt") return true;
+    if (klingIsImageTask) {
+      if (name === "image" || name === "middle_images" && !klingIsV3) return true;
+      return klingIsV3 ? name === "end_image" : name === "last_image";
+    }
+    if (klingIsIngredients) {
+      return ["image", "middle_images", "last_image", "reference_images"].includes(name)
+        || /^reference_video_[1-5]$/.test(name);
+    }
+    if (klingIsEdit) return name === "video" || name === "reference_images"
+      || /^reference_video_[1-4]$/.test(name);
+    return false;
+  };
+  const klingAspectOptions = klingIsV3
+    ? ["16:9", "9:16", "1:1"]
+    : klingIsIngredients
+      ? ["Auto", "16:9", "9:16", "1:1", "21:9"]
+      : ["16:9", "9:16", "1:1", "21:9"];
+  const klingAspectVisible = klingTask === KLING_TASKS["Text to video"] || klingIsIngredients;
+  const klingVideoCount = klingReferenceVideoEdges.length + Number(Boolean(klingSourceVideoEdge));
+  const klingSubjectVideoCount = klingSubjects.filter((subject) => subject.kind === "new" && subject.type === "video").length;
+  const updateKlingSubjectCount = (value: string) => {
+    const next = klingSubjects.slice();
+    if (value) next.push({
+      kind: "new",
+      name: "",
+      description: "",
+      type: "image",
+      frontal_image: "",
+      extra_images: [""],
+      reference_video: "",
+    });
+    setParam("elements", next);
+  };
+  const updateKlingVoiceCount = (value: string) => {
+    const next = klingVoiceIds.slice();
+    if (value) next.push("");
+    setParam("voice_ids", next);
+  };
+  const klingReferenceTagHint = klingIsImageTask
+    ? "@image_1 (first frame), @image_2 ... (middle, then last)"
+    : klingIsIngredients
+      ? "@image_N, @video_N, @element_N, @voice_N"
+      : klingIsEdit
+        ? "The video to edit is @video_1; other inputs are @image_N, @video_2 onward, @element_N, @voice_N"
+        : "";
 
   return (
     <div className="ff-node" data-status={d.status}>
@@ -646,10 +1059,21 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       {def.integration === "pending" && (
         <div className="ff-node-notice">API setup required before this model can run.</div>
       )}
+      {isSeedance && (
+        <div className={`ff-node-notice${seedanceAtlasTask ? "" : " ff-access-pending"}`}>
+          {seedanceAtlasTask
+            ? `Atlas Cloud API connected: Seedance 2.5 ${d.params.task === "text-to-video" ? "Text" : "Image"} to video.`
+            : "Atlas Cloud API is connected for Seedance 2.5 Text to video and Image to video only."}
+        </div>
+      )}
+      {seedanceImageToVideo && (
+        <div className="ff-node-hint">Output aspect ratio follows the first-frame image on Atlas Cloud.</div>
+      )}
 
       {Object.entries(def.inputs)
         .filter(([name]) => {
           if (isOmni) return showOmniInput(name);
+          if (isKling) return klingInputVisible(name);
           const condition = def.conditionalInputs?.[name];
           return !condition || d.params[condition.param] === condition.value;
         })
@@ -660,7 +1084,12 @@ export default function WorkflowNode({ id, data }: NodeProps) {
                 isConnectable={!def.disabledInputs?.[name]}
                 title={def.disabledInputs?.[name]}
                 style={{ background: PORT_COLORS[type], opacity: def.disabledInputs?.[name] ? 0.4 : 1 }} />
-              {inputLabels[name] ?? name}
+              {isKling
+                ? name === "middle_images" ? "Middle keyframes"
+                  : name === "end_image" ? "Last frame"
+                    : /^reference_video_/.test(name) ? `Reference video ${name.split("_").at(-1)}`
+                      : inputLabels[name] ?? name
+                : inputLabels[name] ?? name}
             </div>
             {isOmni && name === "prompt" && (
               <>
@@ -673,6 +1102,16 @@ export default function WorkflowNode({ id, data }: NodeProps) {
                 )}
               </>
             )}
+            {isKling && name === "prompt" && (
+              <>
+                {klingReferenceTagHint && <div className="ff-node-hint">{klingReferenceTagHint}</div>}
+                <div className={`ff-kling-note${klingPrompt.length > (/[^\u0000-\u007f]/.test(klingPrompt) ? 11000 : 26000) ? " ff-kling-warning" : ""}`}>
+                  Prompt maximum: 26,000 characters (11,000 for non-English text). Image-to-video prompts are optional.
+                  {klingIsIngredients && <div>If your prompt mentions none of the references, all of them are used automatically.</div>}
+                  {!klingIsImageTask && <div>You can describe what to avoid in the prompt.</div>}
+                </div>
+              </>
+            )}
             {isSeedance && name === "prompt" && d.params.task === "reference-to-video" && (
               <div className="ff-node-hint">
                 Refer to references as @Image1, @Image2, @Video1, @Audio1
@@ -680,6 +1119,220 @@ export default function WorkflowNode({ id, data }: NodeProps) {
             )}
           </Fragment>
         ))}
+
+      {isKling && klingIsImageTask && !klingConnectedHandles.has("image") && (
+        <div className="ff-node-warning">Image to video requires a connected first frame.</div>
+      )}
+      {isKling && klingIsEdit && !klingConnectedHandles.has("video") && (
+        <div className="ff-node-warning">Edit video requires a connected source video.</div>
+      )}
+      {isKling && klingIsIngredients && klingReferenceImageEdges.length === 0
+        && klingReferenceVideoEdges.length === 0 && klingSubjects.length === 0 && (
+        <div className="ff-node-warning">Ingredients to video requires at least one reference image, reference video, or subject.</div>
+      )}
+      {isKling && klingTask !== KLING_TASKS["Text to video"] && (
+        <div className="ff-kling-note">Keyframe images: JPG, JPEG, or PNG; 30 MB maximum; at least 300 px per side; aspect ratio 2:5 to 5:2.</div>
+      )}
+      {isKling && (klingIsIngredients || klingIsEdit) && (
+        <div className="ff-kling-note">Reference and source videos: MP4 or MOV, 300 MB maximum, 3 to 30 seconds; references must total 3 to 30 seconds; 700 to 4553 px. Input video seconds are billed.</div>
+      )}
+
+      {isKling && (klingIsIngredients || klingIsEdit) && (
+        <section className="ff-kling-editor">
+          <div className="ff-kling-editor-heading">
+            <strong>Subjects (elements)</strong>
+            <button type="button" className="ff-kling-small-button nodrag" disabled={klingSubjects.length >= 7}
+              onClick={() => updateKlingSubjectCount("new")}>
+              Add subject ({klingSubjects.length}/7)
+            </button>
+          </div>
+          {klingSubjects.map((subject, index) => {
+            const existing = subject.kind === "existing";
+            const videoCharacter = subject.kind === "new" && subject.type === "video";
+            return (
+              <div className="ff-kling-subject" key={`subject-${index}`}>
+                <div className="ff-kling-editor-heading">
+                  <strong>Subject {index + 1}</strong>
+                  <button type="button" className="ff-kling-remove nodrag"
+                    onClick={() => setParam("elements", klingSubjects.filter((_, subjectIndex) => subjectIndex !== index))}>
+                    Remove
+                  </button>
+                </div>
+                <label className="ff-kling-field">
+                  <span>Subject source</span>
+                  <select className="nodrag" value={existing ? "existing" : "new"}
+                    onChange={(event) => setKlingSubject(index, event.target.value === "existing"
+                      ? { kind: "existing", id: "", name: "" }
+                      : { kind: "new", name: "", description: "", type: "image", frontal_image: "", extra_images: [""] })}>
+                    <option value="existing">Existing subject ID</option>
+                    <option value="new">New subject</option>
+                  </select>
+                </label>
+                {existing ? (
+                  <label className="ff-kling-field">
+                    <span>Existing subject ID (64-bit integer)</span>
+                    <input className="nodrag" type="text" inputMode="numeric" value={String(subject.id ?? "")}
+                      onChange={(event) => setKlingSubject(index, { id: event.target.value, name: "" })} />
+                  </label>
+                ) : (
+                  <>
+                    <label className="ff-kling-field">
+                      <span>Name (max 20 characters)</span>
+                      <input className="nodrag" maxLength={20} value={String(subject.name ?? "")}
+                        onChange={(event) => setKlingSubject(index, { name: event.target.value })} />
+                    </label>
+                    <label className="ff-kling-field">
+                      <span>Description (max 100 characters)</span>
+                      <textarea className="nodrag nowheel" rows={2} maxLength={100} value={String(subject.description ?? "")}
+                        onChange={(event) => setKlingSubject(index, { description: event.target.value })} />
+                    </label>
+                    <label className="ff-kling-field">
+                      <span>Subject type</span>
+                      <select className="nodrag" value={String(subject.type ?? "image")}
+                        onChange={(event) => setKlingSubject(index, event.target.value === "video"
+                          ? { type: "video", reference_video: "" }
+                          : { type: "image", frontal_image: "", extra_images: [""] })}>
+                        <option value="image">Image-based</option>
+                        <option value="video" disabled={klingSubjectVideoCount >= 3 && !videoCharacter}>Video character</option>
+                      </select>
+                    </label>
+                    {videoCharacter ? (
+                      <>
+                        <label className="ff-kling-field">
+                          <span>Reference video (3 to 8 seconds)</span>
+                          <input className="nodrag" type="text" placeholder="Public MP4 or MOV URL"
+                            value={String(subject.reference_video ?? "")}
+                            onChange={(event) => setKlingSubject(index, { reference_video: event.target.value })} />
+                          <input className="nodrag" type="file" accept="video/mp4,video/quicktime"
+                            onChange={(event) => void setKlingSubjectImage(index, "reference_video", event.target.files?.[0])} />
+                        </label>
+                        <div className="ff-kling-note">Video characters are for realistic humans only.</div>
+                      </>
+                    ) : (
+                      <>
+                        <label className="ff-kling-field">
+                          <span>Frontal image (required)</span>
+                          <input className="nodrag" type="text" placeholder="Public JPG or PNG URL"
+                            value={String(subject.frontal_image ?? "")}
+                            onChange={(event) => setKlingSubject(index, { frontal_image: event.target.value })} />
+                          <input className="nodrag" type="file" accept="image/jpeg,image/png"
+                            onChange={(event) => void setKlingSubjectImage(index, "frontal_image", event.target.files?.[0])} />
+                        </label>
+                        {(Array.isArray(subject.extra_images) ? subject.extra_images : [""]).map((image, imageIndex) => (
+                          <label className="ff-kling-field" key={`subject-${index}-image-${imageIndex}`}>
+                            <span>Extra image {imageIndex + 1}</span>
+                            <input className="nodrag" type="text" placeholder="Public JPG or PNG URL" value={String(image ?? "")}
+                              onChange={(event) => {
+                                const extra = Array.isArray(subject.extra_images) ? [...subject.extra_images] : [""];
+                                extra[imageIndex] = event.target.value;
+                                setKlingSubject(index, { extra_images: extra });
+                              }} />
+                            <input className="nodrag" type="file" accept="image/jpeg,image/png"
+                              onChange={(event) => void setKlingSubjectImage(index, "extra_images", event.target.files?.[0], imageIndex)} />
+                          </label>
+                        ))}
+                        <button type="button" className="ff-kling-small-button nodrag"
+                          disabled={(Array.isArray(subject.extra_images) ? subject.extra_images.length : 0) >= 3}
+                          onClick={() => setKlingSubject(index, {
+                            extra_images: [...(Array.isArray(subject.extra_images) ? subject.extra_images : []), ""],
+                          })}>
+                          Add extra image
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </section>
+      )}
+      {isKling && (klingIsIngredients || klingIsEdit) && (
+        <section className="ff-kling-editor">
+          <div className="ff-kling-editor-heading">
+            <strong>Voice IDs</strong>
+            <button type="button" className="ff-kling-small-button nodrag" disabled={klingVoiceIds.length >= 3}
+              onClick={() => updateKlingVoiceCount("new")}>
+              Add Voice ID ({klingVoiceIds.length}/3)
+            </button>
+          </div>
+          {klingVoiceIds.map((voice, index) => (
+            <label className="ff-kling-field" key={`voice-${index}`}>
+              <span>Voice ID {index + 1}</span>
+              <div className="ff-kling-inline">
+                <input className="nodrag" type="text" value={voice}
+                  onChange={(event) => setParam("voice_ids", klingVoiceIds.map((value, voiceIndex) =>
+                    voiceIndex === index ? event.target.value : value
+                  ))} />
+                <button type="button" className="ff-kling-remove nodrag"
+                  onClick={() => setParam("voice_ids", klingVoiceIds.filter((_, voiceIndex) => voiceIndex !== index))}>
+                  Remove
+                </button>
+              </div>
+            </label>
+          ))}
+        </section>
+      )}
+      {isKling && (klingIsIngredients || klingIsEdit) && (
+        <div className={`ff-kling-note${klingInputCount > 15 ? " ff-kling-warning" : ""}`}>Inputs: {klingInputCount} / 15</div>
+      )}
+
+      {isKling && klingIsIngredients && (
+        <div className="ff-kling-button-list">
+          <button type="button" className="ff-kling-add nodrag" disabled={klingImageTotal >= 10}
+            onClick={() => {
+              const index = klingNextRole("ingredient");
+              addKlingImageInput(`ingredient_${index}`, `Ingredient ${index}`, "reference_images");
+            }}>
+            Add ingredient ({klingReferenceImageEdges.length}/10)
+          </button>
+          <button type="button" className="ff-kling-add nodrag"
+            disabled={klingImageTotal >= 10 || klingConnectedHandles.has("image") || klingOwnedNodes.some((candidate) => (candidate.data as { klingRole?: string }).klingRole === "first_frame")}
+            onClick={() => addKlingImageInput("first_frame", "First frame", "image")}>
+            Add first frame
+          </button>
+          <button type="button" className="ff-kling-add nodrag"
+            disabled={klingImageTotal >= 10 || klingRoleIndices("middle").length >= 8}
+            onClick={() => {
+              const index = klingNextRole("middle");
+              addKlingImageInput(`middle_${index}`, `Middle keyframe ${index}`, "middle_images");
+            }}>
+            Add middle keyframe
+          </button>
+          <button type="button" className="ff-kling-add nodrag"
+            disabled={klingImageTotal >= 10 || klingConnectedHandles.has("last_image") || klingOwnedNodes.some((candidate) => (candidate.data as { klingRole?: string }).klingRole === "last_frame")}
+            onClick={() => addKlingImageInput("last_frame", "Last frame", "last_image")}>
+            Add last frame
+          </button>
+        </div>
+      )}
+      {isKling && klingIsImageTask && !klingIsV3 && (
+        <div className="ff-kling-button-list">
+          <button type="button" className="ff-kling-add nodrag"
+            disabled={klingImageTotal >= 10 || klingRoleIndices("middle").length >= 8}
+            onClick={() => {
+              const index = klingNextRole("middle");
+              addKlingImageInput(`middle_${index}`, `Middle keyframe ${index}`, "middle_images");
+            }}>
+            Add middle keyframe ({klingRoleIndices("middle").length}/8)
+          </button>
+        </div>
+      )}
+      {isKling && klingIsEdit && (
+        <button type="button" className="ff-kling-add nodrag" disabled={klingReferenceImageEdges.length >= 10}
+          onClick={() => {
+            const index = klingNextRole("reference_image");
+            addKlingImageInput(`reference_image_${index}`, `Reference image ${index}`, "reference_images");
+          }}>
+          Add reference image ({klingReferenceImageEdges.length}/10)
+        </button>
+      )}
+      {isKling && <div className="ff-kling-note">Audio is generated natively. There is no audio control.</div>}
+      {isKling && klingIsV3 && <div className="ff-kling-note">V3.0 controls are unverified on Atlas.</div>}
+      {isKling && klingIsV3 && <div className="ff-kling-note">Resolution is fixed by the selected V3.0 tier (unverified on Atlas).</div>}
+      {isKling && klingIsV3 && klingIsImageTask && (
+        <div className="ff-kling-note">V3.0 Last frame is passed as end_image (unverified on Atlas).</div>
+      )}
 
       {isOmni && omniTask === OMNI_TASKS["Ingredients to video"] && (
         <button
@@ -776,14 +1429,26 @@ export default function WorkflowNode({ id, data }: NodeProps) {
 
       {def.params.filter((param) => {
         if (isSeedance && !showSeedanceParam(param)) return false;
+        if (seedanceImageToVideo && param.key === "ratio") return false;
+        if (seedanceImageToVideo && param.key === "bitrate_mode") return false;
         if (isOmni && param.key === "aspect_ratio"
           && [OMNI_TASKS["Edit video"], OMNI_TASKS["Extend video"]].includes(omniTask as never)) return false;
+        if (isKling && param.key === "aspect_ratio" && !klingAspectVisible) return false;
+        if (isKling && param.key === "resolution" && klingIsV3) return false;
+        if (isKling && ["sound", "cfg_scale", "negative_prompt"].includes(param.key) && !klingIsV3) return false;
         return true;
       }).map((p) => (
         <label className={`ff-param${p.kind === "toggle" ? " ff-param-toggle" : ""}`} key={p.key}>
-          <span>{p.key === "duration" && isOmni && omniTask === OMNI_TASKS["Extend video"]
-            ? "Extension length (seconds)"
-            : d.paramLabels?.[p.key] ?? p.label}</span>
+          <span>
+            {p.key === "duration" && isOmni && omniTask === OMNI_TASKS["Extend video"]
+              ? "Extension length (seconds)"
+              : p.key === "duration" && isKling && klingIsEdit
+                ? "Output length (seconds)"
+                : d.paramLabels?.[p.key] ?? p.label}
+            {isKling && klingIsV3 && ["duration", "aspect_ratio", "sound", "cfg_scale", "negative_prompt"].includes(p.key)
+              ? " (unverified on Atlas)"
+              : ""}
+          </span>
           {p.kind === "toggle" ? (
             <input className="ff-toggle nodrag" type="checkbox" checked={Boolean(d.params[p.key])}
               onChange={(e) => {
@@ -796,9 +1461,16 @@ export default function WorkflowNode({ id, data }: NodeProps) {
               const options = p.optionsByParam
                 ? p.optionsByParam.values[d.params[p.optionsByParam.param]] ?? p.options ?? []
                 : p.options ?? [];
-              const selectedValue = options.includes(d.params[p.key])
+              const actualOptions = isKling && p.key === "aspect_ratio"
+                ? klingAspectOptions
+                : seedanceImageToVideo && p.key === "resolution"
+                  ? options.filter((option) => ["480p", "720p", "1080p"].includes(option))
+                  : options;
+              const selectedValue = actualOptions.includes(d.params[p.key])
                 ? d.params[p.key]
-                : p.default ?? options[0] ?? "";
+                : p.key === "aspect_ratio" && isKling && klingIsIngredients
+                  ? "Auto"
+                  : p.default ?? actualOptions[0] ?? "";
               const isEdit = isSeedance && d.params.task === "reference-to-video"
                 && d.params.omni_reference_task_type === "edit" && p.key === "duration";
               const isForcedRatio = isSeedance && d.params.task === "reference-to-video"
@@ -813,7 +1485,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
                 : p.optionLabels?.[option] ?? option;
               const optionGroups = p.optionGroups?.map((group) => ({
                 ...group,
-                options: group.options.filter((option) => options.includes(option)),
+                options: group.options.filter((option) => actualOptions.includes(option)),
               })).filter((group) => group.options.length > 0);
               return (
                 <select className="nodrag" value={selectedValue} disabled={disabled}
@@ -826,7 +1498,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
                           ))}
                         </optgroup>
                       ))
-                    : options.map((option) => <option key={option} value={option}>{optionLabel(option)}</option>)}
+                    : actualOptions.map((option) => <option key={option} value={option}>{optionLabel(option)}</option>)}
                 </select>
               );
             })()
@@ -834,7 +1506,11 @@ export default function WorkflowNode({ id, data }: NodeProps) {
             <textarea className="nodrag nowheel" rows={3} value={d.params[p.key] ?? ""}
               onChange={(e) => setParam(p.key, e.target.value)} />
           ) : p.kind === "number" ? (
-            <input className="nodrag" type="number" step={p.key === "seed" ? 1 : undefined} value={d.params[p.key] ?? 0}
+            <input className="nodrag" type={isKling && p.key === "cfg_scale" ? "range" : "number"}
+              min={isKling && p.key === "cfg_scale" ? 0 : undefined}
+              max={isKling && p.key === "cfg_scale" ? 1 : undefined}
+              step={isKling && p.key === "cfg_scale" ? 0.01 : p.key === "seed" ? 1 : undefined}
+              value={d.params[p.key] ?? 0}
               onChange={(e) => setParam(p.key, isOmni && p.key === "seed" && e.target.value === ""
                 ? -1
                 : e.target.value)} />
@@ -843,7 +1519,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
               <input className="nodrag" type="text" placeholder="https://…" value={d.params[p.key] ?? ""}
                 onChange={(e) => setParam(p.key, e.target.value)} />
               <input className="nodrag" type="file"
-                accept={isOmniImage ? "image/png,image/jpeg,image/webp" : "image/*"}
+                accept={isKlingImage ? "image/jpeg,image/png" : isOmniImage ? "image/png,image/jpeg,image/webp" : "image/*"}
                 onChange={(e) => upload(p.key, e.target.files?.[0])} />
             </>
           ) : (
@@ -854,6 +1530,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
             && (p.key !== "draft" || d.params.draft)
             && (p.key !== "resolution" || (d.params.model === SEEDANCE_MODELS["Seedance 2.5"] && d.params.resolution === "4k-esr")) && (
             <small className="ff-param-help">{p.helperText}</small>
+          )}
+          {isKling && p.key === "resolution" && (
+            <small className="ff-param-help">1080p-esr enhances a 720p render. 2k-esr and 4k-esr enhance a 1080p render (not native). Billed as the source generation plus the enhancement.</small>
           )}
         </label>
       ))}
@@ -867,6 +1546,15 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         <div className="ff-node-cost">
           Estimated cost: {omniEstimatedCost}
           {omniTask !== OMNI_TASKS["Edit video"] && ` (${omniCostDuration}s × $${omniRate.toFixed(3)}/s × ${omniVariations})`}
+        </div>
+      )}
+      {isKling && (
+        <div className="ff-node-cost">
+          Estimated cost: {klingCost}
+          {klingVideoCount > 0 || klingSubjects.some((subject) => subject.type === "video" && subject.reference_video)
+            ? <div>Input video seconds are billed too.</div>
+            : null}
+          {String(d.params.resolution ?? "").endsWith("-esr") && <div>Enhanced resolutions cost extra.</div>}
         </div>
       )}
 

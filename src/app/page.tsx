@@ -11,6 +11,7 @@ import { registry } from "@/lib/registry";
 import { runGraph } from "@/lib/executor";
 import { normalizeVeoParams } from "@/lib/veo";
 import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "@/lib/omni";
+import { normalizeKlingParams, KLING_MODELS, KLING_TASKS } from "@/lib/kling";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode from "@/components/WorkflowNode";
 
@@ -35,6 +36,7 @@ const utilityGroups = [
 export default function Page() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [workflowName, setWorkflowName] = useState("Untitled workflow");
   const [storageReady, setStorageReady] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Loading saved workflow…");
   const [storageError, setStorageError] = useState("");
@@ -47,10 +49,13 @@ export default function Page() {
       try {
         const saved = window.localStorage.getItem(WORKFLOW_STORAGE_KEY);
         if (saved) {
-          const workflow = JSON.parse(saved) as { nodes?: unknown; edges?: unknown };
+          const workflow = JSON.parse(saved) as { name?: unknown; nodes?: unknown; edges?: unknown };
           if (!Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges)) {
             throw new Error("Saved workflow data is invalid.");
           }
+          setWorkflowName(typeof workflow.name === "string" && workflow.name.trim()
+            ? workflow.name.trim()
+            : "Untitled workflow");
           setNodes(workflow.nodes.map((node: Node) => ({
             ...node,
             data: {
@@ -60,6 +65,9 @@ export default function Page() {
                 : {}),
               ...(node.data.type === "video/google-omni"
                 ? { params: normalizeOmniParams((node.data.params ?? {}) as Record<string, unknown>) }
+                : {}),
+              ...(node.data.type === "video/kling"
+                ? { params: normalizeKlingParams((node.data.params ?? {}) as Record<string, unknown>) }
                 : {}),
               status: "idle",
               log: "",
@@ -79,25 +87,25 @@ export default function Page() {
     return () => window.clearTimeout(timeout);
   }, [setEdges, setNodes]);
 
-  const saveWorkflowLocally = useCallback(() => {
+  const saveWorkflowLocally = useCallback((manual = false) => {
     const savedNodes = nodes.map((node) => ({
       ...node,
       data: { ...node.data, status: "idle", log: "" },
     }));
-    const payload = JSON.stringify({ nodes: savedNodes, edges });
+    const payload = JSON.stringify({ name: workflowName.trim() || "Untitled workflow", nodes: savedNodes, edges });
     try {
       if (lastSavedPayload.current !== payload) {
         window.localStorage.setItem(WORKFLOW_STORAGE_KEY, payload);
         lastSavedPayload.current = payload;
       }
       setStorageError("");
-      setStorageStatus("Saved on this device");
+      setStorageStatus(manual ? "Saved just now" : "Auto-saved on this device");
       setStorageReady(true);
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
       setStorageStatus("Unable to save workflow");
     }
-  }, [edges, nodes]);
+  }, [edges, nodes, workflowName]);
 
   const clearCanvas = () => {
     setNodes([]);
@@ -108,10 +116,11 @@ export default function Page() {
   useEffect(() => {
     if (!storageReady) return;
     const timeout = window.setTimeout(saveWorkflowLocally, 300);
-    window.addEventListener("pagehide", saveWorkflowLocally);
+    const saveOnPageHide = () => saveWorkflowLocally();
+    window.addEventListener("pagehide", saveOnPageHide);
     return () => {
       window.clearTimeout(timeout);
-      window.removeEventListener("pagehide", saveWorkflowLocally);
+      window.removeEventListener("pagehide", saveOnPageHide);
     };
   }, [saveWorkflowLocally, storageReady]);
 
@@ -185,6 +194,35 @@ export default function Page() {
           if (currentCount >= maximum) return false;
         }
       }
+      if (targetType === "video/kling") {
+        const params = targetParams;
+        const task = String(params.task);
+        const model = String(params.model);
+        const v3 = model !== KLING_MODELS["Kling 4.0"];
+        const handle = c.targetHandle;
+        const isImageTask = task === KLING_TASKS["Image to video"];
+        const isIngredients = task === KLING_TASKS["Ingredients to video"];
+        const isEdit = task === KLING_TASKS["Edit video"];
+        const available = handle === "prompt"
+          || (isImageTask && ["image", "middle_images", v3 ? "end_image" : "last_image"].includes(handle))
+          || (isIngredients && ["image", "middle_images", "last_image", "reference_images"].includes(handle)
+            || isIngredients && /^reference_video_[1-5]$/.test(handle))
+          || (isEdit && (handle === "video" || handle === "reference_images" || /^reference_video_[1-4]$/.test(handle)));
+        if (!available) return false;
+        const imageHandles = ["image", "middle_images", "last_image", "end_image", "reference_images"];
+        if (imageHandles.includes(handle)) {
+          const currentImages = edges.filter((edge) => edge.target === c.target
+            && imageHandles.includes(edge.targetHandle ?? "")
+            && !(edge.source === c.source && edge.targetHandle === handle)).length;
+          if (currentImages >= 10) return false;
+          if (handle === "middle_images" && currentImages >= 10) return false;
+        }
+        const referenceVideos = edges.filter((edge) => edge.target === c.target
+          && /^reference_video_[1-5]$/.test(edge.targetHandle ?? "")
+          && !(edge.source === c.source && edge.targetHandle === handle)).length;
+        if (handle.startsWith("reference_video_")
+          && referenceVideos >= (isEdit ? 4 : 5)) return false;
+      }
       const b = targetDef.inputs[c.targetHandle];
       return a === b || a === "any" || b === "any";
     },
@@ -197,9 +235,11 @@ export default function Page() {
       const targetType = (target?.data as { type?: string } | undefined)?.type;
       const allowsMultipleReferences = ["video/seedance", "video/google-omni"].includes(targetType ?? "")
         && c.targetHandle === "reference_images";
+      const allowsMultipleKlingInputs = targetType === "video/kling"
+        && ["reference_images", "middle_images"].includes(c.targetHandle ?? "");
       setEdges((es) => addEdge(
         c,
-        allowsMultipleReferences
+        allowsMultipleReferences || allowsMultipleKlingInputs
           ? es
           : es.filter((e) => !(e.target === c.target && e.targetHandle === c.targetHandle))
       ));
@@ -241,11 +281,12 @@ export default function Page() {
   };
 
   const exportJSON = () => {
-    const blob = new Blob([JSON.stringify({ nodes, edges }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ name: workflowName.trim() || "Untitled workflow", nodes, edges }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "workflow.json";
+    const filename = (workflowName.trim() || "workflow").replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").replace(/\s+/g, "-");
+    a.download = `${filename}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -254,6 +295,7 @@ export default function Page() {
     if (!file) return;
     const wf = JSON.parse(await file.text());
     cache.current.clear();
+    setWorkflowName(typeof wf.name === "string" && wf.name.trim() ? wf.name.trim() : "Untitled workflow");
     setNodes((wf.nodes ?? []).map((n: Node) => {
       const data = n.data as { type?: string; params?: Record<string, unknown> };
       const legacyModel = data.type === "openai/gpt-image-2.6-flare"
@@ -271,6 +313,9 @@ export default function Page() {
             : {}),
           ...(data.type === "video/google-omni"
             ? { params: normalizeOmniParams(data.params ?? {}) }
+            : {}),
+          ...(data.type === "video/kling"
+            ? { params: normalizeKlingParams(data.params ?? {}) }
             : {}),
           status: "idle",
           outputs: {},
@@ -293,7 +338,14 @@ export default function Page() {
         </div>
         <div className="ff-workflow-name">
           <span className="ff-workflow-indicator" />
-          <span>Untitled workflow</span>
+          <input
+            className="ff-workflow-title"
+            aria-label="Workflow name"
+            value={workflowName}
+            maxLength={80}
+            onChange={(event) => setWorkflowName(event.target.value)}
+            onBlur={() => setWorkflowName((name) => name.trim() || "Untitled workflow")}
+          />
           <span
             className={`ff-save-status${storageStatus === "Unable to save workflow" || storageStatus === "Unable to restore workflow" ? " ff-save-status-error" : ""}`}
             title={storageError || storageStatus}
@@ -304,7 +356,7 @@ export default function Page() {
         </div>
         <div className="ff-toolbar-actions">
           <button className="ff-toolbar-button" onClick={clearCanvas}>Clear</button>
-          <button className="ff-toolbar-button" onClick={saveWorkflowLocally}>Save</button>
+          <button className="ff-toolbar-button" onClick={() => saveWorkflowLocally(true)}>Save</button>
           <button className="ff-toolbar-button" onClick={exportJSON}>Export</button>
           <label className="ff-toolbar-button ff-open">
             Open
@@ -369,7 +421,7 @@ export default function Page() {
           </div>
           <div className="ff-model-group">
             <div className="ff-group-heading">
-              <span className="ff-access ff-access-pending">API SETUP LATER</span>
+              <span className="ff-access">PARTIAL API · SEEDANCE 2.5 TEXT & IMAGE-TO-VIDEO</span>
             </div>
             {videoModelTypes.map((type) => {
               const def = registry[type];
@@ -378,7 +430,9 @@ export default function Page() {
                   <span className="ff-card-mark" aria-hidden="true">▶</span>
                   <span className="ff-card-copy">
                     <strong>{def.label}</strong>
-                    <span>Available in UI · API setup later</span>
+                    <span>{type === "video/seedance"
+                      ? "Seedance 2.5 Text-to-Video and Image-to-Video connected"
+                      : "Available in UI · API setup later"}</span>
                   </span>
                   <span className="ff-card-add" aria-hidden="true">+</span>
                 </button>
@@ -424,7 +478,10 @@ export default function Page() {
             const deletedOmniIds = new Set(deletedNodes
               .filter((node) => (node.data as { type?: string }).type === "video/google-omni")
               .map((node) => node.id));
-            if (deletedVideoModelIds.size === 0 && deletedOmniIds.size === 0) return;
+            const deletedKlingIds = new Set(deletedNodes
+              .filter((node) => (node.data as { type?: string }).type === "video/kling")
+              .map((node) => node.id));
+            if (deletedVideoModelIds.size === 0 && deletedOmniIds.size === 0 && deletedKlingIds.size === 0) return;
             const autoInputIds = new Set(nodes.filter((node) => {
               const meta = node.data as { autoCreatedFor?: string; autoInputFor?: string; autoFrameFor?: string };
               const owner = meta.autoCreatedFor ?? meta.autoInputFor ?? meta.autoFrameFor;
@@ -436,6 +493,12 @@ export default function Page() {
                 && Boolean(meta.omniRole);
             }).map((node) => node.id));
             for (const inputId of omniInputIds) autoInputIds.add(inputId);
+            const klingInputIds = nodes.filter((node) => {
+              const meta = node.data as { klingAutoCreatedFor?: string; klingRole?: string };
+              return meta.klingAutoCreatedFor && deletedKlingIds.has(meta.klingAutoCreatedFor)
+                && Boolean(meta.klingRole);
+            }).map((node) => node.id);
+            for (const inputId of klingInputIds) autoInputIds.add(inputId);
             setNodes((current) => current.filter((node) => !autoInputIds.has(node.id)));
             setEdges((current) => current.filter((edge) =>
               !autoInputIds.has(edge.source)
@@ -444,6 +507,8 @@ export default function Page() {
               && !deletedVideoModelIds.has(edge.target)
               && !deletedOmniIds.has(edge.source)
               && !deletedOmniIds.has(edge.target)
+              && !deletedKlingIds.has(edge.source)
+              && !deletedKlingIds.has(edge.target)
             ));
           }}
           onConnect={onConnect} isValidConnection={isValidConnection}

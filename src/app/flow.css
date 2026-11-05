@@ -87,6 +87,31 @@ body {
   color: #d7e0dd;
   font-size: 12px;
   font-weight: 550;
+  min-width: 0;
+}
+
+.ff-workflow-title {
+  width: min(230px, 30vw);
+  min-width: 100px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  outline: none;
+  background: transparent;
+  color: #d7e0dd;
+  font: inherit;
+  font-weight: inherit;
+  text-overflow: ellipsis;
+}
+
+.ff-workflow-title:hover,
+.ff-workflow-title:focus {
+  border-color: var(--line);
+  background: #172021;
+}
+
+.ff-workflow-title:focus {
+  border-color: #50605e;
 }
 
 .ff-save-status {
@@ -94,6 +119,7 @@ body {
   color: #8d9d97;
   font-size: 10px;
   font-weight: 450;
+  white-space: nowrap;
 }
 
 .ff-save-status-error {
@@ -677,6 +703,8 @@ body {
 }
 
 .ff-download {
+  display: inline-flex;
+  align-items: center;
   min-height: 27px;
   padding: 0 9px;
   border: 1px solid #3b4a45;
@@ -687,28 +715,12 @@ body {
   font: inherit;
   font-size: 10px;
   font-weight: 600;
+  text-decoration: none;
 }
 
-.ff-download:hover:not(:disabled) {
+.ff-download:hover {
   border-color: var(--accent);
   color: var(--accent);
-}
-
-.ff-download:disabled {
-  color: var(--muted);
-  cursor: wait;
-}
-
-.ff-download-error {
-  color: #ef9b84;
-  font-size: 9px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.ff-download-error a {
-  color: #e7efec;
-  text-decoration: underline;
 }
 
 .ff-log {
@@ -845,4 +857,129 @@ body {
 .ff-omni-add:disabled {
   color: var(--muted);
   cursor: not-allowed;
+}
+
+.ff-kling-note {
+  display: block;
+  margin: 5px 10px 0;
+  color: #84938e;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-kling-warning {
+  color: #e5bf7c;
+}
+
+.ff-kling-button-list {
+  display: grid;
+  gap: 5px;
+  margin: 6px 10px 0;
+}
+
+.ff-kling-add,
+.ff-kling-small-button {
+  min-height: 27px;
+  padding: 3px 8px;
+  border: 1px solid #3b4a45;
+  border-radius: 5px;
+  background: #202b28;
+  color: #dce8e2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ff-kling-add {
+  width: calc(100% - 20px);
+  margin: 6px 10px 0;
+}
+
+.ff-kling-button-list .ff-kling-add {
+  width: 100%;
+  margin: 0;
+}
+
+.ff-kling-add:hover:not(:disabled),
+.ff-kling-small-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ff-kling-add:disabled,
+.ff-kling-small-button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.ff-kling-editor {
+  margin: 8px 10px 0;
+  padding: 8px;
+  border: 1px solid #2d3b38;
+  border-radius: 6px;
+  background: #131b1a;
+}
+
+.ff-kling-editor-heading,
+.ff-kling-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.ff-kling-editor-heading {
+  color: #c9d6d1;
+  font-size: 10px;
+}
+
+.ff-kling-subject {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px solid #293432;
+}
+
+.ff-kling-field {
+  display: grid;
+  gap: 4px;
+  margin-top: 5px;
+  color: #aab9b4;
+  font-size: 9px;
+}
+
+.ff-kling-field input[type="text"],
+.ff-kling-field textarea,
+.ff-kling-field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 26px;
+  padding: 4px 6px;
+  border: 1px solid #33413d;
+  border-radius: 4px;
+  background: #0e1514;
+  color: #e7efec;
+  font: inherit;
+}
+
+.ff-kling-field input[type="file"] {
+  max-width: 100%;
+  color: #aab9b4;
+  font-size: 9px;
+}
+
+.ff-kling-remove {
+  border: 0;
+  background: transparent;
+  color: #d49a8c;
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+}
+
+.ff-kling-inline input {
+  flex: 1;
+  min-width: 0;
 }

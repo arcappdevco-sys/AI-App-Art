@@ -47,10 +47,13 @@ export async function runGraph(graph: Graph, o: RunOpts) {
       try {
         for (const e of graph.edges.filter((e) => e.target === id)) {
           const up = await visit(e.source);
-          if (["video/seedance", "video/google-omni"].includes(node.type)
+          if (["video/seedance", "video/google-omni", "video/kling"].includes(node.type)
             && e.targetHandle === "reference_images") {
             const references = (inputs.reference_images ??= []);
             references.push(up[e.sourceHandle]);
+          } else if (node.type === "video/kling" && e.targetHandle === "middle_images") {
+            const middleFrames = (inputs.middle_images ??= []);
+            middleFrames.push(up[e.sourceHandle]);
           } else {
             inputs[e.targetHandle] = up[e.sourceHandle];
           }
