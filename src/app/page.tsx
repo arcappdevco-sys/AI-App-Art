@@ -9,6 +9,7 @@ import {
 } from "@xyflow/react";
 import { registry } from "@/lib/registry";
 import { runGraph } from "@/lib/executor";
+import { normalizeVeoParams } from "@/lib/veo";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode from "@/components/WorkflowNode";
 
@@ -51,7 +52,14 @@ export default function Page() {
           }
           setNodes(workflow.nodes.map((node: Node) => ({
             ...node,
-            data: { ...node.data, status: "idle", log: "" },
+            data: {
+              ...node.data,
+              ...(node.data.type === "video/veo"
+                ? { params: normalizeVeoParams((node.data.params ?? {}) as Record<string, unknown>) }
+                : {}),
+              status: "idle",
+              log: "",
+            },
           })));
           setEdges(workflow.edges);
           setStorageStatus("Restored from this device");
@@ -162,11 +170,18 @@ export default function Page() {
   );
 
   const onConnect = useCallback(
-    (c: Connection) =>
-      setEdges((es) =>
-        addEdge(c, es.filter((e) => !(e.target === c.target && e.targetHandle === c.targetHandle)))
-      ),
-    [setEdges]
+    (c: Connection) => {
+      const target = nodes.find((node) => node.id === c.target);
+      const targetType = (target?.data as { type?: string } | undefined)?.type;
+      const allowsMultipleReferences = targetType === "video/seedance" && c.targetHandle === "reference_images";
+      setEdges((es) => addEdge(
+        c,
+        allowsMultipleReferences
+          ? es
+          : es.filter((e) => !(e.target === c.target && e.targetHandle === c.targetHandle))
+      ));
+    },
+    [nodes, setEdges]
   );
 
   const patch = (id: string, data: object) =>
@@ -228,6 +243,9 @@ export default function Page() {
         data: {
           ...n.data,
           ...(legacyModel ? { type: "openai/gpt-image", params: { ...data.params, model: legacyModel } } : {}),
+          ...(data.type === "video/veo"
+            ? { params: normalizeVeoParams(data.params ?? {}) }
+            : {}),
           status: "idle",
           outputs: {},
           log: "",
@@ -373,6 +391,24 @@ export default function Page() {
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+          onNodesDelete={(deletedNodes) => {
+            const deletedVideoModelIds = new Set(deletedNodes
+              .filter((node) => ["video/seedance", "video/veo"].includes((node.data as { type?: string }).type ?? ""))
+              .map((node) => node.id));
+            if (deletedVideoModelIds.size === 0) return;
+            const autoInputIds = new Set(nodes.filter((node) => {
+              const meta = node.data as { autoCreatedFor?: string; autoInputFor?: string; autoFrameFor?: string };
+              const owner = meta.autoCreatedFor ?? meta.autoInputFor ?? meta.autoFrameFor;
+              return owner && deletedVideoModelIds.has(owner);
+            }).map((node) => node.id));
+            setNodes((current) => current.filter((node) => !autoInputIds.has(node.id)));
+            setEdges((current) => current.filter((edge) =>
+              !autoInputIds.has(edge.source)
+              && !autoInputIds.has(edge.target)
+              && !deletedVideoModelIds.has(edge.source)
+              && !deletedVideoModelIds.has(edge.target)
+            ));
+          }}
           onConnect={onConnect} isValidConnection={isValidConnection}
           colorMode="dark" fitView deleteKeyCode={["Backspace", "Delete"]}
         >

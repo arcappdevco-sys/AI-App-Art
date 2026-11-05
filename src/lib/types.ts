@@ -1,12 +1,17 @@
-export type PortType = "text" | "image" | "video" | "number" | "any";
+export type PortType = "text" | "image" | "video" | "audio" | "number" | "any";
 export type NodeStatus = "idle" | "queued" | "running" | "done" | "error";
 
 export interface ParamDef {
   key: string;
   label: string;
-  kind: "text" | "textarea" | "number" | "file" | "select";
+  kind: "text" | "textarea" | "number" | "file" | "select" | "toggle";
   options?: string[];
   optionsByParam?: { param: string; values: Record<string, string[]> };
+  optionGroups?: { label: string; options: string[] }[];
+  optionLabels?: Record<string, string>;
+  visibleWhen?: { param: string; value: string | boolean };
+  disabledWhen?: { param: string; value: string | boolean };
+  helperText?: string;
   default?: any;
 }
 
@@ -25,6 +30,7 @@ export interface NodeDef {
   autoPrompt?: boolean;
   inputs: Record<string, PortType>;
   conditionalInputs?: Record<string, { param: string; value: string }>;
+  disabledInputs?: Record<string, string>;
   outputs: Record<string, PortType>;
   params: ParamDef[];
   execute: (ctx: ExecCtx) => Promise<Record<string, any>>;

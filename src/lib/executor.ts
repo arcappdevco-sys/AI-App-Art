@@ -47,7 +47,12 @@ export async function runGraph(graph: Graph, o: RunOpts) {
       try {
         for (const e of graph.edges.filter((e) => e.target === id)) {
           const up = await visit(e.source);
-          inputs[e.targetHandle] = up[e.sourceHandle];
+          if (node.type === "video/seedance" && e.targetHandle === "reference_images") {
+            const references = (inputs.reference_images ??= []);
+            references.push(up[e.sourceHandle]);
+          } else {
+            inputs[e.targetHandle] = up[e.sourceHandle];
+          }
         }
       } catch (err) {
         o.onStatus(id, "idle", "Skipped: an upstream node failed");

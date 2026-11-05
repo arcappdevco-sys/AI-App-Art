@@ -616,6 +616,51 @@ body {
   font-size: 9px;
 }
 
+.ff-param.ff-param-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ff-param.ff-param-toggle > span {
+  margin: 0;
+}
+
+.ff-toggle {
+  accent-color: #b3d46a;
+}
+
+.ff-param-help,
+.ff-node-hint,
+.ff-node-warning,
+.ff-node-cost {
+  display: block;
+  margin: 5px 10px 0;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-param-help,
+.ff-node-hint {
+  color: #84938e;
+}
+
+.ff-node-warning {
+  padding: 6px 7px;
+  border: 1px solid #6c5133;
+  border-radius: 5px;
+  background: #2a241b;
+  color: #e5bf7c;
+}
+
+.ff-node-cost {
+  margin: 9px 10px 10px;
+  padding-top: 7px;
+  border-top: 1px solid #293432;
+  color: #b9c9b3;
+}
+
 .ff-media {
   display: block;
   width: calc(100% - 20px);

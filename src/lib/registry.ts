@@ -1,6 +1,8 @@
 "use client";
 import { fal } from "@fal-ai/client";
 import type { NodeDef, PortType } from "./types";
+import { SEEDANCE_MODELS, buildSeedanceRequest } from "./seedance";
+import { VEO_MODELS, buildVeoRequest } from "./veo";
 
 fal.config({ proxyUrl: "/api/fal/proxy" });
 
@@ -28,6 +30,7 @@ export const PORT_COLORS: Record<PortType, string> = {
   text: "#e2b04a",
   image: "#4fb3a9",
   video: "#9a86e0",
+  audio: "#d68ac7",
   number: "#6aa6e8",
   any: "#8b97a3",
 };
@@ -224,7 +227,152 @@ function videoPlaceholder(type: string, label: string, models: string[] = []): N
   };
 }
 
-const seedanceVideo = videoPlaceholder("video/seedance", "Seedance");
+const seedanceVideo: NodeDef = {
+  ...videoPlaceholder("video/seedance", "Seedance"),
+  inputs: {
+    prompt: "text",
+    image: "image",
+    last_image: "image",
+    reference_images: "image",
+    reference_videos: "video",
+    reference_audios: "audio",
+  },
+  conditionalInputs: {
+    image: { param: "task", value: "image-to-video" },
+    last_image: { param: "task", value: "image-to-video" },
+    reference_images: { param: "task", value: "reference-to-video" },
+    reference_videos: { param: "task", value: "reference-to-video" },
+    reference_audios: { param: "task", value: "reference-to-video" },
+  },
+  disabledInputs: {
+    reference_audios: "Audio connections are coming soon.",
+  },
+  params: [
+    {
+      key: "model",
+      label: "Model",
+      kind: "select",
+      options: Object.values(SEEDANCE_MODELS),
+      optionLabels: Object.fromEntries(Object.entries(SEEDANCE_MODELS).map(([label, value]) => [value, label])),
+      default: SEEDANCE_MODELS["Seedance 2.5"],
+    },
+    {
+      key: "task",
+      label: "Task",
+      kind: "select",
+      options: ["text-to-video", "image-to-video", "reference-to-video"],
+      optionLabels: {
+        "text-to-video": "Text to video",
+        "image-to-video": "Image to video",
+        "reference-to-video": "Ingredients to video",
+      },
+      default: "text-to-video",
+    },
+    {
+      key: "duration",
+      label: "Duration",
+      kind: "select",
+      options: ["-1", ...Array.from({ length: 27 }, (_, index) => String(index + 4))],
+      optionLabels: Object.fromEntries([
+        ["-1", "Auto"],
+        ...Array.from({ length: 27 }, (_, index) => {
+          const seconds = String(index + 4);
+          return [seconds, `${seconds} seconds`];
+        }),
+      ]),
+      optionsByParam: {
+        param: "model",
+        values: {
+          [SEEDANCE_MODELS["Seedance 2.5"]]: ["-1", ...Array.from({ length: 27 }, (_, index) => String(index + 4))],
+          [SEEDANCE_MODELS["Seedance 2.0"]]: ["-1", ...Array.from({ length: 12 }, (_, index) => String(index + 4))],
+          [SEEDANCE_MODELS["Seedance 2.0 Fast"]]: ["-1", ...Array.from({ length: 12 }, (_, index) => String(index + 4))],
+          [SEEDANCE_MODELS["Seedance 2.0 Mini"]]: ["-1", ...Array.from({ length: 12 }, (_, index) => String(index + 4))],
+        },
+      },
+      default: "5",
+      disabledWhen: { param: "omni_reference_task_type", value: "edit" },
+    },
+    {
+      key: "ratio",
+      label: "Aspect ratio",
+      kind: "select",
+      options: ["adaptive", "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+      optionLabels: { adaptive: "Adaptive" },
+      default: "adaptive",
+    },
+    {
+      key: "resolution",
+      label: "Resolution",
+      kind: "select",
+      options: ["480p", "720p", "1080p", "720p-sr", "720p-esr", "1080p-sr", "1080p-esr", "1080p-esr-60fps", "1440p-sr", "1440p-esr", "4k-esr"],
+      optionLabels: { "1080p-esr-60fps": "1080p-esr & 60fps" },
+      optionGroups: [
+        { label: "Native", options: ["480p", "720p", "1080p"] },
+        { label: "Enhanced (upscaled, costs more)", options: ["720p-sr", "720p-esr", "1080p-sr", "1080p-esr", "1080p-esr-60fps", "1440p-sr", "1440p-esr", "4k-esr"] },
+      ],
+      optionsByParam: {
+        param: "model",
+        values: {
+          [SEEDANCE_MODELS["Seedance 2.5"]]: ["480p", "720p", "1080p", "720p-sr", "720p-esr", "1080p-sr", "1080p-esr", "1080p-esr-60fps", "1440p-sr", "1440p-esr", "4k-esr"],
+          [SEEDANCE_MODELS["Seedance 2.0"]]: ["480p", "720p"],
+          [SEEDANCE_MODELS["Seedance 2.0 Fast"]]: ["480p", "720p"],
+          [SEEDANCE_MODELS["Seedance 2.0 Mini"]]: ["480p", "720p"],
+        },
+      },
+      default: "720p",
+      disabledWhen: { param: "draft", value: true },
+      helperText: "4k-esr is enhanced from 1080p, not native 4K.",
+    },
+    { key: "generate_audio", label: "Generate audio", kind: "toggle", default: true },
+    { key: "watermark", label: "Watermark", kind: "toggle", default: false },
+    { key: "return_last_frame", label: "Return last frame", kind: "toggle", default: false },
+    {
+      key: "omni_reference_task_type",
+      label: "Reference task",
+      kind: "select",
+      options: ["auto", "reference", "edit", "extend"],
+      optionLabels: { auto: "Auto", reference: "Reference", edit: "Edit", extend: "Extend" },
+      default: "auto",
+      visibleWhen: { param: "task", value: "reference-to-video" },
+    },
+    {
+      key: "draft",
+      label: "Draft preview",
+      kind: "toggle",
+      default: false,
+      visibleWhen: { param: "model", value: SEEDANCE_MODELS["Seedance 2.5"] },
+      helperText: "Draft: renders at 480p, can be finished at 1080p later",
+    },
+    {
+      key: "output_format",
+      label: "Output format",
+      kind: "select",
+      options: ["mp4", "mov"],
+      default: "mp4",
+      visibleWhen: { param: "model", value: SEEDANCE_MODELS["Seedance 2.5"] },
+    },
+    {
+      key: "bitrate_mode",
+      label: "Bitrate mode",
+      kind: "select",
+      options: ["standard", "high"],
+      optionLabels: { standard: "Standard", high: "High" },
+      default: "standard",
+    },
+    {
+      key: "variations",
+      label: "Variations",
+      kind: "select",
+      options: ["1", "2", "3", "4"],
+      default: "1",
+      helperText: "Each variation is a separate paid generation.",
+    },
+  ],
+  execute: async ({ inputs, params }) => {
+    buildSeedanceRequest({ params }, inputs);
+    throw new Error("Seedance generation is a UI placeholder until API setup is complete.");
+  },
+};
 const klingVideo = videoPlaceholder("video/kling", "Kling");
 const veoVideo: NodeDef = {
   ...videoPlaceholder("video/veo", "Veo"),
@@ -237,33 +385,48 @@ const veoVideo: NodeDef = {
     ingredient_3: "image",
   },
   conditionalInputs: {
-    first_frame: { param: "task", value: "Image to video" },
-    last_frame: { param: "task", value: "Image to video" },
-    ingredient_1: { param: "task", value: "Ingredients to video" },
-    ingredient_2: { param: "task", value: "Ingredients to video" },
-    ingredient_3: { param: "task", value: "Ingredients to video" },
+    first_frame: { param: "task", value: "image-to-video" },
+    last_frame: { param: "task", value: "image-to-video" },
+    ingredient_1: { param: "task", value: "reference-to-video" },
+    ingredient_2: { param: "task", value: "reference-to-video" },
+    ingredient_3: { param: "task", value: "reference-to-video" },
   },
   params: [
     {
       key: "model",
       label: "Model",
       kind: "select",
-      options: ["Veo 3.1", "Veo 3.1 Fast", "Veo 3.1 Lite (Preview · retired)"],
-      default: "Veo 3.1",
+      options: Object.values(VEO_MODELS),
+      optionLabels: Object.fromEntries(Object.entries(VEO_MODELS).map(([label, value]) => [value, label])),
+      default: VEO_MODELS["Veo 3.1"],
     },
     {
       key: "task",
       label: "Task",
       kind: "select",
-      options: ["Text to video", "Image to video", "Ingredients to video"],
-      default: "Text to video",
+      options: ["text-to-video", "image-to-video", "reference-to-video"],
+      optionLabels: {
+        "text-to-video": "Text to video",
+        "image-to-video": "Image to video",
+        "reference-to-video": "Ingredients to video",
+      },
+      optionsByParam: {
+        param: "model",
+        values: {
+          [VEO_MODELS["Veo 3.1"]]: ["text-to-video", "image-to-video", "reference-to-video"],
+          [VEO_MODELS["Veo 3.1 Fast"]]: ["text-to-video", "image-to-video"],
+          [VEO_MODELS["Veo 3.1 Lite"]]: ["text-to-video", "image-to-video"],
+        },
+      },
+      default: "text-to-video",
     },
     {
       key: "duration",
       label: "Duration",
       kind: "select",
-      options: ["4 seconds", "6 seconds", "8 seconds"],
-      default: "8 seconds",
+      options: ["4", "6", "8"],
+      optionLabels: { "4": "4 seconds", "6": "6 seconds", "8": "8 seconds" },
+      default: "8",
     },
     {
       key: "aspect_ratio",
@@ -280,9 +443,9 @@ const veoVideo: NodeDef = {
       optionsByParam: {
         param: "model",
         values: {
-          "Veo 3.1": ["720p", "1080p", "4K"],
-          "Veo 3.1 Fast": ["720p", "1080p"],
-          "Veo 3.1 Lite (Preview · retired)": ["720p", "1080p"],
+          [VEO_MODELS["Veo 3.1"]]: ["720p", "1080p", "4K"],
+          [VEO_MODELS["Veo 3.1 Fast"]]: ["720p", "1080p", "4K"],
+          [VEO_MODELS["Veo 3.1 Lite"]]: ["720p", "1080p"],
         },
       },
       default: "1080p",
@@ -293,7 +456,24 @@ const veoVideo: NodeDef = {
       kind: "number",
       default: "",
     },
+    {
+      key: "count",
+      label: "Count",
+      kind: "select",
+      options: ["1", "2", "3", "4"],
+      default: "1",
+    },
+    {
+      key: "generate_audio",
+      label: "Generate audio",
+      kind: "toggle",
+      default: true,
+    },
   ],
+  execute: async ({ inputs, params }) => {
+    buildVeoRequest({ params }, inputs);
+    throw new Error("Veo generation is a UI placeholder until API setup is complete.");
+  },
 };
 const googleOmniVideo = videoPlaceholder("video/google-omni", "Google Omni");
 
