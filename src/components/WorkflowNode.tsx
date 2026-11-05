@@ -1,5 +1,5 @@
 "use client";
-import { Fragment } from "react";
+import { createContext, Fragment, useContext } from "react";
 import { Handle, Position, useEdges, useReactFlow, type NodeProps } from "@xyflow/react";
 import { fal } from "@fal-ai/client";
 import { registry, PORT_COLORS } from "@/lib/registry";
@@ -7,6 +7,11 @@ import { SEEDANCE_MODELS, SEEDANCE_RATES } from "@/lib/seedance";
 import { VEO_MODELS, VEO_RATES } from "@/lib/veo";
 import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_RATES, OMNI_TASKS } from "@/lib/omni";
 import { KLING_DEFAULTS, KLING_MODELS, KLING_RATES, KLING_TASKS } from "@/lib/kling";
+
+export const WorkflowRunContext = createContext<{
+  runNode: (nodeId: string) => void;
+  isRunning: boolean;
+} | null>(null);
 
 function Media({ value }: { value: unknown }) {
   if (typeof value !== "string" || !value) return null;
@@ -30,6 +35,7 @@ function Media({ value }: { value: unknown }) {
 
 export default function WorkflowNode({ id, data }: NodeProps) {
   const { addEdges, addNodes, deleteElements, getEdges, getNode, getNodes, updateNodeData } = useReactFlow();
+  const runControl = useContext(WorkflowRunContext);
   const renderedEdges = useEdges();
   const d = data as any;
   const def = registry[d.type];
@@ -697,11 +703,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         ? KLING_TASKS["Text to video"]
         : currentTask;
       const currentDuration = String(d.params.duration);
-      if (nextIsV3 && !["5", "10"].includes(currentDuration)) setParam("duration", "5");
+      if (nextIsV3 && (Number(currentDuration) < 3 || Number(currentDuration) > 15)) setParam("duration", "5");
       setParam("resolution", "1080p");
       setParam("sound", false);
-      setParam("cfg_scale", 0.5);
-      setParam("negative_prompt", "");
       if (nextIsV3 && (String(d.params.aspect_ratio) === "21:9" || String(d.params.aspect_ratio) === "Auto")) {
         setParam("aspect_ratio", "16:9");
       }
@@ -1054,7 +1058,27 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     <div className="ff-node" data-status={d.status}>
       <div className="ff-head">
         <span className="ff-node-label">{d.title ?? def.label}</span>
+        {d.status && d.status !== "idle" && (
+          <span className="ff-node-status" aria-live="polite">
+            {d.status === "running" ? "Running" : d.status === "queued" ? "Queued" : d.status === "done" ? "Done" : d.status === "error" ? "Error" : ""}
+          </span>
+        )}
         <i className="ff-dot" />
+        {def.category !== "Input" && runControl && (
+          <button
+            className="ff-node-run"
+            type="button"
+            aria-label={`Run ${d.title ?? def.label}`}
+            title="Run this node and the nodes connected upstream"
+            disabled={runControl.isRunning}
+            onClick={(event) => {
+              event.stopPropagation();
+              runControl.runNode(id);
+            }}
+          >
+            Run
+          </button>
+        )}
       </div>
       {def.integration === "pending" && (
         <div className="ff-node-notice">API setup required before this model can run.</div>
@@ -1067,7 +1091,10 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         </div>
       )}
       {seedanceImageToVideo && (
-        <div className="ff-node-hint">Output aspect ratio follows the first-frame image on Atlas Cloud.</div>
+        <div className="ff-node-hint">
+          Connect any image output directly to First frame or Last frame; Run executes upstream nodes first.
+          Output aspect ratio follows the first-frame image on Atlas Cloud.
+        </div>
       )}
 
       {Object.entries(def.inputs)
@@ -1327,11 +1354,10 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           Add reference image ({klingReferenceImageEdges.length}/10)
         </button>
       )}
-      {isKling && <div className="ff-kling-note">Audio is generated natively. There is no audio control.</div>}
-      {isKling && klingIsV3 && <div className="ff-kling-note">V3.0 controls are unverified on Atlas.</div>}
-      {isKling && klingIsV3 && <div className="ff-kling-note">Resolution is fixed by the selected V3.0 tier (unverified on Atlas).</div>}
+      {isKling && !klingIsV3 && <div className="ff-kling-note">Audio is generated natively. There is no audio control.</div>}
+      {isKling && klingIsV3 && <div className="ff-kling-note">Resolution is fixed by the selected V3.0 tier.</div>}
       {isKling && klingIsV3 && klingIsImageTask && (
-        <div className="ff-kling-note">V3.0 Last frame is passed as end_image (unverified on Atlas).</div>
+        <div className="ff-kling-note">The last frame is passed as end_image for V3.0.</div>
       )}
 
       {isOmni && omniTask === OMNI_TASKS["Ingredients to video"] && (
@@ -1435,7 +1461,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           && [OMNI_TASKS["Edit video"], OMNI_TASKS["Extend video"]].includes(omniTask as never)) return false;
         if (isKling && param.key === "aspect_ratio" && !klingAspectVisible) return false;
         if (isKling && param.key === "resolution" && klingIsV3) return false;
-        if (isKling && ["sound", "cfg_scale", "negative_prompt"].includes(param.key) && !klingIsV3) return false;
+        if (isKling && param.key === "sound" && !klingIsV3) return false;
         return true;
       }).map((p) => (
         <label className={`ff-param${p.kind === "toggle" ? " ff-param-toggle" : ""}`} key={p.key}>
@@ -1445,9 +1471,6 @@ export default function WorkflowNode({ id, data }: NodeProps) {
               : p.key === "duration" && isKling && klingIsEdit
                 ? "Output length (seconds)"
                 : d.paramLabels?.[p.key] ?? p.label}
-            {isKling && klingIsV3 && ["duration", "aspect_ratio", "sound", "cfg_scale", "negative_prompt"].includes(p.key)
-              ? " (unverified on Atlas)"
-              : ""}
           </span>
           {p.kind === "toggle" ? (
             <input className="ff-toggle nodrag" type="checkbox" checked={Boolean(d.params[p.key])}

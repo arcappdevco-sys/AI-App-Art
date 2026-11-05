@@ -24,8 +24,6 @@ export const KLING_DEFAULTS: Record<string, unknown> = {
   aspect_ratio: "16:9",
   resolution: "1080p",
   sound: false,
-  cfg_scale: 0.5,
-  negative_prompt: "",
   elements: [],
   voice_ids: [],
 };
@@ -67,7 +65,9 @@ export function normalizeKlingParams(params: Record<string, unknown> = {}) {
   normalized.model = model;
   normalized.task = task;
   normalized.duration = klingV3Models.has(model)
-    ? ["5", "10"].includes(String(params.duration)) ? String(params.duration) : "5"
+    ? Number.isInteger(Number(params.duration)) && Number(params.duration) >= 3 && Number(params.duration) <= 15
+      ? String(params.duration)
+      : "5"
     : Number.isInteger(Number(params.duration)) && Number(params.duration) >= 3 && Number(params.duration) <= 30
       ? String(params.duration)
       : KLING_DEFAULTS.duration;
@@ -83,9 +83,6 @@ export function normalizeKlingParams(params: Record<string, unknown> = {}) {
     ? params.resolution
     : KLING_DEFAULTS.resolution;
   normalized.sound = params.sound === true;
-  const cfg = Number(params.cfg_scale);
-  normalized.cfg_scale = Number.isFinite(cfg) ? Math.min(1, Math.max(0, cfg)) : 0.5;
-  normalized.negative_prompt = typeof params.negative_prompt === "string" ? params.negative_prompt : "";
   normalized.elements = Array.isArray(params.elements) ? params.elements.slice(0, 7) : [];
   normalized.voice_ids = Array.isArray(params.voice_ids)
     ? params.voice_ids.filter((voice): voice is string => typeof voice === "string").slice(0, 3)
@@ -194,8 +191,9 @@ function klingValidateSubject(subject: unknown, index: number, metadata: unknown
     const id = String(item.id ?? "");
     const normalizedId = id.replace(/^0+(?=\d)/, "");
     if (!/^\d+$/.test(id) || normalizedId.length > 20
-      || normalizedId.length === 20 && normalizedId > "18446744073709551615") {
-      throw new Error(`Subject ${index + 1} ID must be an unsigned 64-bit integer.`);
+      || normalizedId.length === 20 && normalizedId > "18446744073709551615"
+      || Number(normalizedId) > Number.MAX_SAFE_INTEGER) {
+      throw new Error(`Subject ${index + 1} ID must be a safely representable integer.`);
     }
     if (item.name) throw new Error(`Existing subject ${index + 1} cannot also have a name.`);
     return;
@@ -237,9 +235,9 @@ export function buildKlingRequest(node: KlingNodeLike, connectedInputs: KlingCon
   }
   const rawDuration = Number(node.params.duration ?? KLING_DEFAULTS.duration);
   if (!Number.isInteger(rawDuration)
-    || (klingV3Models.has(rawModel) ? ![5, 10].includes(rawDuration) : rawDuration < 3 || rawDuration > 30)) {
+    || (klingV3Models.has(rawModel) ? rawDuration < 3 || rawDuration > 15 : rawDuration < 3 || rawDuration > 30)) {
     throw new Error(klingV3Models.has(rawModel)
-      ? "V3.0 duration must be 5 or 10 seconds."
+      ? "V3.0 duration must be between 3 and 15 seconds."
       : "Duration must be a whole number from 3 to 30 seconds.");
   }
   if (rawTask !== KLING_TASKS["Image to video"] && rawTask !== KLING_TASKS["Edit video"]) {
@@ -255,10 +253,6 @@ export function buildKlingRequest(node: KlingNodeLike, connectedInputs: KlingCon
   if (!klingV3Models.has(rawModel)
     && !["720p", "1080p", "1080p-esr", "2k-esr", "4k-esr"].includes(String(node.params.resolution ?? KLING_DEFAULTS.resolution))) {
     throw new Error("Choose a supported Kling 4.0 resolution.");
-  }
-  const rawCfgScale = Number(node.params.cfg_scale ?? KLING_DEFAULTS.cfg_scale);
-  if (!Number.isFinite(rawCfgScale) || rawCfgScale < 0 || rawCfgScale > 1) {
-    throw new Error("CFG scale must be between 0 and 1.");
   }
   const rawElements = Array.isArray(node.params.elements) ? node.params.elements : [];
   const rawVoices = Array.isArray(node.params.voice_ids) ? node.params.voice_ids : [];
@@ -290,12 +284,12 @@ export function buildKlingRequest(node: KlingNodeLike, connectedInputs: KlingCon
   if (task !== KLING_TASKS["Image to video"] && !prompt.trim()) {
     throw new Error("Connect a prompt for this task.");
   }
-  const promptLimit = /[^\u0000-\u007f]/.test(prompt) ? 11000 : 26000;
+  const promptLimit = isV3 ? 2500 : /[^\u0000-\u007f]/.test(prompt) ? 11000 : 26000;
   if (prompt.length > promptLimit) {
     throw new Error(`Prompt must be ${promptLimit.toLocaleString()} characters or fewer.`);
   }
-  if (!Number.isInteger(duration) || (isV3 ? ![5, 10].includes(duration) : duration < 3 || duration > 30)) {
-    throw new Error(isV3 ? "V3.0 duration must be 5 or 10 seconds." : "Duration must be a whole number from 3 to 30 seconds.");
+  if (!Number.isInteger(duration) || (isV3 ? duration < 3 || duration > 15 : duration < 3 || duration > 30)) {
+    throw new Error(isV3 ? "V3.0 duration must be between 3 and 15 seconds." : "Duration must be a whole number from 3 to 30 seconds.");
   }
   if (isV3 && middleImages.length > 0) throw new Error("V3.0 does not support middle keyframes.");
   if (elements.length > 7) throw new Error("Up to 7 subjects are supported.");
@@ -411,11 +405,8 @@ export function buildKlingRequest(node: KlingNodeLike, connectedInputs: KlingCon
     body.aspect_ratio = ratio;
   }
   if (!isV3) body.resolution = resolution;
-  if (isV3) {
-    body.sound = params.sound === true;
-    body.cfg_scale = Number(params.cfg_scale);
-    body.negative_prompt = String(params.negative_prompt ?? "");
-  }
+  body.model = `${model}/${task}`;
+  if (isV3) body.sound = params.sound === true;
   if (isImageTask) {
     body.image = firstFrame;
     if (middleImages.length) body.middle_images = middleImages;
@@ -432,7 +423,27 @@ export function buildKlingRequest(node: KlingNodeLike, connectedInputs: KlingCon
       body.video = sourceVideo;
     }
     if (referenceVideos.length) body.reference_videos = referenceVideos;
-    if (elements.length) body.elements = elements;
+    if (elements.length) {
+      body.elements = elements.map((subject) => {
+        const item = subject as Record<string, unknown>;
+        if (item.kind === "existing") return { element_id: Number(item.id) };
+        if (item.type === "video") {
+          return {
+            element_name: item.name,
+            element_description: item.description,
+            reference_type: "video_refer",
+            refer_videos: [item.reference_video],
+          };
+        }
+        return {
+          element_name: item.name,
+          element_description: item.description,
+          reference_type: "image_refer",
+          frontal_image: item.frontal_image,
+          refer_images: item.extra_images,
+        };
+      });
+    }
     if (voiceIds.length) body.voice_ids = voiceIds;
   }
   return { model: `${model}/${task}`, task, body };

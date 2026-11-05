@@ -13,7 +13,7 @@ import { normalizeVeoParams } from "@/lib/veo";
 import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "@/lib/omni";
 import { normalizeKlingParams, KLING_MODELS, KLING_TASKS } from "@/lib/kling";
 import type { Graph, NodeStatus } from "@/lib/types";
-import WorkflowNode from "@/components/WorkflowNode";
+import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 
 const nodeTypes = { workflow: WorkflowNode };
 const WORKFLOW_STORAGE_KEY = "fal-flow:workflow";
@@ -40,8 +40,10 @@ export default function Page() {
   const [storageReady, setStorageReady] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Loading saved workflow…");
   const [storageError, setStorageError] = useState("");
+  const [isRunning, setIsRunning] = useState(false);
   const cache = useRef(new Map());
   const abort = useRef<AbortController | null>(null);
+  const runInProgress = useRef(false);
   const lastSavedPayload = useRef("");
 
   useEffect(() => {
@@ -233,18 +235,38 @@ export default function Page() {
     (c: Connection) => {
       const target = nodes.find((node) => node.id === c.target);
       const targetType = (target?.data as { type?: string } | undefined)?.type;
+      const targetHandle = c.targetHandle ?? "";
+      const replacedSeedanceImageIds = targetType === "video/seedance"
+        && ["image", "last_image"].includes(targetHandle)
+        ? edges
+          .filter((edge) => edge.target === c.target && edge.targetHandle === targetHandle && edge.source !== c.source)
+          .map((edge) => nodes.find((node) => node.id === edge.source))
+          .filter((node) => {
+            const data = node?.data as { autoCreatedFor?: string; autoCreatedRole?: string } | undefined;
+            return data?.autoCreatedFor === c.target
+              && ["first_frame", "last_frame"].includes(data.autoCreatedRole ?? "");
+          })
+          .map((node) => node!.id)
+        : [];
+      const replacedSeedanceImageSet = new Set(replacedSeedanceImageIds);
+      if (replacedSeedanceImageSet.size > 0) {
+        setNodes((current) => current.filter((node) => !replacedSeedanceImageSet.has(node.id)));
+      }
       const allowsMultipleReferences = ["video/seedance", "video/google-omni"].includes(targetType ?? "")
         && c.targetHandle === "reference_images";
       const allowsMultipleKlingInputs = targetType === "video/kling"
         && ["reference_images", "middle_images"].includes(c.targetHandle ?? "");
-      setEdges((es) => addEdge(
-        c,
-        allowsMultipleReferences || allowsMultipleKlingInputs
-          ? es
-          : es.filter((e) => !(e.target === c.target && e.targetHandle === c.targetHandle))
-      ));
+      setEdges((current) => {
+        const withoutReplacedInputs = current.filter((edge) => !replacedSeedanceImageSet.has(edge.source));
+        return addEdge(
+          c,
+          allowsMultipleReferences || allowsMultipleKlingInputs
+            ? withoutReplacedInputs
+            : withoutReplacedInputs.filter((edge) => !(edge.target === c.target && edge.targetHandle === c.targetHandle))
+        );
+      });
     },
-    [nodes, setEdges]
+    [edges, nodes, setEdges, setNodes]
   );
 
   const patch = (id: string, data: object) =>
@@ -255,8 +277,10 @@ export default function Page() {
     return type ? registry[type]?.integration === "pending" : false;
   });
 
-  const run = async () => {
-    if (pendingIntegration) return;
+  const executeGraph = async (targetIds?: string[]) => {
+    if (runInProgress.current || (!targetIds && pendingIntegration)) return;
+    runInProgress.current = true;
+    setIsRunning(true);
     abort.current = new AbortController();
     const graph: Graph = {
       nodes: nodes.map((n) => {
@@ -270,6 +294,7 @@ export default function Page() {
     try {
       await runGraph(graph, {
         cache: cache.current,
+        ...(targetIds ? { targetIds } : {}),
         signal: abort.current.signal,
         onStatus: (id, status: NodeStatus, info) =>
           patch(id, info === undefined ? { status } : { status, log: info }),
@@ -277,8 +302,14 @@ export default function Page() {
       });
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      abort.current = null;
+      runInProgress.current = false;
+      setIsRunning(false);
     }
   };
+  const run = () => { void executeGraph(); };
+  const runNode = (nodeId: string) => { void executeGraph([nodeId]); };
 
   const exportJSON = () => {
     const blob = new Blob([JSON.stringify({ name: workflowName.trim() || "Untitled workflow", nodes, edges }, null, 2)], { type: "application/json" });
@@ -362,14 +393,14 @@ export default function Page() {
             Open
             <input type="file" accept="application/json" hidden onChange={(e) => load(e.target.files?.[0])} />
           </label>
-          <button className="ff-toolbar-button" onClick={() => abort.current?.abort()}>Stop</button>
+          <button className="ff-toolbar-button" onClick={() => abort.current?.abort()} disabled={!isRunning}>Stop</button>
           <button
             className="ff-run"
             onClick={run}
-            disabled={pendingIntegration}
+            disabled={pendingIntegration || isRunning}
             title={pendingIntegration ? "Complete API setup before running this workflow" : undefined}
           >
-            Run workflow <span aria-hidden="true">↗</span>
+            {isRunning ? "Running workflow…" : "Run workflow"} <span aria-hidden="true">↗</span>
           </button>
         </div>
       </header>
@@ -468,6 +499,7 @@ export default function Page() {
       </aside>
 
       <main className="ff-canvas">
+        <WorkflowRunContext.Provider value={{ runNode, isRunning }}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
@@ -525,6 +557,7 @@ export default function Page() {
             </div>
           )}
         </ReactFlow>
+        </WorkflowRunContext.Provider>
       </main>
     </div>
   );

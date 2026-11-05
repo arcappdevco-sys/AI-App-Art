@@ -28,8 +28,14 @@ async function callFal(endpoint: string, input: Record<string, unknown>, log: (m
   }
 }
 
-async function callAtlasSeedance(input: Record<string, unknown>, log: (message: string) => void, signal?: AbortSignal) {
-  const submitResponse = await fetch("/api/atlas/seedance", {
+async function callAtlasVideo(
+  route: string,
+  modelName: string,
+  input: Record<string, unknown>,
+  log: (message: string) => void,
+  signal?: AbortSignal,
+) {
+  const submitResponse = await fetch(route, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -37,7 +43,7 @@ async function callAtlasSeedance(input: Record<string, unknown>, log: (message: 
   });
   const submitData = await submitResponse.json() as { predictionId?: unknown; error?: unknown };
   if (!submitResponse.ok || typeof submitData.predictionId !== "string") {
-    throw new Error(typeof submitData.error === "string" ? submitData.error : "Atlas Cloud could not start the Seedance generation.");
+    throw new Error(typeof submitData.error === "string" ? submitData.error : `Atlas Cloud could not start the ${modelName} generation.`);
   }
 
   const predictionId = submitData.predictionId;
@@ -60,13 +66,13 @@ async function callAtlasSeedance(input: Record<string, unknown>, log: (message: 
       }
     });
 
-    const statusResponse = await fetch(`/api/atlas/seedance?prediction_id=${encodeURIComponent(predictionId)}`, { signal });
+    const statusResponse = await fetch(`${route}?prediction_id=${encodeURIComponent(predictionId)}`, { signal });
     const statusPayload = await statusResponse.json() as {
       data?: Record<string, unknown>;
       error?: unknown;
     };
     if (!statusResponse.ok || !statusPayload.data) {
-      throw new Error(typeof statusPayload.error === "string" ? statusPayload.error : "Atlas Cloud could not check the Seedance generation.");
+      throw new Error(typeof statusPayload.error === "string" ? statusPayload.error : `Atlas Cloud could not check the ${modelName} generation.`);
     }
 
     const status = String(statusPayload.data.status ?? "").toLowerCase();
@@ -102,12 +108,12 @@ async function callAtlasSeedance(input: Record<string, unknown>, log: (message: 
         ? error
         : typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
           ? error.message
-          : "Atlas Cloud Seedance generation failed.";
+          : `Atlas Cloud ${modelName} generation failed.`;
       throw new Error(message);
     }
     log(`Atlas Cloud generation status: ${status || "processing"}`);
   }
-  throw new Error("Atlas Cloud Seedance generation timed out after 10 minutes.");
+  throw new Error(`Atlas Cloud ${modelName} generation timed out after 10 minutes.`);
 }
 
 export const PORT_COLORS: Record<PortType, string> = {
@@ -465,7 +471,7 @@ const seedanceVideo: NodeDef = {
     const outputs: Record<string, string> = {};
     for (let index = 0; index < variations; index++) {
       log(`Generating variation ${index + 1} of ${variations}`);
-      const videoUrl = await callAtlasSeedance(request.body, log, signal);
+      const videoUrl = await callAtlasVideo("/api/atlas/seedance", "Seedance", request.body, log, signal);
       outputs[index === 0 ? "video" : `variation_${index + 1}`] = videoUrl;
     }
     return outputs;
@@ -522,8 +528,8 @@ const klingVideo: NodeDef = {
         param: "model",
         values: {
           [KLING_MODELS["Kling 4.0"]]: Array.from({ length: 28 }, (_, index) => String(index + 3)),
-          [KLING_MODELS["Kling V3.0 Pro"]]: ["5", "10"],
-          [KLING_MODELS["Kling V3.0 Std"]]: ["5", "10"],
+          [KLING_MODELS["Kling V3.0 Pro"]]: Array.from({ length: 13 }, (_, index) => String(index + 3)),
+          [KLING_MODELS["Kling V3.0 Std"]]: Array.from({ length: 13 }, (_, index) => String(index + 3)),
         },
       },
       default: KLING_DEFAULTS.duration as string,
@@ -547,13 +553,11 @@ const klingVideo: NodeDef = {
       default: KLING_DEFAULTS.resolution as string,
     },
     { key: "sound", label: "Generate sound", kind: "toggle", default: KLING_DEFAULTS.sound },
-    { key: "cfg_scale", label: "CFG scale", kind: "number", default: KLING_DEFAULTS.cfg_scale,
-      helperText: "Higher follows the prompt more strictly; lower gives more natural motion." },
-    { key: "negative_prompt", label: "Negative prompt", kind: "textarea", default: "" },
   ],
-  execute: async ({ inputs, params }) => {
-    buildKlingRequest({ params }, inputs);
-    throw new Error("Kling generation is a UI placeholder until API setup is complete.");
+  execute: async ({ inputs, params, log, signal }) => {
+    const request = buildKlingRequest({ params }, inputs);
+    log(`Submitting ${request.model} to Atlas Cloud.`);
+    return { video: await callAtlasVideo("/api/atlas/kling", "Kling", request.body, log, signal) };
   },
 };
 const veoVideo: NodeDef = {

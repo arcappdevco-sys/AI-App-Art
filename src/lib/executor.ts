@@ -6,6 +6,7 @@ type Outputs = Record<string, any>;
 export interface RunOpts {
   /** Persist this Map between runs: unchanged nodes are skipped (saves fal credits). */
   cache: Map<string, { key: string; outputs: Outputs }>;
+  targetIds?: string[];
   signal?: AbortSignal;
   onStatus: (id: string, status: NodeStatus, info?: string) => void;
   onOutput: (id: string, outputs: Outputs) => void;
@@ -29,11 +30,27 @@ export function hasCycle(graph: Graph): boolean {
 }
 
 export async function runGraph(graph: Graph, o: RunOpts) {
-  if (hasCycle(graph)) throw new Error("This graph has a loop. Remove the cycle and run again.");
+  const targets = o.targetIds ?? graph.nodes.map((node) => node.id);
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const incoming = new Map<string, string[]>();
+  graph.edges.forEach((edge) => incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source]));
+  const inScope = new Set<string>();
+  const includeUpstream = (id: string) => {
+    if (!byId.has(id)) throw new Error(`Cannot run unknown node: ${id}`);
+    if (inScope.has(id)) return;
+    inScope.add(id);
+    (incoming.get(id) ?? []).forEach(includeUpstream);
+  };
+  targets.forEach(includeUpstream);
 
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const scopedGraph: Graph = {
+    nodes: graph.nodes.filter((node) => inScope.has(node.id)),
+    edges: graph.edges.filter((edge) => inScope.has(edge.source) && inScope.has(edge.target)),
+  };
+  if (hasCycle(scopedGraph)) throw new Error("This graph has a loop. Remove the cycle and run again.");
+
   const memo = new Map<string, Promise<Outputs>>();
-  graph.nodes.forEach((n) => o.onStatus(n.id, "queued", ""));
+  scopedGraph.nodes.forEach((n) => o.onStatus(n.id, "queued", ""));
 
   // Each node awaits its upstream nodes, so independent branches run in parallel.
   const visit = (id: string): Promise<Outputs> => {
@@ -45,7 +62,7 @@ export async function runGraph(graph: Graph, o: RunOpts) {
 
       const inputs: Outputs = {};
       try {
-        for (const e of graph.edges.filter((e) => e.target === id)) {
+        for (const e of scopedGraph.edges.filter((e) => e.target === id)) {
           const up = await visit(e.source);
           if (["video/seedance", "video/google-omni", "video/kling"].includes(node.type)
             && e.targetHandle === "reference_images") {
@@ -94,5 +111,5 @@ export async function runGraph(graph: Graph, o: RunOpts) {
     return p;
   };
 
-  await Promise.allSettled(graph.nodes.map((n) => visit(n.id)));
+  await Promise.allSettled(targets.map((id) => visit(id)));
 }

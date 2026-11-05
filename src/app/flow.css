@@ -551,9 +551,52 @@ body {
 
 .ff-node-label {
   min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ff-node-status {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ff-node[data-status="running"] .ff-node-status {
+  color: var(--accent);
+}
+
+.ff-node[data-status="done"] .ff-node-status {
+  color: #4fb3a9;
+}
+
+.ff-node[data-status="error"] .ff-node-status {
+  color: #ef9b84;
+}
+
+.ff-node-run {
+  min-height: 23px;
+  padding: 0 7px;
+  border: 1px solid #3b4a45;
+  border-radius: 5px;
+  background: #202b28;
+  color: #dce8e2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.ff-node-run:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ff-node-run:disabled {
+  color: var(--muted);
+  cursor: wait;
 }
 
 .ff-dot {
