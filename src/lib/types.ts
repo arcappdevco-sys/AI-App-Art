@@ -6,6 +6,7 @@ export interface ParamDef {
   label: string;
   kind: "text" | "textarea" | "number" | "file" | "select";
   options?: string[];
+  optionsByParam?: { param: string; values: Record<string, string[]> };
   default?: any;
 }
 

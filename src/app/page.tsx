@@ -87,6 +87,12 @@ export default function Page() {
     }
   }, [edges, nodes]);
 
+  const clearCanvas = () => {
+    setNodes([]);
+    setEdges([]);
+    cache.current.clear();
+  };
+
   useEffect(() => {
     if (!storageReady) return;
     const timeout = window.setTimeout(saveWorkflowLocally, 300);
@@ -253,6 +259,7 @@ export default function Page() {
           </span>
         </div>
         <div className="ff-toolbar-actions">
+          <button className="ff-toolbar-button" onClick={clearCanvas}>Clear</button>
           <button className="ff-toolbar-button" onClick={saveWorkflowLocally}>Save</button>
           <button className="ff-toolbar-button" onClick={exportJSON}>Export</button>
           <label className="ff-toolbar-button ff-open">

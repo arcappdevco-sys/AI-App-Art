@@ -228,10 +228,20 @@ const seedanceVideo = videoPlaceholder("video/seedance", "Seedance");
 const klingVideo = videoPlaceholder("video/kling", "Kling");
 const veoVideo: NodeDef = {
   ...videoPlaceholder("video/veo", "Veo"),
-  inputs: { prompt: "text", first_frame: "image", last_frame: "image" },
+  inputs: {
+    prompt: "text",
+    first_frame: "image",
+    last_frame: "image",
+    ingredient_1: "image",
+    ingredient_2: "image",
+    ingredient_3: "image",
+  },
   conditionalInputs: {
     first_frame: { param: "task", value: "Image to video" },
     last_frame: { param: "task", value: "Image to video" },
+    ingredient_1: { param: "task", value: "Ingredients to video" },
+    ingredient_2: { param: "task", value: "Ingredients to video" },
+    ingredient_3: { param: "task", value: "Ingredients to video" },
   },
   params: [
     {
@@ -245,8 +255,43 @@ const veoVideo: NodeDef = {
       key: "task",
       label: "Task",
       kind: "select",
-      options: ["Text to video", "Image to video"],
+      options: ["Text to video", "Image to video", "Ingredients to video"],
       default: "Text to video",
+    },
+    {
+      key: "duration",
+      label: "Duration",
+      kind: "select",
+      options: ["4 seconds", "6 seconds", "8 seconds"],
+      default: "8 seconds",
+    },
+    {
+      key: "aspect_ratio",
+      label: "Aspect ratio",
+      kind: "select",
+      options: ["16:9", "9:16"],
+      default: "16:9",
+    },
+    {
+      key: "resolution",
+      label: "Resolution",
+      kind: "select",
+      options: ["720p", "1080p"],
+      optionsByParam: {
+        param: "model",
+        values: {
+          "Veo 3.1": ["720p", "1080p", "4K"],
+          "Veo 3.1 Fast": ["720p", "1080p"],
+          "Veo 3.1 Lite (Preview · retired)": ["720p", "1080p"],
+        },
+      },
+      default: "1080p",
+    },
+    {
+      key: "seed",
+      label: "Seed",
+      kind: "number",
+      default: "",
     },
   ],
 };

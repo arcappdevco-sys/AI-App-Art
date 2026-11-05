@@ -59,38 +59,73 @@ function Media({ value }: { value: unknown }) {
 }
 
 export default function WorkflowNode({ id, data }: NodeProps) {
-  const { addEdges, addNodes, getNode, getNodes, updateNodeData } = useReactFlow();
+  const { addEdges, addNodes, deleteElements, getNode, getNodes, updateNodeData } = useReactFlow();
   const d = data as any;
   const def = registry[d.type];
-  if (!def) return <div className="ff-node">Unknown node: {d.type}</div>;
 
   const setParam = (key: string, value: any) =>
     updateNodeData(id, (n: any) => ({ params: { ...n.data.params, [key]: value } }));
 
   const setSelectParam = (key: string, value: string) => {
     setParam(key, value);
-    if (d.type !== "video/veo" || key !== "task" || value !== "Image to video") return;
+    if (d.type === "video/veo" && key === "model") {
+      const resolutionParam = def.params.find((param) => param.key === "resolution");
+      const availableResolutions = resolutionParam?.optionsByParam?.values[value] ?? resolutionParam?.options ?? [];
+      if (!availableResolutions.includes(d.params.resolution)) {
+        setParam("resolution", availableResolutions.includes("1080p") ? "1080p" : availableResolutions[0]);
+      }
+    }
+    if (d.type !== "video/veo" || key !== "task") return;
+
+    const requestedInputs = value === "Image to video"
+      ? [
+          { role: "first_frame", label: "First frame", y: -100 },
+          { role: "last_frame", label: "Last frame", y: 180 },
+        ]
+      : value === "Ingredients to video"
+        ? [
+            { role: "ingredient_1", label: "Ingredient 1", y: -180 },
+            { role: "ingredient_2", label: "Ingredient 2", y: 0 },
+            { role: "ingredient_3", label: "Ingredient 3", y: 180 },
+          ]
+          : [];
 
     const node = getNode(id);
-    const existingFrames = getNodes().filter(
-      (candidate) => (candidate.data as { autoFrameFor?: string }).autoFrameFor === id
+    const existingInputs = getNodes().filter(
+      (candidate) => {
+        const nodeData = candidate.data as { autoInputFor?: string; autoFrameFor?: string };
+        return nodeData.autoInputFor === id || nodeData.autoFrameFor === id;
+      }
     );
+    const requestedRoles = new Set(requestedInputs.map(({ role }) => role));
+    const obsoleteInputs = existingInputs.filter((candidate) => {
+      const nodeData = candidate.data as { inputRole?: string; frameRole?: string };
+      return !requestedRoles.has(nodeData.inputRole ?? nodeData.frameRole ?? "");
+    });
+    if (obsoleteInputs.length > 0) {
+      void deleteElements({ nodes: obsoleteInputs.map(({ id: inputId }) => ({ id: inputId })) });
+    }
+
+    if (requestedInputs.length === 0) return;
+
     const existingRoles = new Set(
-      existingFrames.map((candidate) => (candidate.data as { frameRole?: string }).frameRole)
+      existingInputs.filter((candidate) => !obsoleteInputs.some((obsolete) => obsolete.id === candidate.id)).map((candidate) => {
+        const nodeData = candidate.data as { inputRole?: string; frameRole?: string };
+        return nodeData.inputRole ?? nodeData.frameRole;
+      })
     );
     const position = node?.position ?? { x: 400, y: 200 };
-    const frameNodes = (["first_frame", "last_frame"] as const)
-      .filter((role) => !existingRoles.has(role))
-      .map((role) => {
-        const label = role === "first_frame" ? "First frame" : "Last frame";
-        const frameId = `input/image-${crypto.randomUUID()}`;
+    const inputNodes = requestedInputs
+      .filter(({ role }) => !existingRoles.has(role))
+      .map(({ role, label, y }) => {
+        const inputId = `input/image-${crypto.randomUUID()}`;
         return {
           node: {
-            id: frameId,
+            id: inputId,
             type: "workflow",
             position: {
               x: position.x - 360,
-              y: position.y + (role === "first_frame" ? -100 : 180),
+              y: position.y + y,
             },
             data: {
               type: "input/image",
@@ -100,13 +135,13 @@ export default function WorkflowNode({ id, data }: NodeProps) {
               log: "",
               title: label,
               paramLabels: { url: `${label} image (upload or paste URL)` },
-              autoFrameFor: id,
-              frameRole: role,
+              autoInputFor: id,
+              inputRole: role,
             },
           },
           edge: {
-            id: `${frameId}-${id}-${role}`,
-            source: frameId,
+            id: `${inputId}-${id}-${role}`,
+            source: inputId,
             sourceHandle: "image",
             target: id,
             targetHandle: role,
@@ -114,10 +149,19 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         };
       });
 
-    if (frameNodes.length === 0) return;
-    addNodes(frameNodes.map(({ node: frame }) => frame));
-    addEdges(frameNodes.map(({ edge }) => edge));
+    if (inputNodes.length === 0) return;
+    addNodes(inputNodes.map(({ node: input }) => input));
+    const edgesToAdd = inputNodes.map(({ edge }) => edge);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const currentData = getNode(id)?.data as { params?: Record<string, unknown> } | undefined;
+        const currentTask = currentData?.params?.task;
+        if (currentTask === value) addEdges(edgesToAdd);
+      });
+    });
   };
+
+  if (!def) return <div className="ff-node">Unknown node: {d.type}</div>;
 
   const upload = async (key: string, file?: File) => {
     if (!file) return;
@@ -149,7 +193,13 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         <div className="ff-port ff-in" key={name}>
           <Handle type="target" position={Position.Left} id={name}
             style={{ background: PORT_COLORS[type] }} />
-          {name === "first_frame" ? "First frame" : name === "last_frame" ? "Last frame" : name}
+          {{
+            first_frame: "First frame",
+            last_frame: "Last frame",
+            ingredient_1: "Ingredient 1",
+            ingredient_2: "Ingredient 2",
+            ingredient_3: "Ingredient 3",
+          }[name] ?? name}
         </div>
       ))}
 
@@ -157,15 +207,25 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         <label className="ff-param" key={p.key}>
           <span>{d.paramLabels?.[p.key] ?? p.label}</span>
           {p.kind === "select" ? (
-            <select className="nodrag" value={d.params[p.key] ?? p.default ?? ""}
-              onChange={(e) => setSelectParam(p.key, e.target.value)}>
-              {p.options?.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
+            (() => {
+              const options = p.optionsByParam
+                ? p.optionsByParam.values[d.params[p.optionsByParam.param]] ?? p.options ?? []
+                : p.options ?? [];
+              const selectedValue = options.includes(d.params[p.key])
+                ? d.params[p.key]
+                : p.default ?? options[0] ?? "";
+              return (
+                <select className="nodrag" value={selectedValue}
+                  onChange={(e) => setSelectParam(p.key, e.target.value)}>
+                  {options.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              );
+            })()
           ) : p.kind === "textarea" ? (
             <textarea className="nodrag nowheel" rows={3} value={d.params[p.key] ?? ""}
               onChange={(e) => setParam(p.key, e.target.value)} />
           ) : p.kind === "number" ? (
-            <input className="nodrag" type="number" value={d.params[p.key] ?? 0}
+            <input className="nodrag" type="number" step={p.key === "seed" ? 1 : undefined} value={d.params[p.key] ?? 0}
               onChange={(e) => setParam(p.key, e.target.value)} />
           ) : p.kind === "file" ? (
             <>
