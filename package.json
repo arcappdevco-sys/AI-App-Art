@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@fal-ai/client": "^1.10.1",
+    "@fal-ai/server-proxy": "^1.2.1",
+    "@xyflow/react": "^12.12.0",
     "next": "16.4.3",
     "react": "19.3.0",
     "react-dom": "19.3.0"
