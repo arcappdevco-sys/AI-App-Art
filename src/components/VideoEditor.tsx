@@ -64,6 +64,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<"mov" | "mp4" | null>(null);
   const [exportStage, setExportStage] = useState("");
   const [error, setError] = useState("");
   const previewRef = useRef<HTMLVideoElement>(null);
@@ -399,17 +400,19 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     }
   };
 
-  const exportVideo = async () => {
+  const exportVideo = async (format: "mov" | "mp4") => {
     if (clips.length === 0 || !activeSequence) return;
     setError("");
     playbackWanted.current = false;
     previewRef.current?.pause();
     setIsPlaying(false);
     setIsExporting(true);
+    setExportingFormat(format);
     setExportStage("Preparing clips for upload…");
 
     try {
       const formData = new FormData();
+      formData.append("format", format);
       formData.append("timeline", JSON.stringify(clips.map(({ trimStart, trimEnd }) => ({
         start: trimStart,
         end: trimEnd,
@@ -430,7 +433,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         formData.append("clip", video, clip.name);
       }
 
-      setExportStage("Uploading clips and rendering H.264 MOV on the server…");
+      setExportStage(`Uploading clips and rendering H.264 ${format.toUpperCase()} on the server…`);
       const response = await fetch("/api/video/export", { method: "POST", body: formData });
       if (!response.ok) {
         let payload: unknown;
@@ -452,13 +455,14 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       const link = document.createElement("a");
       link.href = url;
       const safeName = activeSequence.name.trim().replace(/[^a-zA-Z0-9._-]+/g, "-") || "sequence";
-      link.download = `${safeName}.mov`;
+      link.download = `${safeName}.${format}`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "MOV export failed.");
+      setError(caught instanceof Error ? caught.message : `${format.toUpperCase()} export failed.`);
     } finally {
       setIsExporting(false);
+      setExportingFormat(null);
       setExportStage("");
     }
   };
@@ -469,7 +473,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         <div className="ff-editor-heading">
           <span className="ff-overline">VIDEO EDITOR</span>
           <h1>Make a cut</h1>
-          <p>Arrange clips, trim the start and end, then export an H.264 MOV file.</p>
+          <p>Arrange clips, trim the start and end, then export H.264 MOV or MP4 files.</p>
         </div>
 
         <section className="ff-editor-media">
@@ -513,7 +517,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
           {uploadedAssets.length === 0 && <p className="ff-editor-empty">Upload video clips from this device.</p>}
         </section>
 
-        <p className="ff-editor-sidebar-note">Sequences, uploads, and timeline edits stay in this tab only. MOV export uses H.264 video and AAC audio.</p>
+        <p className="ff-editor-sidebar-note">Sequences, uploads, and timeline edits stay in this tab only. MOV and MP4 exports use H.264 video and AAC audio.</p>
       </aside>
 
       <div className="ff-editor-workspace">
@@ -605,12 +609,22 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               </button>
               <span>{clips.length} clips · {formatTime(totalDuration)} · {formatTime(playheadTime)}</span>
             </div>
-            <button type="button" className="ff-run" onClick={() => void exportVideo()} disabled={clips.length === 0 || isExporting}>
-              {isExporting ? "Rendering MOV…" : "Export MOV"}
-            </button>
+            <div className="ff-editor-export-actions">
+              <button type="button" className="ff-run" onClick={() => void exportVideo("mov")} disabled={clips.length === 0 || isExporting}>
+                {isExporting && exportingFormat === "mov" ? "Rendering MOV…" : "Export MOV"}
+              </button>
+              <button
+                type="button"
+                className="ff-editor-sequence-action ff-editor-export-secondary"
+                onClick={() => void exportVideo("mp4")}
+                disabled={clips.length === 0 || isExporting}
+              >
+                {isExporting && exportingFormat === "mp4" ? "Rendering MP4…" : "Export MP4"}
+              </button>
+            </div>
           </div>
           <p className="ff-editor-instructions">
-            Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV at 1280 × 720 with AAC audio.
+            Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
           </p>
           {isExporting && (
             <div className="ff-editor-export-status" role="status" aria-live="polite">

@@ -638,7 +638,7 @@ export default function Page() {
               </span>
             </>
             ) : (
-              <span className="ff-editor-mode-status">Timeline editor · H.264 MOV export</span>
+              <span className="ff-editor-mode-status">Timeline editor · H.264 MOV / MP4 export</span>
             )}
         </div>
         <div className="ff-toolbar-actions">
@@ -667,7 +667,7 @@ export default function Page() {
           </button>
             </>
           ) : (
-            <span className="ff-toolbar-note">H.264 MOV export rendered on the server</span>
+            <span className="ff-toolbar-note">H.264 MOV and MP4 export rendered on the server</span>
           )}
         </div>
       </header>

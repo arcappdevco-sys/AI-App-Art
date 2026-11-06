@@ -1280,6 +1280,17 @@ body {
   font-size: 10px;
 }
 
+.ff-editor-export-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.ff-editor-timeline-heading .ff-editor-export-secondary {
+  min-height: 30px;
+  font-size: 10px;
+}
+
 .ff-editor-instructions {
   margin: 8px 0 0;
   color: var(--muted);

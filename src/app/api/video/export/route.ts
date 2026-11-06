@@ -132,6 +132,11 @@ export async function POST(request: Request) {
   if (files.some((file) => !(file instanceof File))) {
     return NextResponse.json({ error: "Every sequence clip must be a video file." }, { status: 400 });
   }
+  const requestedFormat = formData.get("format");
+  if (requestedFormat !== null && requestedFormat !== "mov" && requestedFormat !== "mp4") {
+    return NextResponse.json({ error: "Export format must be MOV or MP4." }, { status: 400 });
+  }
+  const format = requestedFormat ?? "mov";
   const videoFiles = files as File[];
   let timeline: ClipTrim[];
   try {
@@ -211,7 +216,7 @@ export async function POST(request: Request) {
     }
 
     filterParts.push(`${concatInputs.join("")}concat=n=${timeline.length}:v=1:a=1[vout][aout]`);
-    const outputPath = join(directory, "sequence.mov");
+    const outputPath = join(directory, `sequence.${format}`);
     args.push(
       "-filter_complex_threads", "2",
       "-filter_complex", filterParts.join(";"),
@@ -229,7 +234,7 @@ export async function POST(request: Request) {
       "-ar", "48000",
       "-ac", "2",
       "-movflags", "+faststart",
-      "-f", "mov",
+      "-f", format,
       outputPath,
     );
 
@@ -270,8 +275,8 @@ export async function POST(request: Request) {
     retainDirectoryForResponse = true;
     return new Response(body, {
       headers: {
-        "Content-Type": "video/quicktime",
-        "Content-Disposition": 'attachment; filename="sequence.mov"',
+        "Content-Type": format === "mp4" ? "video/mp4" : "video/quicktime",
+        "Content-Disposition": `attachment; filename="sequence.${format}"`,
         "Content-Length": String(outputStat.size),
         "Cache-Control": "no-store",
       },
