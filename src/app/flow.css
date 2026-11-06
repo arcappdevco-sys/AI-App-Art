@@ -512,6 +512,93 @@ body {
   background: #141c1d;
 }
 
+.ff-validation-panel {
+  position: absolute;
+  z-index: 6;
+  top: 12px;
+  left: 12px;
+  width: min(390px, calc(100% - 24px));
+  max-height: min(55vh, 480px);
+  overflow: auto;
+  border: 1px solid #55433a;
+  border-radius: 9px;
+  background: #151d1e;
+  box-shadow: 0 8px 30px #0008;
+}
+
+.ff-validation-panel header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #151d1e;
+}
+
+.ff-validation-panel header strong {
+  color: #e7efec;
+  font-size: 11px;
+}
+
+.ff-validation-panel header span {
+  flex: 1;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ff-validation-panel header button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.ff-validation-panel ul {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ff-validation-panel li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #283435;
+  color: #d7e0dd;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.ff-validation-panel li strong {
+  flex: 0 0 auto;
+  font-size: 9px;
+}
+
+.ff-validation-error strong {
+  color: #f08a7f;
+}
+
+.ff-validation-warning strong {
+  color: #e2b04a;
+}
+
+.ff-validation-panel > p {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .ff-empty-state {
   position: absolute;
   top: 50%;

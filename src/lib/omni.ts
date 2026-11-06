@@ -29,7 +29,7 @@ export const OMNI_RATES: Record<string, Record<string, number>> = {
 
 // Resolution tier may change the rate; these values are placeholders to verify.
 export const OMNI_DEFAULTS: Record<string, unknown> = {
-  model: OMNI_MODELS["Gemini Omni 1.1 Flash"],
+  model: OMNI_MODELS["Gemini Omni Flash (original)"],
   task: OMNI_TASKS["Text to video"],
   duration: "10",
   aspect_ratio: "16:9",
@@ -45,7 +45,8 @@ const omniTaskValues = Object.values(OMNI_TASKS);
 export function normalizeOmniParams(params: Record<string, unknown> = {}) {
   const savedModel = String(params.model ?? "");
   const modelAliases: Record<string, string> = {
-    "Gemini Omni 1.1 Flash": OMNI_MODELS["Gemini Omni 1.1 Flash"],
+    "Gemini Omni 1.1 Flash": OMNI_MODELS["Gemini Omni Flash (original)"],
+    "google/gemini-omni-1.1-flash": OMNI_MODELS["Gemini Omni Flash (original)"],
     "Gemini Omni Flash": OMNI_MODELS["Gemini Omni Flash (original)"],
     "Gemini Omni Flash (original)": OMNI_MODELS["Gemini Omni Flash (original)"],
   };
@@ -154,7 +155,11 @@ function omniValidateImages(images: unknown[], maxCount: number) {
 }
 
 export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnectedInputs) {
-  const rawModel = String(node.params.model ?? OMNI_DEFAULTS.model);
+  const savedModel = String(node.params.model ?? OMNI_DEFAULTS.model);
+  const rawModel = savedModel === OMNI_MODELS["Gemini Omni 1.1 Flash"]
+    || savedModel === "Gemini Omni 1.1 Flash"
+    ? OMNI_MODELS["Gemini Omni Flash (original)"]
+    : savedModel;
   const rawTask = String(node.params.task ?? OMNI_DEFAULTS.task);
   if (!Object.values(OMNI_MODELS).includes(rawModel as (typeof OMNI_MODELS)[keyof typeof OMNI_MODELS])) {
     throw new Error("Choose a valid Gemini Omni model.");
@@ -188,7 +193,7 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
   const rawSeed = node.params.seed === "" || node.params.seed == null ? -1 : Number(node.params.seed);
   if (!Number.isInteger(rawSeed) || rawSeed < -1) throw new Error("Seed must be an integer or -1 for random.");
 
-  const params = normalizeOmniParams(node.params);
+  const params = normalizeOmniParams({ ...node.params, model: rawModel });
   const model = String(params.model);
   const task = String(params.task);
   const duration = Number(params.duration);

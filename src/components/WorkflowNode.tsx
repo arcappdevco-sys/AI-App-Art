@@ -3,8 +3,8 @@ import { createContext, Fragment, useContext, useState } from "react";
 import { Handle, Position, useEdges, useReactFlow, type NodeProps } from "@xyflow/react";
 import { registry, PORT_COLORS } from "@/lib/registry";
 import { SEEDANCE_MODELS, SEEDANCE_RATES } from "@/lib/seedance";
-import { VEO_MODELS, VEO_RATES } from "@/lib/veo";
-import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_RATES, OMNI_TASKS } from "@/lib/omni";
+import { VEO_RATES } from "@/lib/veo";
+import { normalizeOmniParams, OMNI_DEFAULTS, OMNI_MODELS, OMNI_RATES, OMNI_TASKS } from "@/lib/omni";
 import { KLING_DEFAULTS, KLING_MODELS, KLING_RATES, KLING_TASKS } from "@/lib/kling";
 import {
   PROMPT_ASSISTANT_IMAGE_INPUTS,
@@ -262,11 +262,12 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   };
 
   const syncOmniInputs = async (requestedTask: string, requestedModel = String(d.params.model)) => {
+    const normalizedModel = normalizeOmniParams({ model: requestedModel }).model;
     const task = requestedTask === OMNI_TASKS["Extend video"]
-      && requestedModel === OMNI_MODELS["Gemini Omni Flash (original)"]
+      && normalizedModel === OMNI_MODELS["Gemini Omni Flash (original)"]
       ? OMNI_TASKS["Text to video"]
       : requestedTask;
-    const original = requestedModel === OMNI_MODELS["Gemini Omni Flash (original)"];
+    const original = normalizedModel === OMNI_MODELS["Gemini Omni Flash (original)"];
     const maximumReferences = original ? 5 : 10;
     const currentNodes = getNodes();
     const existing = currentNodes.filter((candidate) => {
@@ -1182,12 +1183,26 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       {def.integration === "pending" && (
         <div className="ff-node-notice">API setup required before this model can run.</div>
       )}
+      {d.type === "openai/gpt-image" && (
+        <div className="ff-node-notice">
+          Uses OPENAI_API_KEY. OpenAI API usage is billed separately; it is not part of Nano Banana&apos;s free tier.
+        </div>
+      )}
       {isSeedance && (
         <div className={`ff-node-notice${seedanceAtlasTask ? "" : " ff-access-pending"}`}>
           {seedanceAtlasTask
             ? `Atlas Cloud API connected: Seedance 2.5 ${d.params.task === "text-to-video" ? "Text" : "Image"} to video.`
             : "Atlas Cloud API is connected for Seedance 2.5 Text to video and Image to video only."}
         </div>
+      )}
+      {d.type === "video/veo" && (
+        <div className="ff-node-notice">Atlas Cloud API connected for supported Veo 3.1 text, image, and reference-to-video tasks.</div>
+      )}
+      {d.type === "video/kling" && (
+        <div className="ff-node-notice">Atlas Cloud API connected for supported Kling models and tasks.</div>
+      )}
+      {d.type === "video/google-omni" && (
+        <div className="ff-node-notice">Atlas Cloud API connected for Gemini Omni Flash text, image, reference, and video-edit tasks.</div>
       )}
       {seedanceImageToVideo && (
         <div className="ff-node-hint">

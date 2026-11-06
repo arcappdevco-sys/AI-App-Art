@@ -121,10 +121,13 @@ export function buildVeoRequest(node: { params: Record<string, unknown> }, conne
     const firstFrame = connectedInputs.first_frame;
     const lastFrame = connectedInputs.last_frame;
     if (!firstFrame) throw new Error("Image to video requires a connected first frame.");
+    if (lastFrame && normalizedModel !== VEO_MODELS["Veo 3.1 Lite"]) {
+      throw new Error("Veo 3.1 start-and-end-frame generation is available only with Veo 3.1 Lite.");
+    }
     body.image = firstFrame;
     if (lastFrame) {
       body.last_image = lastFrame;
-      if (normalizedModel === VEO_MODELS["Veo 3.1 Lite"]) endpointTask = "start-end-frame-to-video";
+      endpointTask = "start-end-frame-to-video";
     }
   }
   if (task === "reference-to-video") {

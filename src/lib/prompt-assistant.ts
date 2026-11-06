@@ -49,24 +49,6 @@ export const PROMPT_ASSISTANT_TARGETS = {
     task: "image-to-video",
     guidance: "Write a motion prompt grounded in the connected frame. Preserve its subject and composition, and describe the requested motion and camera behavior. Avoid unsupported reference tags.",
   },
-  "gemini-omni-11-text": {
-    label: "Google Gemini Omni 1.1 Flash · Text to video",
-    model: OMNI_MODELS["Gemini Omni 1.1 Flash"],
-    task: "text-to-video",
-    guidance: "Write a natural-language text-to-video prompt describing the subject, action, setting, camera, lighting, and style.",
-  },
-  "gemini-omni-11-image": {
-    label: "Google Gemini Omni 1.1 Flash · Image to video",
-    model: OMNI_MODELS["Gemini Omni 1.1 Flash"],
-    task: "image-to-video",
-    guidance: "Write a motion prompt grounded in the connected frame. Preserve its visible subject and identity, and describe the requested motion and camera behavior.",
-  },
-  "gemini-omni-11-reference": {
-    label: "Google Gemini Omni 1.1 Flash · Reference to video",
-    model: OMNI_MODELS["Gemini Omni 1.1 Flash"],
-    task: "reference-to-video",
-    guidance: "Write a prompt for a video guided by the connected reference images. Preserve relevant identity and visual details while describing the requested action and scene.",
-  },
   "gemini-omni-text": {
     label: "Google Gemini Omni Flash · Text to video",
     model: OMNI_MODELS["Gemini Omni Flash (original)"],

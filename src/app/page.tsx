@@ -12,6 +12,7 @@ import { runGraph } from "@/lib/executor";
 import { normalizeVeoParams } from "@/lib/veo";
 import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "@/lib/omni";
 import { normalizeKlingParams, KLING_MODELS, KLING_TASKS } from "@/lib/kling";
+import { validateWorkflow, type WorkflowValidationIssue } from "@/lib/workflow-validation";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 
@@ -24,7 +25,7 @@ const imageModelGroups = [
   { provider: "fal", access: "PAID · API CONNECTED", types: ["fal/nano-banana"] },
   {
     provider: "OpenAI",
-    access: "PAID · API SETUP LATER",
+    access: "PAID · API CONNECTED",
     types: ["openai/gpt-image"],
   },
 ] as const;
@@ -137,6 +138,8 @@ export default function Page() {
   const [storageStatus, setStorageStatus] = useState("Loading saved workflow…");
   const [storageError, setStorageError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const [validationIssues, setValidationIssues] = useState<WorkflowValidationIssue[]>([]);
+  const [showValidation, setShowValidation] = useState(false);
   const cache = useRef(new Map());
   const abort = useRef<AbortController | null>(null);
   const runInProgress = useRef(false);
@@ -244,6 +247,8 @@ export default function Page() {
   const clearCanvas = () => {
     setNodes([]);
     setEdges([]);
+    setShowValidation(false);
+    setValidationIssues([]);
     cache.current.clear();
   };
 
@@ -312,7 +317,7 @@ export default function Page() {
       if (condition && targetParams[condition.param] !== condition.value) return false;
       if (targetType === "video/google-omni") {
         const task = String(targetParams.task);
-        const original = targetParams.model === OMNI_MODELS["Gemini Omni Flash (original)"];
+        const original = normalizeOmniParams(targetParams).model === OMNI_MODELS["Gemini Omni Flash (original)"];
         const handle = c.targetHandle;
         const available = handle === "prompt"
           || (task === OMNI_TASKS["Image to video"] && (handle === "image" || (handle === "last_image" && !original)))
@@ -410,10 +415,7 @@ export default function Page() {
   });
 
   const executeGraph = async (targetIds?: string[]) => {
-    if (runInProgress.current || (!targetIds && pendingIntegration)) return;
-    runInProgress.current = true;
-    setIsRunning(true);
-    abort.current = new AbortController();
+    if (runInProgress.current) return;
     const graph: Graph = {
       nodes: nodes.map((n) => {
         const data = n.data as { type: string; params: Record<string, unknown> };
@@ -423,6 +425,13 @@ export default function Page() {
         source: e.source, sourceHandle: e.sourceHandle!, target: e.target, targetHandle: e.targetHandle!,
       })),
     };
+    const issues = validateWorkflow(graph, targetIds);
+    setValidationIssues(issues);
+    setShowValidation(issues.length > 0);
+    if (issues.some((issue) => issue.severity === "error")) return;
+    runInProgress.current = true;
+    setIsRunning(true);
+    abort.current = new AbortController();
     try {
       await runGraph(graph, {
         cache: cache.current,
@@ -471,6 +480,8 @@ export default function Page() {
     setWorkflowName(next.name);
     setNodes(next.nodes);
     setEdges(next.edges);
+    setShowValidation(false);
+    setValidationIssues([]);
     setStorageStatus("Switched workflow");
     setStorageError("");
   };
@@ -489,6 +500,8 @@ export default function Page() {
     setWorkflowName(workflow.name);
     setNodes([]);
     setEdges([]);
+    setShowValidation(false);
+    setValidationIssues([]);
     cache.current.clear();
     setStorageStatus("New workflow");
     setStorageError("");
@@ -505,6 +518,8 @@ export default function Page() {
     setWorkflowName(active.name);
     setNodes(active.nodes);
     setEdges(active.edges);
+    setShowValidation(false);
+    setValidationIssues([]);
     cache.current.clear();
     setStorageStatus("Workflow deleted");
     setStorageError("");
@@ -547,6 +562,8 @@ export default function Page() {
       setWorkflowName(workflow.name);
       setNodes(workflow.nodes);
       setEdges(workflow.edges);
+      setShowValidation(false);
+      setValidationIssues([]);
       cache.current.clear();
       setStorageStatus(`Imported "${workflow.name}"`);
       setStorageError("");
@@ -612,8 +629,8 @@ export default function Page() {
           <button
             className="ff-run"
             onClick={run}
-            disabled={pendingIntegration || isRunning}
-            title={pendingIntegration ? "Complete API setup before running this workflow" : undefined}
+            disabled={isRunning}
+            title="Check for missing inputs and unsupported models before running"
           >
             {isRunning ? "Running workflow…" : "Run workflow"} <span aria-hidden="true">↗</span>
           </button>
@@ -649,7 +666,9 @@ export default function Page() {
                     <span className="ff-card-copy">
                       <strong>{def.label}</strong>
                       <span>
-                        {def.integration === "pending" ? "Available in UI · API setup later" : "Add image model node"}
+                        {type === "openai/gpt-image"
+                          ? "Usage billed through OPENAI_API_KEY"
+                          : def.integration === "pending" ? "Available in UI · API setup later" : "Add image model node"}
                       </span>
                     </span>
                     <span className="ff-card-add" aria-hidden="true">+</span>
@@ -667,7 +686,7 @@ export default function Page() {
           </div>
           <div className="ff-model-group">
             <div className="ff-group-heading">
-              <span className="ff-access">PARTIAL API · SEEDANCE 2.5 TEXT & IMAGE-TO-VIDEO</span>
+              <span className="ff-access">ATLAS CLOUD API · KLING, SEEDANCE, VEO & GEMINI OMNI FLASH</span>
             </div>
             {videoModelTypes.map((type) => {
               const def = registry[type];
@@ -677,8 +696,12 @@ export default function Page() {
                   <span className="ff-card-copy">
                     <strong>{def.label}</strong>
                     <span>{type === "video/seedance"
-                      ? "Seedance 2.5 Text-to-Video and Image-to-Video connected"
-                      : "Available in UI · API setup later"}</span>
+                      ? "Seedance 2.5 text and image-to-video connected"
+                      : type === "video/kling"
+                        ? "Kling models connected"
+                        : type === "video/veo"
+                          ? "Veo 3.1 text, image, and reference-to-video connected"
+                          : "Gemini Omni Flash text, image, reference, and video-edit connected"}</span>
                   </span>
                   <span className="ff-card-add" aria-hidden="true">+</span>
                 </button>
@@ -777,6 +800,36 @@ export default function Page() {
           )}
         </ReactFlow>
         </WorkflowRunContext.Provider>
+        {showValidation && validationIssues.length > 0 && (
+          <section className="ff-validation-panel" aria-live="polite">
+            <header>
+              <strong>Workflow check</strong>
+              <span>
+                {validationIssues.filter((issue) => issue.severity === "error").length} errors
+                {" · "}
+                {validationIssues.filter((issue) => issue.severity === "warning").length} warnings
+              </span>
+              <button
+                type="button"
+                aria-label="Dismiss workflow check"
+                onClick={() => setShowValidation(false)}
+              >
+                ×
+              </button>
+            </header>
+            <ul>
+              {validationIssues.map((issue, index) => (
+                <li className={`ff-validation-${issue.severity}`} key={`${issue.nodeId ?? "workflow"}-${index}`}>
+                  <span>{issue.nodeLabel ? `${issue.nodeLabel}: ` : ""}{issue.message}</span>
+                  <strong>{issue.severity === "error" ? "Error" : "Warning"}</strong>
+                </li>
+              ))}
+            </ul>
+            {!validationIssues.some((issue) => issue.severity === "error") && (
+              <p>Warnings won’t prevent the workflow from running.</p>
+            )}
+          </section>
+        )}
       </main>
     </div>
   );

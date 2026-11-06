@@ -358,9 +358,9 @@ const OPENAI_IMAGE_MODELS = {
 
 const gptImage: NodeDef = {
     type: "openai/gpt-image",
-    label: "GPT Image",
+    label: "ChatGPT Image",
     category: "OpenAI",
-    integration: "pending",
+    integration: undefined,
     autoPrompt: true,
     inputs: { prompt: "text" },
     outputs: { image: "image" },
@@ -370,8 +370,28 @@ const gptImage: NodeDef = {
       { key: "quality", label: "Quality", kind: "select", options: ["auto", "low", "medium", "high"], default: "auto" },
       { key: "complexity", label: "Complexity", kind: "select", options: ["low", "medium", "high"], default: "high" },
     ],
-    execute: async () => {
-      throw new Error("OpenAI image generation is a UI placeholder until API setup is complete.");
+    execute: async ({ inputs, params, signal }) => {
+      if (typeof inputs.prompt !== "string" || !inputs.prompt.trim()) throw new Error("Connect a prompt.");
+      const modelName: keyof typeof OPENAI_IMAGE_MODELS =
+        typeof params.model === "string" && params.model in OPENAI_IMAGE_MODELS
+          ? params.model as keyof typeof OPENAI_IMAGE_MODELS
+          : "GPT Image 2.6 · Sunburst";
+      const res = await fetch("/api/openai/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal,
+        body: JSON.stringify({
+          model: OPENAI_IMAGE_MODELS[modelName],
+          prompt: inputs.prompt,
+          size: params.size,
+          quality: params.quality,
+          complexity: params.complexity,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `OpenAI request failed (${res.status}).`);
+      if (typeof data.image !== "string" || !data.image) throw new Error("OpenAI did not return an image.");
+      return { image: data.image };
     },
   };
 
@@ -555,6 +575,7 @@ const seedanceVideo: NodeDef = {
 };
 const klingVideo: NodeDef = {
   ...videoPlaceholder("video/kling", "Kling"),
+  integration: undefined,
   autoPrompt: true,
   inputs: {
     prompt: "text",
@@ -638,6 +659,7 @@ const klingVideo: NodeDef = {
 };
 const veoVideo: NodeDef = {
   ...videoPlaceholder("video/veo", "Veo"),
+  integration: undefined,
   inputs: {
     prompt: "text",
     first_frame: "image",
@@ -732,13 +754,22 @@ const veoVideo: NodeDef = {
       default: true,
     },
   ],
-  execute: async ({ inputs, params }) => {
-    buildVeoRequest({ params }, inputs);
-    throw new Error("Veo generation is a UI placeholder until API setup is complete.");
+  execute: async ({ inputs, params, log, signal }) => {
+    const request = buildVeoRequest({ params }, inputs);
+    const outputs: Record<string, string> = {};
+    for (let index = 0; index < request.count; index++) {
+      log(`Generating Veo variation ${index + 1} of ${request.count}`);
+      const body: Record<string, unknown> = { model: request.model, ...request.body };
+      if (typeof body.seed === "number" && body.seed >= 0) body.seed += index;
+      const videoUrl = await callAtlasVideo("/api/atlas/google-video", "Veo", body, log, signal);
+      outputs[index === 0 ? "video" : `variation_${index + 1}`] = videoUrl;
+    }
+    return outputs;
   },
 };
 const googleOmniVideo: NodeDef = {
   ...videoPlaceholder("video/google-omni", "Gemini Omni"),
+  integration: undefined,
   inputs: {
     prompt: "text",
     image: "image",
@@ -754,7 +785,7 @@ const googleOmniVideo: NodeDef = {
       key: "model",
       label: "Model",
       kind: "select",
-      options: Object.values(OMNI_MODELS),
+      options: [OMNI_MODELS["Gemini Omni Flash (original)"]],
       optionLabels: Object.fromEntries(Object.entries(OMNI_MODELS).map(([label, value]) => [value, label])),
       default: OMNI_DEFAULTS.model,
     },
@@ -767,7 +798,6 @@ const googleOmniVideo: NodeDef = {
       optionsByParam: {
         param: "model",
         values: {
-          [OMNI_MODELS["Gemini Omni 1.1 Flash"]]: Object.values(OMNI_TASKS),
           [OMNI_MODELS["Gemini Omni Flash (original)"]]: Object.values(OMNI_TASKS)
             .filter((task) => task !== OMNI_TASKS["Extend video"]),
         },
@@ -801,7 +831,6 @@ const googleOmniVideo: NodeDef = {
       optionsByParam: {
         param: "model",
         values: {
-          [OMNI_MODELS["Gemini Omni 1.1 Flash"]]: ["360p", "720p", "1080p", "4k"],
           [OMNI_MODELS["Gemini Omni Flash (original)"]]: ["720p"],
         },
       },
@@ -832,9 +861,19 @@ const googleOmniVideo: NodeDef = {
       helperText: "Each variation is a separate paid generation.",
     },
   ],
-  execute: async ({ inputs, params }) => {
-    buildOmniRequest({ params }, inputs);
-    throw new Error("Gemini Omni generation is a UI placeholder until API setup is complete.");
+  execute: async ({ inputs, params, log, signal }) => {
+    const request = buildOmniRequest({ params }, inputs);
+    const variations = Number(request.body.variations ?? 1);
+    const body = Object.fromEntries(Object.entries(request.body).filter(([key]) => key !== "variations"));
+    const outputs: Record<string, string> = {};
+    for (let index = 0; index < variations; index++) {
+      log(`Generating Gemini Omni variation ${index + 1} of ${variations}`);
+      const requestBody: Record<string, unknown> = { model: request.model, ...body };
+      if (typeof requestBody.seed === "number" && requestBody.seed >= 0) requestBody.seed += index;
+      const videoUrl = await callAtlasVideo("/api/atlas/google-video", "Gemini Omni", requestBody, log, signal);
+      outputs[index === 0 ? "video" : `variation_${index + 1}`] = videoUrl;
+    }
+    return outputs;
   },
 };
 
