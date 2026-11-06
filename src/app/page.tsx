@@ -2,7 +2,7 @@
 
 import "@xyflow/react/dist/style.css";
 import "./flow.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, Background, Controls, MiniMap, addEdge,
   useNodesState, useEdgesState, type Connection, type Edge, type Node,
@@ -15,6 +15,7 @@ import { normalizeKlingParams, KLING_MODELS, KLING_TASKS } from "@/lib/kling";
 import { validateWorkflow, type WorkflowValidationIssue } from "@/lib/workflow-validation";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
+import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 
 const nodeTypes = { workflow: WorkflowNode };
 const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
@@ -129,6 +130,7 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
 }
 
 export default function Page() {
+  const [activeView, setActiveView] = useState<"workflow" | "editor">("workflow");
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
@@ -146,6 +148,23 @@ export default function Page() {
   const lastSavedPayload = useRef("");
   const workflowsRef = useRef<SavedWorkflow[]>([]);
   const activeWorkflowIdRef = useRef("");
+  const videoAssets = useMemo<VideoAsset[]>(() => nodes.flatMap((node) => {
+    const data = node.data as {
+      type?: string;
+      title?: string;
+      params?: { title?: string };
+      outputs?: Record<string, unknown>;
+    };
+    if (!data.type?.startsWith("video/")) return [];
+    const label = data.params?.title || data.title || registry[data.type]?.label || "Video";
+    return Object.entries(data.outputs ?? {})
+      .filter(([, value]) => typeof value === "string" && /^https?:\/\//i.test(value))
+      .map(([port, src]) => ({
+        id: `${node.id}:${port}`,
+        name: port === "video" ? label : `${label} · ${port.replaceAll("_", " ")}`,
+        src: src as string,
+      }));
+  }), [nodes]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -580,39 +599,51 @@ export default function Page() {
           <span className="ff-brand-mark" aria-hidden="true">F</span>
           <div>
             <strong>fal flow</strong>
-            <span>IMAGE WORKFLOW</span>
+            <span>WORKFLOW + VIDEO EDITOR</span>
           </div>
         </div>
         <div className="ff-workflow-name">
-          <span className="ff-workflow-indicator" />
-          <select
-            className="ff-workflow-select"
-            aria-label="Select workflow"
-            value={activeWorkflowId}
-            onChange={(event) => switchWorkflow(event.target.value)}
-            disabled={workflows.length === 0}
-          >
-            {workflows.map((workflow) => (
-              <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
-            ))}
-          </select>
-          <input
-            className="ff-workflow-title"
-            aria-label="Workflow name"
-            value={workflowName}
-            maxLength={80}
-            onChange={(event) => setWorkflowName(event.target.value)}
-            onBlur={() => setWorkflowName((name) => name.trim() || "Untitled workflow")}
-          />
-          <span
-            className={`ff-save-status${storageStatus.startsWith("Unable to") ? " ff-save-status-error" : ""}`}
-            title={storageError || storageStatus}
-            aria-live="polite"
-          >
-            {storageStatus}
-          </span>
+          <nav className="ff-mode-tabs" aria-label="App workspace">
+            <button type="button" aria-pressed={activeView === "workflow"} onClick={() => setActiveView("workflow")}>Workflow</button>
+            <button type="button" aria-pressed={activeView === "editor"} onClick={() => setActiveView("editor")}>Video editor</button>
+          </nav>
+          {activeView === "workflow" ? (
+            <>
+              <span className="ff-workflow-indicator" />
+              <select
+                className="ff-workflow-select"
+                aria-label="Select workflow"
+                value={activeWorkflowId}
+                onChange={(event) => switchWorkflow(event.target.value)}
+                disabled={workflows.length === 0}
+              >
+                {workflows.map((workflow) => (
+                  <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
+                ))}
+              </select>
+              <input
+                className="ff-workflow-title"
+                aria-label="Workflow name"
+                value={workflowName}
+                maxLength={80}
+                onChange={(event) => setWorkflowName(event.target.value)}
+                onBlur={() => setWorkflowName((name) => name.trim() || "Untitled workflow")}
+              />
+              <span
+                className={`ff-save-status${storageStatus.startsWith("Unable to") ? " ff-save-status-error" : ""}`}
+                title={storageError || storageStatus}
+                aria-live="polite"
+              >
+                {storageStatus}
+              </span>
+            </>
+            ) : (
+              <span className="ff-editor-mode-status">Timeline editor · H.264 MOV export</span>
+            )}
         </div>
         <div className="ff-toolbar-actions">
+          {activeView === "workflow" ? (
+            <>
           <button className="ff-toolbar-button" onClick={createWorkflow} disabled={!storageReady}>New</button>
           <button className="ff-toolbar-button" onClick={deleteWorkflow} disabled={!storageReady || workflows.length <= 1}>Delete</button>
           <button className="ff-toolbar-button" onClick={clearCanvas} disabled={!storageReady}>Clear</button>
@@ -634,9 +665,14 @@ export default function Page() {
           >
             {isRunning ? "Running workflow…" : "Run workflow"} <span aria-hidden="true">↗</span>
           </button>
+            </>
+          ) : (
+            <span className="ff-toolbar-note">H.264 MOV export rendered on the server</span>
+          )}
         </div>
       </header>
 
+      <div className={`ff-workflow-workspace${activeView === "workflow" ? "" : " ff-workspace-hidden"}`}>
       <aside className="ff-library">
         <div className="ff-library-heading">
           <span className="ff-overline">WORKFLOW BUILDER</span>
@@ -831,6 +867,8 @@ export default function Page() {
           </section>
         )}
       </main>
+      </div>
+      <VideoEditor assets={videoAssets} hidden={activeView !== "editor"} />
     </div>
   );
 }

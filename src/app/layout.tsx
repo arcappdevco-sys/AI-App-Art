@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "fal flow | Image workflow builder",
-  description: "Build image generation workflows with connected AI model nodes.",
+  title: "fal flow | Workflow and video editor",
+  description: "Build AI media workflows and arrange generated videos on a timeline.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

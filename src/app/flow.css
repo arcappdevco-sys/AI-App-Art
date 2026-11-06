@@ -898,6 +898,711 @@ body {
   color: #e0675a;
 }
 
+.ff-mode-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #0c1213;
+}
+
+.ff-mode-tabs button {
+  min-height: 27px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #9eadaa;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ff-mode-tabs button[aria-pressed="true"] {
+  background: #25302b;
+  color: var(--accent);
+}
+
+.ff-mode-tabs button:focus-visible,
+.ff-editor-layout button:focus-visible,
+.ff-editor-layout input:focus-visible,
+.ff-editor-upload:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ff-editor-mode-status,
+.ff-toolbar-note {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.ff-editor-layout {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 300px minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.ff-workflow-workspace {
+  display: contents;
+}
+
+.ff-workspace-hidden,
+.ff-editor-layout[hidden] {
+  display: none !important;
+}
+
+.ff-editor-sidebar {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 18px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  padding: 22px 16px 14px;
+}
+
+.ff-editor-heading {
+  padding: 0 3px;
+}
+
+.ff-editor-heading h1 {
+  margin: 8px 0 5px;
+  font-size: 20px;
+  letter-spacing: -0.75px;
+}
+
+.ff-editor-heading p,
+.ff-editor-empty,
+.ff-editor-sidebar-note,
+.ff-editor-footer {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.ff-editor-heading p,
+.ff-editor-empty {
+  margin: 0;
+}
+
+.ff-editor-media {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ff-editor-section-heading,
+.ff-editor-timeline-heading,
+.ff-editor-clip,
+.ff-editor-clip-select,
+.ff-editor-clip-actions,
+.ff-editor-preview-controls {
+  display: flex;
+  align-items: center;
+}
+
+.ff-editor-section-heading,
+.ff-editor-timeline-heading {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ff-editor-section-heading h2,
+.ff-editor-timeline-heading h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ff-editor-section-heading > span,
+.ff-editor-timeline-heading > div > span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ff-editor-asset {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  color: #cbd6d2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  text-align: left;
+}
+
+.ff-editor-asset:hover:not(:disabled) {
+  border-color: #536362;
+  background: #1c2929;
+}
+
+.ff-editor-asset > span:nth-child(2) {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-editor-asset strong {
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.ff-editor-asset:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.ff-editor-upload {
+  position: relative;
+  display: inline-flex;
+  min-height: 25px;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid #3b4a45;
+  border-radius: 5px;
+  background: #202b28;
+  color: #dce8e2;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ff-editor-upload:hover {
+  border-color: var(--accent);
+}
+
+.ff-editor-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.ff-editor-sidebar-note {
+  margin: auto 3px 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.ff-editor-workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(190px, 1fr) minmax(250px, 0.85fr);
+  gap: 12px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.ff-editor-preview {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #050707;
+}
+
+.ff-editor-preview > video {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ff-editor-preview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  color: #d0dad6;
+}
+
+.ff-editor-preview-empty > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid #35413e;
+  border-radius: 50%;
+  color: var(--accent);
+}
+
+.ff-editor-preview-empty strong {
+  font-size: 12px;
+}
+
+.ff-editor-preview-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ff-editor-preview-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  min-height: 37px;
+  gap: 10px;
+  padding: 5px 8px;
+  border: 1px solid #ffffff20;
+  border-radius: 6px;
+  background: #090e0dd9;
+  color: #d9e3df;
+  font-size: 9px;
+}
+
+.ff-editor-preview-controls > span:first-of-type {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-editor-play {
+  min-width: 52px;
+  min-height: 26px;
+  border: 1px solid #425049;
+  border-radius: 5px;
+  background: #202b28;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.ff-editor-timeline {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #111819;
+}
+
+.ff-editor-timeline-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.ff-editor-sequence-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ff-editor-sequence-select,
+.ff-editor-sequence-name {
+  min-width: 0;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid #34413f;
+  border-radius: 5px;
+  background: #0c1213;
+  color: #dce5e1;
+  font: inherit;
+  font-size: 10px;
+}
+
+.ff-editor-sequence-name-label {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ff-editor-sequence-select {
+  max-width: 150px;
+}
+
+.ff-editor-sequence-name {
+  width: 118px;
+}
+
+.ff-editor-sequence-action {
+  min-height: 27px;
+  padding: 0 8px;
+  border: 1px solid #3b4a45;
+  border-radius: 5px;
+  background: #202b28;
+  color: #dce8e2;
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ff-editor-sequence-action:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ff-editor-sequence-action:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.ff-editor-sequence-delete {
+  color: #e4a397;
+}
+
+.ff-editor-timeline-heading .ff-run {
+  min-height: 30px;
+  font-size: 10px;
+}
+
+.ff-editor-instructions {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ff-editor-export-status {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: #b8c5c0;
+  font-size: 10px;
+}
+
+.ff-editor-export-spinner {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  border: 2px solid #53605c;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ff-editor-spin 800ms linear infinite;
+}
+
+@keyframes ff-editor-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ff-editor-error {
+  margin: 10px 0 0;
+  color: #f0a08d;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ff-editor-timeline-empty {
+  margin-top: 24px;
+  text-align: center;
+}
+
+.ff-editor-track-scroll {
+  overflow-x: auto;
+  margin-top: 12px;
+  padding-bottom: 5px;
+}
+
+.ff-editor-track {
+  position: relative;
+  width: auto;
+  min-width: 100%;
+}
+
+.ff-editor-ruler {
+  position: relative;
+  height: 32px;
+  border-bottom: 1px solid #394543;
+  background: #0c1213;
+}
+
+.ff-editor-ruler-tick {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-left: 1px solid #53605c;
+  color: #a7b3ae;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.ff-editor-ruler-tick > span {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  white-space: nowrap;
+}
+
+.ff-editor-scrubber {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.ff-editor-scrubber::-webkit-slider-runnable-track {
+  height: 32px;
+  background: transparent;
+}
+
+.ff-editor-scrubber::-moz-range-track {
+  height: 32px;
+  background: transparent;
+}
+
+.ff-editor-scrubber::-webkit-slider-thumb {
+  width: 11px;
+  height: 11px;
+  margin-top: 25px;
+  appearance: none;
+  border: 0;
+  border-radius: 2px 2px 6px 6px;
+  background: #55baff;
+  box-shadow: 0 0 0 1px #0b1112;
+}
+
+.ff-editor-scrubber::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 2px 2px 6px 6px;
+  background: #55baff;
+  box-shadow: 0 0 0 1px #0b1112;
+}
+
+.ff-editor-scrubber:focus-visible {
+  outline: 1px solid #55baff;
+  outline-offset: -2px;
+}
+
+.ff-editor-playhead {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #55baff;
+  pointer-events: none;
+}
+
+.ff-editor-clip-list {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 8px;
+  list-style: none;
+}
+
+.ff-editor-clip {
+  display: flex;
+  min-width: 0;
+  min-height: 94px;
+  flex: 0 0 190px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  overflow: hidden;
+  padding: 7px;
+  border: 1px solid #293534;
+  border-radius: 0;
+  background: #151e1f;
+}
+
+.ff-editor-clip-active {
+  border-color: #8eaa5e;
+  background: #1a241c;
+}
+
+.ff-editor-clip:focus-within {
+  box-shadow: inset 0 0 0 1px #8eaa5e;
+}
+
+.ff-editor-clip-select {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.ff-editor-clip-select[draggable="true"] {
+  cursor: grab;
+}
+
+.ff-editor-clip-select[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.ff-editor-clip-number {
+  color: #98ae70;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+}
+
+.ff-editor-clip-name {
+  overflow: hidden;
+  color: #cbd6d2;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-editor-clip-duration {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.ff-editor-trim {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: #879691;
+  font-size: 9px;
+}
+
+.ff-editor-trim label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ff-editor-trim input {
+  width: 42px;
+  min-height: 25px;
+  padding: 0 4px;
+  border: 1px solid #34413f;
+  border-radius: 4px;
+  background: #0c1213;
+  color: #dce5e1;
+  font: inherit;
+}
+
+.ff-editor-trim input:disabled {
+  opacity: 0.6;
+}
+
+.ff-editor-clip-actions {
+  display: flex;
+  align-items: center;
+  align-self: flex-end;
+  gap: 3px;
+  margin-top: auto;
+}
+
+.ff-editor-clip-actions button {
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #9caaa5;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.ff-editor-clip-actions button:hover:not(:disabled) {
+  border-color: #3b4a45;
+  background: #202b28;
+  color: var(--accent);
+}
+
+.ff-editor-clip-actions button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.ff-editor-context-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 154px;
+  padding: 4px;
+  border: 1px solid #3b4a45;
+  border-radius: 6px;
+  background: #172021;
+  box-shadow: 0 8px 24px #0009;
+}
+
+.ff-editor-context-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #efb1a3;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  text-align: left;
+}
+
+.ff-editor-context-menu button:hover,
+.ff-editor-context-menu button:focus-visible {
+  outline: none;
+  background: #283332;
+}
+
+.ff-editor-context-menu button span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ff-editor-footer {
+  margin: 10px 0 0;
+}
+
 @media (max-width: 900px) {
   .ff-app,
   .ff-toolbar {
@@ -920,6 +1625,18 @@ body {
   .ff-toolbar-button,
   .ff-run {
     padding: 0 9px;
+  }
+
+  .ff-editor-layout {
+    grid-template-columns: 252px minmax(0, 1fr);
+  }
+
+  .ff-editor-clip {
+    flex-wrap: wrap;
+  }
+
+  .ff-editor-trim {
+    padding-left: 31px;
   }
 }
 
@@ -995,6 +1712,51 @@ body {
 
   .ff-canvas .react-flow__minimap {
     display: none;
+  }
+
+  .ff-workflow-name {
+    overflow: auto;
+  }
+
+  .ff-mode-tabs {
+    flex: 0 0 auto;
+  }
+
+  .ff-editor-mode-status,
+  .ff-toolbar-note {
+    display: none;
+  }
+
+  .ff-editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(150px, 32dvh) minmax(0, 1fr);
+    overflow: auto;
+  }
+
+  .ff-editor-sidebar {
+    gap: 12px;
+    overflow-y: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 13px 14px;
+  }
+
+  .ff-editor-heading {
+    display: none;
+  }
+
+  .ff-editor-workspace {
+    grid-template-rows: minmax(190px, 38dvh) minmax(250px, 1fr);
+    overflow: visible;
+    padding: 10px;
+  }
+
+  .ff-editor-clip {
+    flex-basis: 210px !important;
+  }
+
+  .ff-editor-trim {
+    padding-left: 0;
   }
 }
 
