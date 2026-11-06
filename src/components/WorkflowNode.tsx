@@ -1,12 +1,16 @@
 "use client";
-import { createContext, Fragment, useContext } from "react";
+import { createContext, Fragment, useContext, useState } from "react";
 import { Handle, Position, useEdges, useReactFlow, type NodeProps } from "@xyflow/react";
-import { fal } from "@fal-ai/client";
 import { registry, PORT_COLORS } from "@/lib/registry";
 import { SEEDANCE_MODELS, SEEDANCE_RATES } from "@/lib/seedance";
 import { VEO_MODELS, VEO_RATES } from "@/lib/veo";
 import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_RATES, OMNI_TASKS } from "@/lib/omni";
 import { KLING_DEFAULTS, KLING_MODELS, KLING_RATES, KLING_TASKS } from "@/lib/kling";
+import {
+  PROMPT_ASSISTANT_IMAGE_INPUTS,
+  PROMPT_ASSISTANT_MODELS,
+  type PromptAssistantTarget,
+} from "@/lib/prompt-assistant";
 
 export const WorkflowRunContext = createContext<{
   runNode: (nodeId: string) => void;
@@ -39,6 +43,12 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const renderedEdges = useEdges();
   const d = data as any;
   const def = registry[d.type];
+  const isPromptAssistant = d.type === "assistant/prompt";
+  const isPromptNode = d.type === "input/prompt";
+  const isAssistantEnabled = isPromptAssistant || (isPromptNode && Boolean(d.params.assistant_enabled));
+  const [assistantDraft, setAssistantDraft] = useState("");
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantError, setAssistantError] = useState("");
   const isSeedance = d.type === "video/seedance";
   const seedanceAtlasTask = isSeedance
     && d.params.model === SEEDANCE_MODELS["Seedance 2.5"]
@@ -47,10 +57,6 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const isVeo = d.type === "video/veo";
   const isOmni = d.type === "video/google-omni";
   const isKling = d.type === "video/kling";
-  const isSeedanceImage = d.type === "input/image" && renderedEdges.some((edge) =>
-    edge.source === id
-    && (getNode(edge.target)?.data as { type?: string } | undefined)?.type === "video/seedance"
-  );
   const isOmniImage = d.type === "input/image" && (
     d.omniAutoCreatedFor
     || renderedEdges.some((edge) => edge.source === id
@@ -62,8 +68,29 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       && (getNode(edge.target)?.data as { type?: string } | undefined)?.type === "video/kling")
   );
 
-  const setParam = (key: string, value: any) =>
+  const setParam = (key: string, value: any) => {
+    if ((isPromptAssistant || isPromptNode) && ["model", "target"].includes(key)) {
+      updateNodeData(id, (n: any) => ({
+        params: {
+          ...n.data.params,
+          [key]: value,
+          refined_prompt: "",
+          ...(key === "target" ? { conversation: [] } : {}),
+        },
+        outputs: {},
+        status: "idle",
+        log: "",
+      }));
+      return;
+    }
+    if (isPromptNode && key === "text") {
+      updateNodeData(id, (n: any) => ({
+        params: { ...n.data.params, text: value, refined_prompt: "" },
+      }));
+      return;
+    }
     updateNodeData(id, (n: any) => ({ params: { ...n.data.params, [key]: value } }));
+  };
 
   const syncSeedanceInputs = async (task: string) => {
     const requestedInputs = task === "image-to-video"
@@ -823,19 +850,14 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         updateNodeData(id, { log: "" });
         return;
       }
-      if (isSeedanceImage) {
-        const formData = new FormData();
-        formData.append("file", file);
-        const response = await fetch("/api/atlas/upload", { method: "POST", body: formData });
-        const result = await response.json() as { url?: unknown; error?: unknown };
-        if (!response.ok || typeof result.url !== "string") {
-          throw new Error(typeof result.error === "string" ? result.error : "Atlas Cloud image upload failed.");
-        }
-        setParam(key, result.url);
-        updateNodeData(id, { log: "" });
-        return;
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch("/api/atlas/upload", { method: "POST", body: formData });
+      const result = await response.json() as { url?: unknown; error?: unknown };
+      if (!response.ok || typeof result.url !== "string") {
+        throw new Error(typeof result.error === "string" ? result.error : "Atlas Cloud image upload failed.");
       }
-      setParam(key, await fal.storage.upload(file));
+      setParam(key, result.url);
       updateNodeData(id, { log: "" });
     } catch (e: any) {
       updateNodeData(id, { status: "error", log: e?.message ?? "Upload failed" });
@@ -947,6 +969,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     ? "~varies"
     : `~$${(costDuration * rate * costCount).toFixed(3)}`;
   const inputLabels: Record<string, string> = {
+    brief: "Draft prompt",
     first_frame: "First frame",
     last_frame: "Last frame",
     ingredient_1: "Ingredient 1",
@@ -1053,6 +1076,82 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       : klingIsEdit
         ? "The video to edit is @video_1; other inputs are @image_N, @video_2 onward, @element_N, @voice_N"
         : "";
+  const assistantIncoming = renderedEdges.filter((edge) => edge.target === id);
+  const assistantImageSetup = Object.entries(PROMPT_ASSISTANT_IMAGE_INPUTS).flatMap(([handle, label]) => {
+    const count = assistantIncoming.filter((edge) => edge.targetHandle === handle).length;
+    return count > 0 ? [handle === "reference_images" ? `${label} (${count} connected)` : label] : [];
+  });
+  const assistantBriefEdge = assistantIncoming.find((edge) => edge.targetHandle === "brief");
+  const assistantBriefNode = assistantBriefEdge ? getNode(assistantBriefEdge.source) : undefined;
+  const assistantConnectedBrief = isPromptNode
+    ? String(d.params?.refined_prompt || d.params?.text || "")
+    : String(
+      (assistantBriefNode?.data as { params?: { text?: unknown } } | undefined)?.params?.text
+        ?? (assistantBriefNode?.data as { outputs?: { text?: unknown } } | undefined)?.outputs?.text
+        ?? ""
+    );
+  const assistantConversation: Array<{ role: "user" | "assistant"; content: string }> = Array.isArray(d.params?.conversation)
+    ? d.params.conversation.filter((message: unknown): message is { role: "user" | "assistant"; content: string } =>
+      typeof message === "object" && message !== null
+      && ["user", "assistant"].includes(String((message as { role?: unknown }).role))
+      && typeof (message as { content?: unknown }).content === "string")
+    : [];
+  const assistantTarget = String(d.params?.target ?? "kling-v4-text") as PromptAssistantTarget;
+  const savedAssistantModel = String(d.params?.model ?? PROMPT_ASSISTANT_MODELS["GPT-6 Luna"]);
+  const assistantModel = Object.values(PROMPT_ASSISTANT_MODELS).includes(
+    savedAssistantModel as (typeof PROMPT_ASSISTANT_MODELS)[keyof typeof PROMPT_ASSISTANT_MODELS],
+  )
+    ? savedAssistantModel
+    : PROMPT_ASSISTANT_MODELS["GPT-6 Luna"];
+
+  const sendAssistantMessage = async () => {
+    const message = assistantDraft.trim()
+      || (assistantConnectedBrief ? "Refine the connected draft prompt." : "");
+    if (!message || assistantLoading || runControl?.isRunning) return;
+    setAssistantLoading(true);
+    setAssistantError("");
+    setParam("refined_prompt", "");
+    updateNodeData(id, { outputs: {}, status: "running", log: "Sending prompt to OpenAI…" });
+    try {
+      const response = await fetch("/api/prompt-assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: assistantModel,
+          target: assistantTarget,
+          imageSetup: assistantImageSetup,
+          connectedBrief: assistantConnectedBrief,
+          history: assistantConversation,
+          message,
+        }),
+      });
+      const result = await response.json() as { content?: unknown; error?: unknown };
+      if (!response.ok || typeof result.content !== "string" || !result.content.trim()) {
+        throw new Error(typeof result.error === "string" ? result.error : "Prompt Assistant could not refine the prompt.");
+      }
+      const refinedPrompt = result.content.trim();
+      const conversation = [
+        ...assistantConversation.slice(-18),
+        { role: "user" as const, content: message },
+        { role: "assistant" as const, content: refinedPrompt },
+      ];
+      setParam("conversation", conversation);
+      if (isPromptNode) setParam("text", refinedPrompt);
+      setParam("refined_prompt", refinedPrompt);
+      setAssistantDraft("");
+      updateNodeData(id, {
+        outputs: { text: refinedPrompt },
+        status: "done",
+        log: "Refined prompt ready to connect.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAssistantError(message);
+      updateNodeData(id, { status: "error", log: message });
+    } finally {
+      setAssistantLoading(false);
+    }
+  };
 
   return (
     <div className="ff-node" data-status={d.status}>
@@ -1454,6 +1553,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         )}
 
       {def.params.filter((param) => {
+        if (isPromptAssistant && ["conversation", "refined_prompt"].includes(param.key)) return false;
+        if (isPromptNode && ["conversation", "refined_prompt"].includes(param.key)) return false;
+        if (param.visibleWhen && d.params[param.visibleWhen.param] !== param.visibleWhen.value) return false;
         if (isSeedance && !showSeedanceParam(param)) return false;
         if (seedanceImageToVideo && param.key === "ratio") return false;
         if (seedanceImageToVideo && param.key === "bitrate_mode") return false;
@@ -1559,6 +1661,74 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           )}
         </label>
       ))}
+
+      {isAssistantEnabled && (
+        <section className="ff-prompt-assistant">
+          <div className="ff-prompt-assistant-context">
+            <strong>Image context</strong>
+            <span>{assistantImageSetup.length ? assistantImageSetup.join(" · ") : "No image inputs connected"}</span>
+            <small>Only these setup labels are sent to OpenAI; image files are not.</small>
+          </div>
+          <div className="ff-prompt-assistant-messages" aria-live="polite">
+            {assistantConversation.length === 0 ? (
+              <div className="ff-prompt-assistant-empty">
+                Ask for a prompt or describe changes. The selected media model and connected draft are included as context.
+              </div>
+            ) : assistantConversation.map((message, index) => (
+              <div className={`ff-prompt-assistant-message ff-prompt-assistant-${message.role}`} key={`${index}-${message.role}`}>
+                <span>{message.role === "user" ? "You" : "Assistant"}</span>
+                <p>{message.content}</p>
+              </div>
+            ))}
+          </div>
+          <label className="ff-prompt-assistant-compose">
+            <span>Message</span>
+            <textarea
+              className="nodrag nowheel"
+              rows={3}
+              maxLength={6000}
+              placeholder={assistantConnectedBrief ? "Ask for a prompt or changes to the connected draft…" : "Describe the video prompt you want…"}
+              value={assistantDraft}
+              onChange={(event) => setAssistantDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendAssistantMessage();
+                }
+              }}
+            />
+          </label>
+          {assistantError && <div className="ff-prompt-assistant-error" role="alert">{assistantError}</div>}
+          <div className="ff-prompt-assistant-actions">
+            <button
+              type="button"
+              className="ff-prompt-assistant-send nodrag"
+              disabled={assistantLoading || runControl?.isRunning || (!assistantDraft.trim() && !assistantConnectedBrief)}
+              onClick={() => void sendAssistantMessage()}
+            >
+              {assistantLoading ? "Refining…" : "Refine prompt"}
+            </button>
+            <button
+              type="button"
+              className="ff-prompt-assistant-clear nodrag"
+              disabled={assistantLoading || (assistantConversation.length === 0 && !d.params.refined_prompt)}
+              onClick={() => {
+                setParam("conversation", []);
+                setParam("refined_prompt", "");
+                updateNodeData(id, { outputs: {}, status: "idle", log: "" });
+                setAssistantError("");
+                setAssistantDraft("");
+              }}
+            >
+              Clear chat
+            </button>
+          </div>
+          <div className="ff-prompt-assistant-note">
+            Add <strong>OPENAI_API_KEY</strong> to .env.local and restart the app. OpenAI usage is billed separately from Atlas.
+            Connect this node’s <strong>text</strong> output to the target prompt input. Image files are never sent to OpenAI.
+          </div>
+        </section>
+      )}
 
       {(isSeedance || isVeo) && (
         <div className="ff-node-cost">

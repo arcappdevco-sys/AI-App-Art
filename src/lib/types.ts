@@ -25,11 +25,11 @@ export interface ExecCtx {
 export interface NodeDef {
   type: string;
   label: string;
-  category: "Input" | "fal" | "Google" | "OpenAI" | "Video" | "Output";
+  category: "Input" | "fal" | "Google" | "OpenAI" | "Video" | "Output" | "Assistant";
   integration?: "pending";
   autoPrompt?: boolean;
   inputs: Record<string, PortType>;
-  conditionalInputs?: Record<string, { param: string; value: string }>;
+  conditionalInputs?: Record<string, { param: string; value: string | boolean }>;
   disabledInputs?: Record<string, string>;
   outputs: Record<string, PortType>;
   params: ParamDef[];

@@ -41,7 +41,7 @@ export async function POST(request: Request) {
   }
   const contentLength = Number(request.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES + 1024 * 1024) {
-    return NextResponse.json({ error: "Seedance image uploads must be 30 MB or smaller." }, { status: 413 });
+    return NextResponse.json({ error: "Image uploads must be 30 MB or smaller." }, { status: 413 });
   }
 
   let formData: FormData;
@@ -55,10 +55,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Choose an image file to upload." }, { status: 400 });
   }
   if (!IMAGE_TYPES.has(file.type)) {
-    return NextResponse.json({ error: "Seedance images must be JPEG, PNG, WebP, BMP, TIFF, GIF, or HEIC." }, { status: 400 });
+    return NextResponse.json({ error: "Images must be JPEG, PNG, WebP, BMP, TIFF, GIF, or HEIC." }, { status: 400 });
   }
   if (file.size < 1 || file.size > MAX_IMAGE_BYTES) {
-    return NextResponse.json({ error: "Seedance images must be 30 MB or smaller." }, { status: 400 });
+    return NextResponse.json({ error: "Images must be 30 MB or smaller." }, { status: 400 });
   }
 
   const atlasForm = new FormData();

@@ -483,7 +483,11 @@ export default function Page() {
               <div className="ff-utility-items">
                 {group.types.map((type) => (
                   <button className="ff-utility-node" key={type} onClick={() => addNode(type)}>
-                    <span>{registry[type].label}</span><span aria-hidden="true">+</span>
+                    <span>
+                      {registry[type].label}
+                      {type === "input/prompt" && <small>Optional Prompt Assistant</small>}
+                    </span>
+                    <span aria-hidden="true">+</span>
                   </button>
                 ))}
               </div>

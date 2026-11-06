@@ -5,6 +5,7 @@ import { SEEDANCE_MODELS, buildSeedanceRequest } from "./seedance";
 import { VEO_MODELS, buildVeoRequest } from "./veo";
 import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_TASKS, buildOmniRequest } from "./omni";
 import { KLING_DEFAULTS, KLING_MODELS, KLING_TASKS, buildKlingRequest } from "./kling";
+import { PROMPT_ASSISTANT_MODELS, PROMPT_ASSISTANT_TARGETS } from "./prompt-assistant";
 
 fal.config({ proxyUrl: "/api/fal/proxy" });
 
@@ -139,9 +140,46 @@ function fill(value: any, inputs: Record<string, any>): any {
 
 const prompt: NodeDef = {
   type: "input/prompt", label: "Prompt", category: "Input",
-  inputs: {}, outputs: { text: "text" },
-  params: [{ key: "text", label: "Text", kind: "textarea", default: "" }],
-  execute: async ({ params }) => ({ text: params.text }),
+  inputs: {
+    first_frame: "image",
+    last_frame: "image",
+    reference_images: "image",
+  },
+  conditionalInputs: {
+    first_frame: { param: "assistant_enabled", value: true },
+    last_frame: { param: "assistant_enabled", value: true },
+    reference_images: { param: "assistant_enabled", value: true },
+  },
+  outputs: { text: "text" },
+  params: [
+    { key: "text", label: "Prompt", kind: "textarea", default: "" },
+    { key: "assistant_enabled", label: "Enable Prompt Assistant", kind: "toggle", default: false },
+    {
+      key: "model",
+      label: "Prompt LLM",
+      kind: "select",
+      options: Object.values(PROMPT_ASSISTANT_MODELS),
+      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_MODELS).map(([label, value]) => [value, label])),
+      default: PROMPT_ASSISTANT_MODELS["GPT-6 Luna"],
+      visibleWhen: { param: "assistant_enabled", value: true },
+    },
+    {
+      key: "target",
+      label: "Target media model",
+      kind: "select",
+      options: Object.keys(PROMPT_ASSISTANT_TARGETS),
+      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_TARGETS).map(([key, target]) => [key, target.label])),
+      default: "kling-v4-text",
+      visibleWhen: { param: "assistant_enabled", value: true },
+    },
+    { key: "conversation", label: "Conversation", kind: "text", default: [] },
+    { key: "refined_prompt", label: "Refined prompt", kind: "text", default: "" },
+  ],
+  execute: async ({ params }) => ({
+    text: params.assistant_enabled && String(params.refined_prompt ?? "").trim()
+      ? params.refined_prompt
+      : params.text,
+  }),
 };
 
 const number: NodeDef = {
@@ -158,6 +196,44 @@ const image: NodeDef = {
   execute: async ({ params }) => {
     if (!params.url) throw new Error("Choose an image or paste a URL");
     return { image: params.url };
+  },
+};
+
+const promptAssistant: NodeDef = {
+  type: "assistant/prompt",
+  label: "Prompt Assistant",
+  category: "Assistant",
+  inputs: {
+    brief: "text",
+    first_frame: "image",
+    last_frame: "image",
+    reference_images: "image",
+  },
+  outputs: { text: "text" },
+  params: [
+    {
+      key: "model",
+      label: "Prompt LLM",
+      kind: "select",
+      options: Object.values(PROMPT_ASSISTANT_MODELS),
+      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_MODELS).map(([label, value]) => [value, label])),
+      default: PROMPT_ASSISTANT_MODELS["GPT-6 Luna"],
+    },
+    {
+      key: "target",
+      label: "Target media model",
+      kind: "select",
+      options: Object.keys(PROMPT_ASSISTANT_TARGETS),
+      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_TARGETS).map(([key, target]) => [key, target.label])),
+      default: "kling-v4-text",
+    },
+    { key: "conversation", label: "Conversation", kind: "text", default: [] },
+    { key: "refined_prompt", label: "Refined prompt", kind: "text", default: "" },
+  ],
+  execute: async ({ params }) => {
+    const text = String(params.refined_prompt ?? "").trim();
+    if (!text) throw new Error("Send a message to the Prompt Assistant before running the workflow.");
+    return { text };
   },
 };
 
@@ -764,7 +840,7 @@ const googleOmniVideo: NodeDef = {
 
 export const registry: Record<string, NodeDef> = Object.fromEntries(
   [
-    prompt, number, image, falModel, nanoBanana, geminiImage, gptImage,
+    prompt, number, image, promptAssistant, falModel, nanoBanana, geminiImage, gptImage,
     seedanceVideo, klingVideo, veoVideo, googleOmniVideo, preview,
   ].map((d) => [d.type, d])
 );
