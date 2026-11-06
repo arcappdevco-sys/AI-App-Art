@@ -114,6 +114,23 @@ body {
   border-color: #50605e;
 }
 
+.ff-workflow-select {
+  max-width: 180px;
+  min-width: 110px;
+  padding: 6px 24px 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #172021;
+  color: #d7e0dd;
+  font: inherit;
+  font-size: 11px;
+}
+
+.ff-workflow-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .ff-save-status {
   margin-left: 7px;
   color: #8d9d97;
@@ -165,6 +182,11 @@ body {
   border-color: #50605e;
   background: #182122;
   color: white;
+}
+
+.ff-toolbar-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .ff-open {
@@ -824,7 +846,7 @@ body {
 
   .ff-toolbar {
     grid-template-columns: 1fr auto;
-    grid-template-rows: 56px 44px;
+    grid-template-rows: 56px 42px 44px;
   }
 
   .ff-brand {
@@ -832,13 +854,34 @@ body {
   }
 
   .ff-workflow-name {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: flex;
+    min-width: 0;
+    padding: 0 12px;
+  }
+
+  .ff-workflow-select {
+    max-width: 38vw;
+    min-width: 90px;
+  }
+
+  .ff-workflow-title {
+    width: auto;
+    min-width: 70px;
+    flex: 1;
+  }
+
+  .ff-save-status {
     display: none;
   }
 
   .ff-toolbar-actions {
     grid-column: 1 / -1;
-    grid-row: 2;
-    justify-content: flex-end;
+    grid-row: 3;
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
     border-top: 1px solid var(--line);
     background: #101617;
   }

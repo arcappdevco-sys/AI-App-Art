@@ -16,7 +16,9 @@ import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 
 const nodeTypes = { workflow: WorkflowNode };
-const WORKFLOW_STORAGE_KEY = "fal-flow:workflow";
+const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
+const LEGACY_WORKFLOW_STORAGE_KEY = "fal-flow:workflow";
+const DEFAULT_WORKFLOW_NAME = "Untitled workflow";
 const imageModelGroups = [
   { provider: "Google", access: "FREE TIER", types: ["google/gemini-image"] },
   { provider: "fal", access: "PAID · API CONNECTED", types: ["fal/nano-banana"] },
@@ -33,10 +35,104 @@ const utilityGroups = [
   { title: "Advanced", types: ["fal/model"] },
 ] as const;
 
+type SavedWorkflow = {
+  id: string;
+  name: string;
+  nodes: Node[];
+  edges: Edge[];
+  updatedAt: number;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes" | "edges"> {
+  if (!isRecord(value) || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
+    throw new Error("Workflow file must contain nodes and edges arrays.");
+  }
+  if (value.version !== undefined && value.version !== 1) {
+    throw new Error(`Workflow version ${String(value.version)} is not supported.`);
+  }
+  const nodeIds = new Set<string>();
+  const nodes = value.nodes.map((item, index) => {
+    if (!isRecord(item) || typeof item.id !== "string" || !item.id
+      || !isRecord(item.position) || typeof item.position.x !== "number" || !Number.isFinite(item.position.x)
+      || typeof item.position.y !== "number" || !Number.isFinite(item.position.y)
+      || !isRecord(item.data) || typeof item.data.type !== "string"
+      || (item.data.params !== undefined && !isRecord(item.data.params))) {
+      throw new Error(`Workflow node ${index + 1} is invalid.`);
+    }
+    if (nodeIds.has(item.id)) throw new Error(`Workflow contains a duplicate node ID: ${item.id}.`);
+    nodeIds.add(item.id);
+
+    const data = item.data;
+    const savedType = data.type as string;
+    const legacyType = savedType === "openai/gpt-image-2.6-flare"
+      || savedType === "openai/gpt-image-2.6-sunburst";
+    const type = legacyType ? "openai/gpt-image" : savedType;
+    if (!registry[type]) throw new Error(`Workflow contains an unsupported node type: ${type}.`);
+    const legacyModel = savedType === "openai/gpt-image-2.6-flare"
+      ? "GPT Image 2.6 · Flare"
+      : savedType === "openai/gpt-image-2.6-sunburst"
+        ? "GPT Image 2.6 · Sunburst"
+        : undefined;
+    const params = isRecord(data.params) ? data.params : {};
+    return {
+      id: item.id,
+      type: "workflow",
+      position: item.position as Node["position"],
+      data: {
+        ...data,
+        type,
+        params: {
+          ...params,
+          ...(legacyModel ? { model: legacyModel } : {}),
+          ...(type === "video/veo" ? normalizeVeoParams(params) : {}),
+          ...(type === "video/google-omni" ? normalizeOmniParams(params) : {}),
+          ...(type === "video/kling" ? normalizeKlingParams(params) : {}),
+        },
+        status: "idle",
+        log: "",
+      },
+    } as Node;
+  });
+  const edgeIds = new Set<string>();
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const edges = value.edges.map((item, index) => {
+    if (!isRecord(item) || typeof item.id !== "string" || !item.id
+      || typeof item.source !== "string" || !nodeIds.has(item.source)
+      || typeof item.target !== "string" || !nodeIds.has(item.target)
+      || typeof item.sourceHandle !== "string" || typeof item.targetHandle !== "string") {
+      throw new Error(`Workflow connection ${index + 1} is invalid or references a missing node.`);
+    }
+    if (edgeIds.has(item.id)) throw new Error(`Workflow contains a duplicate connection ID: ${item.id}.`);
+    edgeIds.add(item.id);
+    const sourceType = (nodesById.get(item.source)!.data as { type: string }).type;
+    const targetType = (nodesById.get(item.target)!.data as { type: string }).type;
+    const sourcePort = registry[sourceType].outputs[item.sourceHandle];
+    const targetPort = registry[targetType].inputs[item.targetHandle];
+    if (!sourcePort || !targetPort
+      || (sourcePort !== targetPort && sourcePort !== "any" && targetPort !== "any")) {
+      throw new Error(`Workflow connection ${index + 1} uses incompatible or unknown ports.`);
+    }
+    return item as unknown as Edge;
+  });
+  return {
+    name: typeof value.name === "string" && value.name.trim()
+      ? value.name.trim().slice(0, 80)
+      : DEFAULT_WORKFLOW_NAME,
+    nodes,
+    edges,
+  };
+}
+
 export default function Page() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const [workflowName, setWorkflowName] = useState("Untitled workflow");
+  const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
+  const [workflows, setWorkflows] = useState<SavedWorkflow[]>([]);
+  const [activeWorkflowId, setActiveWorkflowId] = useState("");
   const [storageReady, setStorageReady] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Loading saved workflow…");
   const [storageError, setStorageError] = useState("");
@@ -45,41 +141,60 @@ export default function Page() {
   const abort = useRef<AbortController | null>(null);
   const runInProgress = useRef(false);
   const lastSavedPayload = useRef("");
+  const workflowsRef = useRef<SavedWorkflow[]>([]);
+  const activeWorkflowIdRef = useRef("");
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       try {
-        const saved = window.localStorage.getItem(WORKFLOW_STORAGE_KEY);
+        const saved = window.localStorage.getItem(WORKFLOWS_STORAGE_KEY);
+        let nextWorkflows: SavedWorkflow[];
+        let nextActiveId: string;
         if (saved) {
-          const workflow = JSON.parse(saved) as { name?: unknown; nodes?: unknown; edges?: unknown };
-          if (!Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges)) {
-            throw new Error("Saved workflow data is invalid.");
+          const store: unknown = JSON.parse(saved);
+          if (!isRecord(store) || (store.version !== undefined && store.version !== 1)
+            || !Array.isArray(store.workflows) || store.workflows.length === 0) {
+            throw new Error("Saved workflow library is invalid.");
           }
-          setWorkflowName(typeof workflow.name === "string" && workflow.name.trim()
-            ? workflow.name.trim()
-            : "Untitled workflow");
-          setNodes(workflow.nodes.map((node: Node) => ({
-            ...node,
-            data: {
-              ...node.data,
-              ...(node.data.type === "video/veo"
-                ? { params: normalizeVeoParams((node.data.params ?? {}) as Record<string, unknown>) }
-                : {}),
-              ...(node.data.type === "video/google-omni"
-                ? { params: normalizeOmniParams((node.data.params ?? {}) as Record<string, unknown>) }
-                : {}),
-              ...(node.data.type === "video/kling"
-                ? { params: normalizeKlingParams((node.data.params ?? {}) as Record<string, unknown>) }
-                : {}),
-              status: "idle",
-              log: "",
-            },
-          })));
-          setEdges(workflow.edges);
-          setStorageStatus("Restored from this device");
+          nextWorkflows = store.workflows.map((item, index) => {
+            if (!isRecord(item) || typeof item.id !== "string" || !item.id) {
+              throw new Error(`Saved workflow ${index + 1} is invalid.`);
+            }
+            return {
+              id: item.id,
+              ...normalizeWorkflow(item),
+              updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : Date.now(),
+            };
+          });
+          if (new Set(nextWorkflows.map((workflow) => workflow.id)).size !== nextWorkflows.length) {
+            throw new Error("Saved workflow library contains duplicate workflow IDs.");
+          }
+          nextActiveId = nextWorkflows.some((workflow) => workflow.id === store.activeWorkflowId)
+            ? store.activeWorkflowId as string
+            : nextWorkflows[0].id;
         } else {
-          setStorageStatus("Not saved yet");
+          const legacy = window.localStorage.getItem(LEGACY_WORKFLOW_STORAGE_KEY);
+          const normalized = legacy
+            ? normalizeWorkflow(JSON.parse(legacy))
+            : { name: DEFAULT_WORKFLOW_NAME, nodes: [], edges: [] };
+          nextActiveId = crypto.randomUUID();
+          nextWorkflows = [{ id: nextActiveId, ...normalized, updatedAt: Date.now() }];
         }
+        const active = nextWorkflows.find((workflow) => workflow.id === nextActiveId)!;
+        workflowsRef.current = nextWorkflows;
+        activeWorkflowIdRef.current = nextActiveId;
+        setWorkflows(nextWorkflows);
+        setActiveWorkflowId(nextActiveId);
+        setWorkflowName(active.name);
+        setNodes(active.nodes);
+        setEdges(active.edges);
+        const serialized = JSON.stringify({ version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows });
+        window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
+        window.localStorage.removeItem(LEGACY_WORKFLOW_STORAGE_KEY);
+        lastSavedPayload.current = serialized;
+        setStorageStatus(saved || window.localStorage.getItem(LEGACY_WORKFLOW_STORAGE_KEY)
+          ? "Restored from this device"
+          : "Auto-saved on this device");
         setStorageReady(true);
       } catch (error) {
         setStorageError(error instanceof Error ? error.message : String(error));
@@ -90,22 +205,39 @@ export default function Page() {
   }, [setEdges, setNodes]);
 
   const saveWorkflowLocally = useCallback((manual = false) => {
+    if (!activeWorkflowIdRef.current) return false;
     const savedNodes = nodes.map((node) => ({
       ...node,
       data: { ...node.data, status: "idle", log: "" },
     }));
-    const payload = JSON.stringify({ name: workflowName.trim() || "Untitled workflow", nodes: savedNodes, edges });
+    const activeId = activeWorkflowIdRef.current;
+    const current: SavedWorkflow = {
+      id: activeId,
+      name: workflowName.trim() || DEFAULT_WORKFLOW_NAME,
+      nodes: savedNodes,
+      edges,
+      updatedAt: Date.now(),
+    };
+    const nextWorkflows = workflowsRef.current.some((workflow) => workflow.id === activeId)
+      ? workflowsRef.current.map((workflow) => workflow.id === activeId ? current : workflow)
+      : [...workflowsRef.current, current];
+    const store = { version: 1, activeWorkflowId: activeId, workflows: nextWorkflows };
+    const payload = JSON.stringify(store);
     try {
       if (lastSavedPayload.current !== payload) {
-        window.localStorage.setItem(WORKFLOW_STORAGE_KEY, payload);
+        window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, payload);
         lastSavedPayload.current = payload;
       }
+      workflowsRef.current = nextWorkflows;
+      setWorkflows(nextWorkflows);
       setStorageError("");
       setStorageStatus(manual ? "Saved just now" : "Auto-saved on this device");
       setStorageReady(true);
+      return true;
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
       setStorageStatus("Unable to save workflow");
+      return false;
     }
   }, [edges, nodes, workflowName]);
 
@@ -311,50 +443,117 @@ export default function Page() {
   const run = () => { void executeGraph(); };
   const runNode = (nodeId: string) => { void executeGraph([nodeId]); };
 
+  const persistWorkflowList = (nextWorkflows: SavedWorkflow[], nextActiveId: string) => {
+    const serialized = JSON.stringify({ version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows });
+    try {
+      window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageStatus("Unable to save workflow library");
+      return false;
+    }
+    workflowsRef.current = nextWorkflows;
+    activeWorkflowIdRef.current = nextActiveId;
+    lastSavedPayload.current = serialized;
+    setWorkflows(nextWorkflows);
+    setActiveWorkflowId(nextActiveId);
+    return true;
+  };
+
+  const switchWorkflow = (nextId: string) => {
+    if (nextId === activeWorkflowIdRef.current) return;
+    if (!saveWorkflowLocally()) return;
+    const next = workflowsRef.current.find((workflow) => workflow.id === nextId);
+    if (!next) return;
+    cache.current.clear();
+    activeWorkflowIdRef.current = next.id;
+    setActiveWorkflowId(next.id);
+    setWorkflowName(next.name);
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    setStorageStatus("Switched workflow");
+    setStorageError("");
+  };
+
+  const createWorkflow = () => {
+    if (!saveWorkflowLocally()) return;
+    const workflow: SavedWorkflow = {
+      id: crypto.randomUUID(),
+      name: DEFAULT_WORKFLOW_NAME,
+      nodes: [],
+      edges: [],
+      updatedAt: Date.now(),
+    };
+    const next = [...workflowsRef.current, workflow];
+    if (!persistWorkflowList(next, workflow.id)) return;
+    setWorkflowName(workflow.name);
+    setNodes([]);
+    setEdges([]);
+    cache.current.clear();
+    setStorageStatus("New workflow");
+    setStorageError("");
+  };
+
+  const deleteWorkflow = () => {
+    if (workflowsRef.current.length <= 1) return;
+    const current = workflowsRef.current.find((workflow) => workflow.id === activeWorkflowIdRef.current);
+    if (!window.confirm(`Delete "${current?.name ?? DEFAULT_WORKFLOW_NAME}"? This cannot be undone.`)) return;
+    if (!saveWorkflowLocally()) return;
+    const next = workflowsRef.current.filter((workflow) => workflow.id !== activeWorkflowIdRef.current);
+    const active = next[0];
+    if (!persistWorkflowList(next, active.id)) return;
+    setWorkflowName(active.name);
+    setNodes(active.nodes);
+    setEdges(active.edges);
+    cache.current.clear();
+    setStorageStatus("Workflow deleted");
+    setStorageError("");
+  };
+
   const exportJSON = () => {
-    const blob = new Blob([JSON.stringify({ name: workflowName.trim() || "Untitled workflow", nodes, edges }, null, 2)], { type: "application/json" });
+    const savedNodes = nodes.map((node) => ({
+      ...node,
+      data: { ...node.data, status: "idle", log: "" },
+    }));
+    const blob = new Blob([JSON.stringify({
+      version: 1,
+      name: workflowName.trim() || DEFAULT_WORKFLOW_NAME,
+      nodes: savedNodes,
+      edges,
+    }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     const filename = (workflowName.trim() || "workflow").replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").replace(/\s+/g, "-");
     a.download = `${filename}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    setStorageStatus("Exported workflow");
+    setStorageError("");
   };
 
-  const load = async (file?: File) => {
+  const importWorkflow = async (file?: File) => {
     if (!file) return;
-    const wf = JSON.parse(await file.text());
-    cache.current.clear();
-    setWorkflowName(typeof wf.name === "string" && wf.name.trim() ? wf.name.trim() : "Untitled workflow");
-    setNodes((wf.nodes ?? []).map((n: Node) => {
-      const data = n.data as { type?: string; params?: Record<string, unknown> };
-      const legacyModel = data.type === "openai/gpt-image-2.6-flare"
-        ? "GPT Image 2.6 · Flare"
-        : data.type === "openai/gpt-image-2.6-sunburst"
-          ? "GPT Image 2.6 · Sunburst"
-          : undefined;
-      return {
-        ...n,
-        data: {
-          ...n.data,
-          ...(legacyModel ? { type: "openai/gpt-image", params: { ...data.params, model: legacyModel } } : {}),
-          ...(data.type === "video/veo"
-            ? { params: normalizeVeoParams(data.params ?? {}) }
-            : {}),
-          ...(data.type === "video/google-omni"
-            ? { params: normalizeOmniParams(data.params ?? {}) }
-            : {}),
-          ...(data.type === "video/kling"
-            ? { params: normalizeKlingParams(data.params ?? {}) }
-            : {}),
-          status: "idle",
-          outputs: {},
-          log: "",
-        },
+    try {
+      const imported = normalizeWorkflow(JSON.parse(await file.text()));
+      if (!saveWorkflowLocally()) return;
+      const workflow: SavedWorkflow = {
+        id: crypto.randomUUID(),
+        ...imported,
+        updatedAt: Date.now(),
       };
-    }));
-    setEdges(wf.edges ?? []);
+      const next = [...workflowsRef.current, workflow];
+      if (!persistWorkflowList(next, workflow.id)) return;
+      setWorkflowName(workflow.name);
+      setNodes(workflow.nodes);
+      setEdges(workflow.edges);
+      cache.current.clear();
+      setStorageStatus(`Imported "${workflow.name}"`);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageStatus("Unable to import workflow");
+    }
   };
 
   return (
@@ -369,6 +568,17 @@ export default function Page() {
         </div>
         <div className="ff-workflow-name">
           <span className="ff-workflow-indicator" />
+          <select
+            className="ff-workflow-select"
+            aria-label="Select workflow"
+            value={activeWorkflowId}
+            onChange={(event) => switchWorkflow(event.target.value)}
+            disabled={workflows.length === 0}
+          >
+            {workflows.map((workflow) => (
+              <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
+            ))}
+          </select>
           <input
             className="ff-workflow-title"
             aria-label="Workflow name"
@@ -378,7 +588,7 @@ export default function Page() {
             onBlur={() => setWorkflowName((name) => name.trim() || "Untitled workflow")}
           />
           <span
-            className={`ff-save-status${storageStatus === "Unable to save workflow" || storageStatus === "Unable to restore workflow" ? " ff-save-status-error" : ""}`}
+            className={`ff-save-status${storageStatus.startsWith("Unable to") ? " ff-save-status-error" : ""}`}
             title={storageError || storageStatus}
             aria-live="polite"
           >
@@ -386,12 +596,17 @@ export default function Page() {
           </span>
         </div>
         <div className="ff-toolbar-actions">
-          <button className="ff-toolbar-button" onClick={clearCanvas}>Clear</button>
-          <button className="ff-toolbar-button" onClick={() => saveWorkflowLocally(true)}>Save</button>
-          <button className="ff-toolbar-button" onClick={exportJSON}>Export</button>
+          <button className="ff-toolbar-button" onClick={createWorkflow} disabled={!storageReady}>New</button>
+          <button className="ff-toolbar-button" onClick={deleteWorkflow} disabled={!storageReady || workflows.length <= 1}>Delete</button>
+          <button className="ff-toolbar-button" onClick={clearCanvas} disabled={!storageReady}>Clear</button>
+          <button className="ff-toolbar-button" onClick={() => saveWorkflowLocally(true)} disabled={!storageReady}>Save</button>
+          <button className="ff-toolbar-button" onClick={exportJSON} disabled={!storageReady}>Export</button>
           <label className="ff-toolbar-button ff-open">
-            Open
-            <input type="file" accept="application/json" hidden onChange={(e) => load(e.target.files?.[0])} />
+            Import
+            <input type="file" accept=".json,application/json" hidden disabled={!storageReady} onChange={(event) => {
+              void importWorkflow(event.target.files?.[0]);
+              event.target.value = "";
+            }} />
           </label>
           <button className="ff-toolbar-button" onClick={() => abort.current?.abort()} disabled={!isRunning}>Stop</button>
           <button
