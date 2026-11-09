@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Zip, ZipPassThrough } from "fflate";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 900;
@@ -12,6 +13,8 @@ const MAX_CLIP_BYTES = 200 * 1024 * 1024;
 const MAX_CLIPS = 20;
 const MAX_AUDIO_CLIPS = 20;
 const MAX_SEQUENCE_SECONDS = 600;
+const MAX_PNG_SEQUENCE_SECONDS = 60;
+const MAX_PNG_SEQUENCE_BYTES = 512 * 1024 * 1024;
 const MAX_PROCESS_MS = 15 * 60 * 1000;
 
 type ClipTrim = {
@@ -30,6 +33,14 @@ type AudioClip = {
 type ClipTransition = {
   afterClipIndex: number;
   duration: number;
+};
+
+type ClipKeyer = {
+  enabled: boolean;
+  color: string;
+  similarity: number;
+  softness: number;
+  spillSuppression: number;
 };
 
 type ProbeResult = {
@@ -190,6 +201,99 @@ function parseAudioTimeline(value: FormDataEntryValue | null, fileCount: number)
   });
 }
 
+function parseKeyerTimeline(value: FormDataEntryValue | null, clipCount: number): ClipKeyer[] {
+  if (typeof value !== "string") throw new Error("PNG export is missing its chroma-key settings.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("PNG export keyer settings must be valid JSON.");
+  }
+  if (!Array.isArray(parsed) || parsed.length !== clipCount) {
+    throw new Error("PNG export keyer settings do not match the video clips.");
+  }
+  return parsed.map((item, index) => {
+    if (typeof item !== "object" || item === null) throw new Error(`Clip ${index + 1} has invalid keyer settings.`);
+    const { enabled, color, similarity, softness, spillSuppression } = item as Record<string, unknown>;
+    if (typeof enabled !== "boolean" || typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)
+      || typeof similarity !== "number" || !Number.isFinite(similarity) || similarity < 0 || similarity > 0.8
+      || typeof softness !== "number" || !Number.isFinite(softness) || softness < 0.01 || softness > 0.6
+      || typeof spillSuppression !== "number" || !Number.isFinite(spillSuppression)
+      || spillSuppression < 0 || spillSuppression > 1) {
+      throw new Error(`Clip ${index + 1} has invalid keyer settings.`);
+    }
+    return { enabled, color, similarity, softness, spillSuppression };
+  });
+}
+
+function createKeyerFilter(keyer: ClipKeyer) {
+  const color = Number.parseInt(keyer.color.slice(1), 16);
+  const screenType = ((color >> 8) & 255) >= (color & 255) ? "green" : "blue";
+  const despill = keyer.spillSuppression > 0
+    ? `,despill=type=${screenType}:mix=${keyer.spillSuppression.toFixed(3)}`
+    : "";
+  return `colorkey=color=0x${keyer.color.slice(1)}:similarity=${keyer.similarity.toFixed(3)}:blend=${keyer.softness.toFixed(3)}${despill}`;
+}
+
+function createPngZipStream(framePaths: string[], directory: string) {
+  let zip: Zip;
+  let cancelled = false;
+  let pullWaiter: (() => void) | null = null;
+  let cleanupStarted = false;
+  const cleanup = () => {
+    if (cleanupStarted) return;
+    cleanupStarted = true;
+    void removeTemporaryDirectory(directory);
+  };
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      zip = new Zip((error, chunk, final) => {
+        if (error) {
+          controller.error(error);
+          cleanup();
+          return;
+        }
+        if (!cancelled) controller.enqueue(chunk);
+        if (final) {
+          if (!cancelled) controller.close();
+          cleanup();
+        }
+      });
+      void (async () => {
+        try {
+          for (const [index, path] of framePaths.entries()) {
+            if (cancelled) return;
+            const entry = new ZipPassThrough(`frame-${String(index + 1).padStart(6, "0")}.png`);
+            zip.add(entry);
+            entry.push(new Uint8Array(await readFile(path)), true);
+            if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+              await new Promise<void>((resolve) => {
+                pullWaiter = resolve;
+              });
+            }
+          }
+          if (!cancelled) zip.end();
+        } catch (error) {
+          if (!cancelled) controller.error(error);
+          cleanup();
+        }
+      })();
+    },
+    pull() {
+      pullWaiter?.();
+      pullWaiter = null;
+    },
+    cancel() {
+      cancelled = true;
+      zip.terminate();
+      pullWaiter?.();
+      cleanup();
+    },
+  });
+  return body;
+}
+
 export async function POST(request: Request) {
   const contentLength = request.headers.get("content-length");
   if (contentLength !== null && Number(contentLength) > MAX_REQUEST_BYTES) {
@@ -199,7 +303,8 @@ export async function POST(request: Request) {
   let formData: FormData;
   try {
     formData = await request.formData();
-  } catch {
+  } catch (error) {
+    console.error("Could not parse video export multipart form.", error);
     return NextResponse.json({ error: "Export requires a multipart form with the video clips." }, { status: 400 });
   }
 
@@ -212,8 +317,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Every audio track item must be an audio file." }, { status: 400 });
   }
   const requestedFormat = formData.get("format");
-  if (requestedFormat !== null && requestedFormat !== "mov" && requestedFormat !== "mp4") {
-    return NextResponse.json({ error: "Export format must be MOV or MP4." }, { status: 400 });
+  if (requestedFormat !== null && requestedFormat !== "mov" && requestedFormat !== "mp4" && requestedFormat !== "png") {
+    return NextResponse.json({ error: "Export format must be MOV, MP4, or PNG sequence." }, { status: 400 });
   }
   const format = requestedFormat ?? "mov";
   const videoFiles = files as File[];
@@ -221,14 +326,19 @@ export async function POST(request: Request) {
   let timeline: ClipTrim[];
   let audioTimeline: AudioClip[];
   let transitions: ClipTransition[];
+  let keyers: ClipKeyer[] = [];
   try {
     timeline = parseTimeline(formData.get("timeline"), videoFiles.length);
     transitions = parseTransitions(formData.get("transitions"), timeline);
     audioTimeline = parseAudioTimeline(formData.get("audioTimeline"), audioFiles.length);
+    if (format === "png") keyers = parseKeyerTimeline(formData.get("keyers"), videoFiles.length);
     const sequenceDuration = timeline.reduce((sum, item) => sum + item.end - item.start, 0)
       - transitions.reduce((sum, transition) => sum + transition.duration, 0);
     if (sequenceDuration > MAX_SEQUENCE_SECONDS) {
       throw new Error(`Sequences must be ${MAX_SEQUENCE_SECONDS / 60} minutes or shorter to export.`);
+    }
+    if (format === "png" && sequenceDuration > MAX_PNG_SEQUENCE_SECONDS) {
+      throw new Error(`PNG sequences must be ${MAX_PNG_SEQUENCE_SECONDS} seconds or shorter to export.`);
     }
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Export timeline is invalid." }, { status: 400 });
@@ -284,6 +394,79 @@ export async function POST(request: Request) {
       if (trim.end > duration + 0.25) {
         return NextResponse.json({ error: `Clip ${index + 1} ends beyond the video duration.` }, { status: 400 });
       }
+    }
+    if (format === "png") {
+      const filterParts: string[] = [];
+      const args = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"];
+      for (const path of inputPaths) args.push("-i", path);
+      for (const [index, trim] of timeline.entries()) {
+        const keyerFilter = keyers[index].enabled ? `,${createKeyerFilter(keyers[index])}` : "";
+        filterParts.push(
+          `[${index}:v:0]trim=start=${trim.start.toFixed(3)}:end=${trim.end.toFixed(3)},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=30,settb=AVTB${keyerFilter}[v${index}]`,
+        );
+      }
+
+      const transitionsByBoundary = new Map(transitions.map((transition) => [transition.afterClipIndex, transition]));
+      let videoSequenceLabel = "v0";
+      let combinedDuration = timeline[0].end - timeline[0].start;
+      for (let index = 1; index < timeline.length; index += 1) {
+        const videoOutput = `vseq${index}`;
+        const transition = transitionsByBoundary.get(index - 1);
+        if (transition) {
+          filterParts.push(
+            `[${videoSequenceLabel}][v${index}]xfade=transition=fade:duration=${transition.duration.toFixed(3)}:offset=${(combinedDuration - transition.duration).toFixed(3)}[${videoOutput}]`,
+          );
+          combinedDuration += timeline[index].end - timeline[index].start - transition.duration;
+        } else {
+          filterParts.push(`[${videoSequenceLabel}][v${index}]concat=n=2:v=1:a=0[${videoOutput}]`);
+          combinedDuration += timeline[index].end - timeline[index].start;
+        }
+        videoSequenceLabel = videoOutput;
+      }
+
+      const outputPattern = join(directory, "frame-%06d.png");
+      args.push(
+        "-filter_complex_threads", "2",
+        "-filter_complex", filterParts.join(";"),
+        "-map", `[${videoSequenceLabel}]`,
+        "-an",
+        "-fps_mode", "cfr",
+        "-r", "30",
+        "-start_number", "1",
+        outputPattern,
+      );
+      try {
+        await runProcess(ffmpeg, args, request.signal);
+      } catch (error) {
+        if (error instanceof ProcessFailure) {
+          console.error("FFmpeg PNG-sequence export failed.", error.stderr);
+          return NextResponse.json({ error: "FFmpeg could not render the transparent PNG sequence. Check the clips and trim points, then try again." }, { status: 422 });
+        }
+        throw error;
+      }
+
+      const frameNames = (await readdir(directory))
+        .filter((name) => /^frame-\d{6}\.png$/.test(name))
+        .sort();
+      if (frameNames.length === 0) {
+        return NextResponse.json({ error: "FFmpeg did not produce any PNG frames." }, { status: 422 });
+      }
+      const framePaths = frameNames.map((name) => join(directory, name));
+      const frameStats = await Promise.all(framePaths.map((path) => stat(path)));
+      const totalFrameBytes = frameStats.reduce((sum, file) => sum + file.size, 0);
+      if (totalFrameBytes > MAX_PNG_SEQUENCE_BYTES) {
+        return NextResponse.json({ error: "The transparent PNG sequence exceeds the 512 MB export limit. Shorten the sequence and try again." }, { status: 413 });
+      }
+
+      const body = createPngZipStream(framePaths, directory);
+      retainDirectoryForResponse = true;
+      return new Response(body, {
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": 'attachment; filename="sequence-transparent-frames.zip"',
+          "Cache-Control": "no-store",
+        },
+      });
     }
     const audioProbeResults = await Promise.all(audioInputPaths.map(async (path) => {
       const { stdout } = await runProcess(ffprobe, [

@@ -9,6 +9,7 @@ import {
   reconcileEditorMedia,
   saveEditorMedia,
   saveVideoEditorState,
+  type StoredEditorKeyer,
   type StoredEditorTransition,
   type StoredVideoEditorState,
 } from "@/lib/video-editor-storage";
@@ -26,6 +27,7 @@ type TimelineClip = VideoAsset & {
   trimStart: number;
   trimEnd: number;
   audioWaveform?: number[] | null;
+  keyer?: StoredEditorKeyer;
 };
 
 type TimelineAudioClip = VideoAsset & {
@@ -70,7 +72,19 @@ type ClipTrimDrag = {
 };
 
 type EditorTool = "select" | "razor" | "transition";
+type KeyerViewChannel = "rgb" | "red" | "green" | "blue" | "alpha";
 const EDITOR_HISTORY_LIMIT = 50;
+const DEFAULT_KEYER: StoredEditorKeyer = {
+  enabled: false,
+  color: "#00ff00",
+  similarity: 0.28,
+  softness: 0.2,
+  spillSuppression: 0,
+};
+
+function isKeyerViewChannel(value: string): value is KeyerViewChannel {
+  return value === "rgb" || value === "red" || value === "green" || value === "blue" || value === "alpha";
+}
 
 type ClipReorderDrag = {
   clipId: string;
@@ -247,8 +261,10 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [draggingClipId, setDraggingClipId] = useState("");
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  const [keyerViewChannel, setKeyerViewChannel] = useState<KeyerViewChannel>("rgb");
   const [isExporting, setIsExporting] = useState(false);
-  const [exportingFormat, setExportingFormat] = useState<"mov" | "mp4" | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<"mov" | "mp4" | "png" | null>(null);
   const [exportStage, setExportStage] = useState("");
   const [loadingAssetId, setLoadingAssetId] = useState("");
   const [loadingAudioAssetId, setLoadingAudioAssetId] = useState("");
@@ -256,6 +272,8 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [isRestoringHistory, setIsRestoringHistory] = useState(false);
   const [error, setError] = useState("");
   const previewRef = useRef<HTMLVideoElement>(null);
+  const previewContainerRef = useRef<HTMLDivElement>(null);
+  const keyerCanvasRef = useRef<HTMLCanvasElement>(null);
   const transitionPreviewRef = useRef<HTMLVideoElement>(null);
   const audioElements = useRef(new Map<string, HTMLAudioElement>());
   const playbackWanted = useRef(false);
@@ -277,6 +295,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const historyRestoreInProgress = useRef(false);
   const renameStart = useRef<{ snapshot: EditorHistorySnapshot; sequenceId: string; name: string } | null>(null);
   const audioEditStart = useRef<EditorHistorySnapshot | null>(null);
+  const keyerEditStart = useRef<EditorHistorySnapshot | null>(null);
   const unsavedMediaName = uploadedAssets.find((asset) => !asset.mediaId)?.name
     ?? sequences.flatMap((sequence) => [...sequence.clips, ...sequence.audioClips]).find((clip) => !clip.mediaId)?.name;
   const persistenceValidationError = unsavedMediaName ? `Media for "${unsavedMediaName}" is not saved yet.` : "";
@@ -430,6 +449,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             trimStart: clip.trimStart,
             trimEnd: clip.trimEnd,
             audioWaveform: clip.audioWaveform ?? null,
+            keyer: clip.keyer,
           })),
           audioClips: (sequence.audioClips ?? []).map((clip) => ({
             ...createAsset(clip.id, clip.name, clip.mediaId),
@@ -483,7 +503,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     if (!persistenceReady) return;
     if (persistenceValidationError) return;
     const state: StoredVideoEditorState = {
-      version: 3,
+      version: 4,
       sequences: sequences.map((sequence) => ({
         ...sequence,
         transitions: sequence.transitions,
@@ -495,6 +515,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
           trimStart: clip.trimStart,
           trimEnd: clip.trimEnd,
           audioWaveform: clip.audioWaveform ?? null,
+          keyer: clip.keyer,
         })),
         audioClips: sequence.audioClips.map((clip) => ({
           id: clip.id,
@@ -642,6 +663,146 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const selectedClip = clips.find((clip) => clip.id === selectedId) ?? clips[0];
   const totalDuration = Math.max(0, clips.reduce((total, clip) => total + Math.max(0, clip.trimEnd - clip.trimStart), 0)
     - transitions.reduce((total, transition) => total + transition.duration, 0));
+  const selectedKeyer = selectedClip ? { ...DEFAULT_KEYER, ...selectedClip.keyer } : DEFAULT_KEYER;
+  const hasSelectedClip = Boolean(selectedClip);
+  const changePreviewZoom = useCallback((delta: number) => {
+    setPreviewZoom((current) => Math.round(Math.min(4, Math.max(0.5, current + delta)) * 10) / 10);
+  }, []);
+
+  useEffect(() => {
+    const preview = previewContainerRef.current;
+    if (!preview || !hasSelectedClip) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return;
+      event.preventDefault();
+      changePreviewZoom(event.deltaY < 0 ? 0.1 : -0.1);
+    };
+    preview.addEventListener("wheel", handleWheel, { passive: false });
+    return () => preview.removeEventListener("wheel", handleWheel);
+  }, [changePreviewZoom, hasSelectedClip]);
+
+  useEffect(() => {
+    const video = previewRef.current;
+    const canvas = keyerCanvasRef.current;
+    if (!selectedKeyer.enabled || !video || !canvas) return;
+
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+      const errorFrame = window.requestAnimationFrame(() => {
+        setError("The browser could not initialize the chroma-key preview.");
+      });
+      return () => window.cancelAnimationFrame(errorFrame);
+    }
+
+    const match = /^#([0-9a-f]{6})$/i.exec(selectedKeyer.color);
+    const colorHex = match?.[1] ?? "00ff00";
+    const keyColor = [
+      Number.parseInt(colorHex.slice(0, 2), 16),
+      Number.parseInt(colorHex.slice(2, 4), 16),
+      Number.parseInt(colorHex.slice(4, 6), 16),
+    ];
+    const threshold = Math.min(1, Math.max(0, selectedKeyer.similarity));
+    const softness = Math.max(0.005, selectedKeyer.softness);
+    const spillSuppression = Math.min(1, Math.max(0, selectedKeyer.spillSuppression));
+    const spillChannel = keyColor[2] > keyColor[1] ? 2 : 1;
+    const otherChannels = spillChannel === 1 ? [0, 2] : [0, 1];
+    let frameRequest = 0;
+    let frameFailed = false;
+
+    const renderFrame = () => {
+      if (frameFailed || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+        || video.videoWidth === 0 || video.videoHeight === 0) return;
+
+      try {
+        const scale = Math.min(1, 960 / video.videoWidth, 540 / video.videoHeight);
+        const width = Math.max(1, Math.round(video.videoWidth * scale));
+        const height = Math.max(1, Math.round(video.videoHeight * scale));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        context.drawImage(video, 0, 0, width, height);
+        const image = context.getImageData(0, 0, width, height);
+        const pixels = image.data;
+        const softnessRange = 1 / softness;
+        for (let index = 0; index < pixels.length; index += 4) {
+          const red = pixels[index] - keyColor[0];
+          const green = pixels[index + 1] - keyColor[1];
+          const blue = pixels[index + 2] - keyColor[2];
+          const distance = Math.sqrt(red * red + green * green + blue * blue) / 441.673;
+          const amount = Math.min(1, Math.max(0, (distance - threshold) * softnessRange));
+          const smoothAmount = amount * amount * (3 - 2 * amount);
+          const outputAlpha = Math.round(pixels[index + 3] * smoothAmount);
+          if (spillSuppression > 0 && smoothAmount > 0) {
+            const spill = Math.max(0, pixels[index + spillChannel] - Math.max(
+              pixels[index + otherChannels[0]],
+              pixels[index + otherChannels[1]],
+            )) * spillSuppression * smoothAmount;
+            pixels[index + spillChannel] = Math.max(0, pixels[index + spillChannel] - spill);
+            pixels[index + otherChannels[0]] = Math.min(255, pixels[index + otherChannels[0]] + spill / 2);
+            pixels[index + otherChannels[1]] = Math.min(255, pixels[index + otherChannels[1]] + spill / 2);
+          }
+          if (keyerViewChannel === "alpha") {
+            pixels[index] = outputAlpha;
+            pixels[index + 1] = outputAlpha;
+            pixels[index + 2] = outputAlpha;
+            pixels[index + 3] = 255;
+          } else {
+            if (keyerViewChannel !== "rgb") {
+              const channelIndex = keyerViewChannel === "red" ? 0 : keyerViewChannel === "green" ? 1 : 2;
+              const channel = pixels[index + channelIndex];
+              pixels[index] = channel;
+              pixels[index + 1] = channel;
+              pixels[index + 2] = channel;
+            }
+            pixels[index + 3] = outputAlpha;
+          }
+        }
+        context.putImageData(image, 0, 0);
+      } catch {
+        frameFailed = true;
+        setError("Could not process this video frame in the browser. Upload the video from this device and try again.");
+      }
+
+      if (!frameFailed && !video.paused && !video.ended) {
+        frameRequest = window.requestAnimationFrame(renderFrame);
+      }
+    };
+
+    const startRendering = () => {
+      window.cancelAnimationFrame(frameRequest);
+      frameRequest = window.requestAnimationFrame(renderFrame);
+    };
+    const renderPausedFrame = () => {
+      window.cancelAnimationFrame(frameRequest);
+      renderFrame();
+    };
+
+    video.addEventListener("play", startRendering);
+    video.addEventListener("pause", renderPausedFrame);
+    video.addEventListener("seeked", renderPausedFrame);
+    video.addEventListener("loadeddata", renderPausedFrame);
+    renderPausedFrame();
+    if (!video.paused && !video.ended) startRendering();
+
+    return () => {
+      video.removeEventListener("play", startRendering);
+      video.removeEventListener("pause", renderPausedFrame);
+      video.removeEventListener("seeked", renderPausedFrame);
+      video.removeEventListener("loadeddata", renderPausedFrame);
+      window.cancelAnimationFrame(frameRequest);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    };
+  }, [
+    selectedClip?.id,
+    selectedKeyer.color,
+    selectedKeyer.enabled,
+    selectedKeyer.similarity,
+    selectedKeyer.softness,
+    selectedKeyer.spillSuppression,
+    keyerViewChannel,
+  ]);
 
   const pauseAudio = () => {
     transitionPreviewRef.current?.pause();
@@ -676,6 +837,18 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const finishAudioEdit = () => {
     const snapshot = audioEditStart.current;
     audioEditStart.current = null;
+    if (snapshot && JSON.stringify(snapshot.sequences) !== JSON.stringify(editorSnapshotRef.current.sequences)) {
+      recordHistory(snapshot);
+    }
+  };
+
+  const beginKeyerEdit = () => {
+    if (!keyerEditStart.current) keyerEditStart.current = editorSnapshotRef.current;
+  };
+
+  const finishKeyerEdit = () => {
+    const snapshot = keyerEditStart.current;
+    keyerEditStart.current = null;
     if (snapshot && JSON.stringify(snapshot.sequences) !== JSON.stringify(editorSnapshotRef.current.sequences)) {
       recordHistory(snapshot);
     }
@@ -972,6 +1145,12 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     } else if (clipIndex < selectedIndex) {
       setPlayheadTime((current) => Math.max(0, current + durationChange));
     }
+  };
+
+  const updateSelectedClipKeyer = (changes: Partial<StoredEditorKeyer>) => {
+    if (!selectedClip) return;
+    const keyer = { ...selectedKeyer, ...changes };
+    setClips((current) => current.map((clip) => clip.id === selectedClip.id ? { ...clip, keyer } : clip));
   };
 
   const splitClipAt = (clipId: string, clientX: number, element: HTMLElement) => {
@@ -1576,7 +1755,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     }
   };
 
-  const exportVideo = async (format: "mov" | "mp4") => {
+  const exportVideo = async (format: "mov" | "mp4" | "png") => {
     if (clips.length === 0 || !activeSequence) return;
     setError("");
     playbackWanted.current = false;
@@ -1598,13 +1777,16 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         afterClipIndex: clips.findIndex((clip) => clip.id === transition.leftClipId),
         duration: transition.duration,
       }))));
-      formData.append("audioTimeline", JSON.stringify(audioClips.map((clip, fileIndex) => ({
-        fileIndex,
-        start: clip.start,
-        trimStart: clip.trimStart,
-        trimEnd: clip.trimEnd,
-        volume: clip.volume,
-      }))));
+      formData.append("keyers", JSON.stringify(clips.map((clip) => ({ ...DEFAULT_KEYER, ...clip.keyer }))));
+      if (format !== "png") {
+        formData.append("audioTimeline", JSON.stringify(audioClips.map((clip, fileIndex) => ({
+          fileIndex,
+          start: clip.start,
+          trimStart: clip.trimStart,
+          trimEnd: clip.trimEnd,
+          volume: clip.volume,
+        }))));
+      }
 
       for (const clip of clips) {
         let response: Response;
@@ -1621,7 +1803,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         formData.append("clip", video, clip.name);
       }
 
-      for (const clip of audioClips) {
+      for (const clip of format === "png" ? [] : audioClips) {
         const file = clip.file;
         if (!file) throw new Error(`Could not read audio "${clip.name}" from this device.`);
         if (file.size > 200 * 1024 * 1024) {
@@ -1630,7 +1812,9 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         formData.append("audio", file, clip.name);
       }
 
-      setExportStage(`Uploading video and audio tracks and rendering transitions in H.264 ${format.toUpperCase()} on the server…`);
+      setExportStage(format === "png"
+        ? "Uploading clips and rendering transparent 30 fps PNG frames…"
+        : `Uploading video and audio tracks and rendering transitions in H.264 ${format.toUpperCase()} on the server…`);
       const response = await fetch("/api/video/export", { method: "POST", body: formData });
       if (!response.ok) {
         let payload: unknown;
@@ -1652,7 +1836,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       const link = document.createElement("a");
       link.href = url;
       const safeName = activeSequence.name.trim().replace(/[^a-zA-Z0-9._-]+/g, "-") || "sequence";
-      link.download = `${safeName}.${format}`;
+      link.download = format === "png" ? `${safeName}-transparent-frames.zip` : `${safeName}.${format}`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (caught) {
@@ -1757,11 +1941,16 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       </aside>
 
       <div className="ff-editor-workspace">
-        <div className="ff-editor-preview">
+        <div
+          className={`ff-editor-preview${selectedKeyer.enabled ? " ff-editor-key-preview" : ""}`}
+          ref={previewContainerRef}
+        >
           {selectedClip ? (
             <video
               key={selectedClip.id}
               ref={previewRef}
+              className={selectedKeyer.enabled ? "ff-editor-preview-keyed-source" : undefined}
+              style={{ transform: `scale(${previewZoom})` }}
               src={selectedClip.src}
               playsInline
               onCanPlay={(event) => {
@@ -1808,21 +1997,30 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               <p>Add a generated video or upload a clip to begin.</p>
             </div>
           )}
+          {selectedClip && selectedKeyer.enabled && (
+            <canvas
+              ref={keyerCanvasRef}
+              className="ff-editor-keyer-canvas"
+              style={{ transform: `scale(${previewZoom})` }}
+              aria-label={`Chroma-key preview for ${selectedClip.name}`}
+            />
+          )}
           {previewTransitionClip && (previewTransition || selectedClipOutgoingTransition) && (
             <video
               key={`transition-${previewTransitionClip.id}`}
               ref={transitionPreviewRef}
               className="ff-editor-transition-preview"
               src={previewTransitionClip.src}
-              playsInline
-              muted
-              aria-hidden="true"
               style={{
+                transform: `scale(${previewZoom})`,
                 opacity: previewTransition
                   ? Math.min(1, Math.max(0,
                     (playheadTime - getTransitionStart(previewTransition)) / previewTransition.duration))
                   : 0,
               }}
+              playsInline
+              muted
+              aria-hidden="true"
               onCanPlay={(event) => {
                 const video = event.currentTarget;
                 const transition = getTransitionAtTime(playheadTime);
@@ -1861,6 +2059,19 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               </button>
               <span>{selectedClip.name}</span>
               <span>{formatTime(selectedClip.trimStart)} – {formatTime(selectedClip.trimEnd)}</span>
+              <label className="ff-editor-zoom-control">
+                <span>Zoom</span>
+                <input
+                  type="range"
+                  aria-label="Preview zoom"
+                  min="0.5"
+                  max="4"
+                  step="0.1"
+                  value={previewZoom}
+                  onChange={(event) => setPreviewZoom(Number(event.target.value))}
+                />
+                <output>{Math.round(previewZoom * 100)}%</output>
+              </label>
             </div>
           )}
         </div>
@@ -1979,6 +2190,22 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                 <button
                   type="button"
                   className="ff-editor-tool"
+                  aria-label="Chroma key effect"
+                  aria-pressed={selectedKeyer.enabled}
+                  title={selectedKeyer.enabled ? "Disable chroma key on selected clip" : "Enable chroma key on selected clip"}
+                  disabled={!selectedClip || isExporting}
+                  onClick={() => {
+                    if (!selectedClip) return;
+                    recordHistory();
+                    updateSelectedClipKeyer({ enabled: !selectedKeyer.enabled });
+                    setError("");
+                  }}
+                >
+                  <span aria-hidden="true">◉</span>
+                </button>
+                <button
+                  type="button"
+                  className="ff-editor-tool"
                   aria-label="Ripple delete selected clip"
                   title="Ripple delete selected clip"
                   disabled={!selectedClip || isExporting}
@@ -2000,11 +2227,139 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               >
                 {isExporting && exportingFormat === "mp4" ? "Rendering MP4…" : "Export MP4"}
               </button>
+              <button
+                type="button"
+                className="ff-editor-sequence-action ff-editor-export-secondary"
+                onClick={() => void exportVideo("png")}
+                disabled={clips.length === 0 || isExporting}
+                title="Export a transparent 30 fps PNG sequence in a ZIP file (up to 60 seconds)"
+              >
+                {isExporting && exportingFormat === "png" ? "Rendering PNGs…" : "Export PNGs"}
+              </button>
             </div>
           </div>
           <p className="ff-editor-instructions">
             Video clips with embedded audio show a source waveform automatically, aligned to the visible trim. Add audio from Footage to place a separate track at the playhead. Set its start, source in/out points, and volume; overlapping audio clips are mixed. Audio plays in sync with video and is included in exports. Choose the Transition tool and click between clips to add a cross dissolve; select its marker to change the duration or remove it. Transitions overlap adjacent clips, shorten the sequence, and crossfade their source audio. Undo and redo with Ctrl/Cmd+Z and Ctrl/Cmd+Y; history holds up to 50 actions and clears on reload. Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Choose the Razor tool and click a clip to split it. Use Ripple delete to remove the selected clip and close the gap. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
           </p>
+          {selectedClip && (
+            <section className="ff-editor-keyer-controls" aria-labelledby="ff-editor-keyer-heading">
+              <div className="ff-editor-keyer-heading">
+                <strong id="ff-editor-keyer-heading">Chroma key</strong>
+                <span>Preview effect · source footage stays unchanged</span>
+                <label className="ff-editor-keyer-toggle">
+                  <input
+                    type="checkbox"
+                    aria-label="Enable chroma key"
+                    checked={selectedKeyer.enabled}
+                    disabled={isExporting}
+                    onChange={(event) => {
+                      recordHistory();
+                      updateSelectedClipKeyer({ enabled: event.target.checked });
+                      setError("");
+                    }}
+                  />
+                  Enable
+                </label>
+              </div>
+              {selectedKeyer.enabled && (
+                <>
+                  <div className="ff-editor-keyer-fields">
+                    <label className="ff-editor-keyer-channel">
+                      View channel
+                      <select
+                        aria-label="Chroma key view channel"
+                        value={keyerViewChannel}
+                        onChange={(event) => {
+                          const channel = event.target.value;
+                          if (isKeyerViewChannel(channel)) setKeyerViewChannel(channel);
+                        }}
+                      >
+                        <option value="rgb">RGB</option>
+                        <option value="red">Red</option>
+                        <option value="green">Green</option>
+                        <option value="blue">Blue</option>
+                        <option value="alpha">Alpha</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="ff-editor-keyer-fields">
+                  <label className="ff-editor-keyer-color">
+                    Screen color
+                    <input
+                      type="color"
+                      aria-label="Chroma key color"
+                      value={selectedKeyer.color}
+                      disabled={isExporting}
+                      onPointerDown={beginKeyerEdit}
+                      onPointerUp={finishKeyerEdit}
+                      onKeyDown={beginKeyerEdit}
+                      onKeyUp={finishKeyerEdit}
+                      onBlur={finishKeyerEdit}
+                      onChange={(event) => updateSelectedClipKeyer({ color: event.target.value })}
+                    />
+                  </label>
+                  <label className="ff-editor-keyer-range">
+                    Similarity
+                    <input
+                      type="range"
+                      aria-label="Chroma key similarity"
+                      min="0"
+                      max="0.8"
+                      step="0.01"
+                      value={selectedKeyer.similarity}
+                      disabled={isExporting}
+                      onPointerDown={beginKeyerEdit}
+                      onPointerUp={finishKeyerEdit}
+                      onKeyDown={beginKeyerEdit}
+                      onKeyUp={finishKeyerEdit}
+                      onBlur={finishKeyerEdit}
+                      onChange={(event) => updateSelectedClipKeyer({ similarity: Number(event.target.value) })}
+                    />
+                    <output>{selectedKeyer.similarity.toFixed(2)}</output>
+                  </label>
+                  <label className="ff-editor-keyer-range">
+                    Edge softness
+                    <input
+                      type="range"
+                      aria-label="Chroma key edge softness"
+                      min="0.01"
+                      max="0.6"
+                      step="0.01"
+                      value={selectedKeyer.softness}
+                      disabled={isExporting}
+                      onPointerDown={beginKeyerEdit}
+                      onPointerUp={finishKeyerEdit}
+                      onKeyDown={beginKeyerEdit}
+                      onKeyUp={finishKeyerEdit}
+                      onBlur={finishKeyerEdit}
+                      onChange={(event) => updateSelectedClipKeyer({ softness: Number(event.target.value) })}
+                    />
+                    <output>{selectedKeyer.softness.toFixed(2)}</output>
+                  </label>
+                  <label className="ff-editor-keyer-range">
+                    Spill suppression
+                    <input
+                      type="range"
+                      aria-label="Chroma key spill suppression"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={selectedKeyer.spillSuppression}
+                      disabled={isExporting}
+                      onPointerDown={beginKeyerEdit}
+                      onPointerUp={finishKeyerEdit}
+                      onKeyDown={beginKeyerEdit}
+                      onKeyUp={finishKeyerEdit}
+                      onBlur={finishKeyerEdit}
+                      onChange={(event) => updateSelectedClipKeyer({ spillSuppression: Number(event.target.value) })}
+                    />
+                    <output>{Math.round(selectedKeyer.spillSuppression * 100)}%</output>
+                  </label>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
           {selectedTransition && (
             <div className="ff-editor-transition-controls" role="group" aria-label="Cross dissolve settings">
               <strong>Cross dissolve</strong>

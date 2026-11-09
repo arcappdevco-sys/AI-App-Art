@@ -8,6 +8,15 @@ export type StoredEditorClip = {
   trimStart: number;
   trimEnd: number;
   audioWaveform?: number[] | null;
+  keyer?: StoredEditorKeyer;
+};
+
+export type StoredEditorKeyer = {
+  enabled: boolean;
+  color: string;
+  similarity: number;
+  softness: number;
+  spillSuppression: number;
 };
 
 export type StoredEditorAudioClip = {
@@ -44,7 +53,7 @@ export type StoredEditorAsset = {
 };
 
 export type StoredVideoEditorState = {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   sequences: StoredEditorSequence[];
   uploadedAssets: StoredEditorAsset[];
   activeSequenceId: string;

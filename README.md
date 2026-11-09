@@ -17,6 +17,22 @@ The **ChatGPT Image** node uses `OPENAI_API_KEY` and OpenAI's GPT Image models. 
 
 Video generation uses the server-side `ATLASCLOUD_API_KEY`. The app connects Kling, Seedance 2.5 text/image-to-video, Veo 3.1 (standard, Fast, and Lite supported tasks), and Gemini Omni Flash (original) text/image/reference/video-edit tasks to Atlas Cloud. Gemini Omni 1.1 and Gemini Omni video-extend are not listed in Atlas Cloud's current video API catalog, so they are not offered as runnable choices.
 
+## Private invite-only deployment
+
+Put the app behind a [Cloudflare Access self-hosted application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/) on a hostname routed through Cloudflare. Configure an Allow policy for only the email addresses you are inviting; Access denies users who do not match an Allow policy.
+
+Set these variables in the app host's production environment:
+
+```text
+CLOUDFLARE_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+CLOUDFLARE_ACCESS_AUD=your-access-application-audience-tag
+CLOUDFLARE_ACCESS_ALLOWED_EMAILS=you@example.com,invitee@example.com
+```
+
+Find the team domain in Cloudflare Zero Trust and the audience tag in the Access application's details. The email list is an additional origin-side allowlist: each invited person must be included in both this list and the Cloudflare Access policy. Redeploy after changing the environment variables. The Next.js request proxy verifies the Cloudflare-signed JWT, issuer, audience, expiration, and email for pages and API routes, so direct requests to the app origin are denied too. In production, missing or incomplete configuration denies requests; local development remains available when all three variables are unset.
+
+Before sharing the link, confirm the Access application covers the entire hostname and verify an invited account can open the app while an uninvited account cannot. Add or remove invitees in both allowlists. Do not rely on a secret URL or an Access policy that allows all authenticated users.
+
 ## Video editor export
 
 The video editor saves Footage media, sequences, video and audio clips, transitions, trims, selection, playhead, and the active tool in this browser using IndexedDB. This data is local to the browser and device; clearing site data removes it. Browser storage quotas vary, so keep backup copies of important footage. Media files larger than 512 MB are not saved to the editor.
@@ -33,9 +49,15 @@ Upload audio in Footage and click **+ Audio** to place it at the playhead. Audio
 
 Choose the **Transition** tool and click the `+` at a clip boundary to add a cross dissolve. Drag either edge of the transition block to make it longer or shorter; select the block to see its duration or remove it. Transitions overlap adjacent clips, shorten the sequence, and crossfade source audio in both preview and export.
 
-The video editor can render each active sequence as a 1280 × 720 `.mov` or `.mp4` file with H.264 video and AAC audio, mixing audio-track clips with source audio from the video. Uploads the browser cannot preview are converted to browser-compatible H.264 MP4 before they are added to the timeline. Server-side export and video conversion require FFmpeg built with `libx264` and FFprobe available on the server's `PATH`. If they are installed elsewhere, configure `FFMPEG_PATH` and `FFPROBE_PATH` in the server environment.
+Select a timeline clip and use **Chroma key effect** in the timeline tools to toggle keying for that clip. Set the screen color, similarity, edge softness, and spill suppression in the Chroma key controls below the preview. Spill suppression reduces green or blue spill on retained subject pixels. Use **View channel** to inspect the keyed RGB image or its individual red, green, blue, and alpha channels; this changes preview display only. PNG-sequence exports include the key and spill suppression, while MOV/MP4 exports remain unchanged.
+
+Zoom the video preview with the slider beneath it or scroll the mouse wheel over the preview. Zoom changes only the preview, not exported framing.
+
+The video editor can render each active sequence as a 1280 × 720 `.mov` or `.mp4` file with H.264 video and AAC audio, mixing audio-track clips with source audio from the video. It can also export a 30 fps sequence of transparent PNG frames in a ZIP file; per-clip chroma-key settings and cross dissolves are included. PNG sequences are limited to 60 seconds and 512 MB of rendered frames. Uploads the browser cannot preview are converted to browser-compatible H.264 MP4 before they are added to the timeline. Server-side export and video conversion require FFmpeg built with `libx264` and FFprobe available on the server's `PATH`. If they are installed elsewhere, configure `FFMPEG_PATH` and `FFPROBE_PATH` in the server environment.
 
 The export route accepts up to 20 video clips and 20 audio clips, 200 MB per clip and 512 MB total, with a maximum combined trimmed video duration of 10 minutes. The deployment host must allow requests and server execution long enough for those media files to upload and render; some serverless hosts impose lower request-size or timeout limits. The editor reports an error if an export exceeds the host's limits or a clip cannot be read in the browser.
+
+`next.config.ts` sets Next.js `experimental.proxyClientMaxBodySize` to `512mb` so the proxy does not truncate uploads at its 10 MB default. The proxy buffers request bodies in memory, so keep the upload limit aligned with the capacity of your deployment host.
 
 ## Workflow management
 
