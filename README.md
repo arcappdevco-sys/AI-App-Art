@@ -19,6 +19,8 @@ Video generation uses the server-side `ATLASCLOUD_API_KEY`. The app connects Kli
 
 ## Video editor export
 
+The video editor saves Footage media, sequences, clip order, trims, selection, playhead, and the active tool in this browser using IndexedDB. This data is local to the browser and device; clearing site data removes it. Browser storage quotas vary, so keep backup copies of important footage. Media files larger than 512 MB are not saved to the editor.
+
 The video editor can render each active sequence as a 1280 × 720 `.mov` or `.mp4` file with H.264 video and AAC audio. Uploads the browser cannot preview are converted to browser-compatible H.264 MP4 before they are added to the timeline. Server-side export and video conversion require FFmpeg built with `libx264` and FFprobe available on the server's `PATH`. If they are installed elsewhere, configure `FFMPEG_PATH` and `FFPROBE_PATH` in the server environment.
 
 The export route accepts up to 20 clips, 200 MB per clip and 512 MB per sequence, with a maximum combined trimmed duration of 10 minutes. The deployment host must allow requests and server execution long enough for those video files to upload and render; some serverless hosts impose lower request-size or timeout limits. The editor reports an error if an export exceeds the host's limits or a clip cannot be read in the browser.

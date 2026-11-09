@@ -1,12 +1,21 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { registerEditorUploadBridge } from "@/lib/editor-upload-bridge";
+import {
+  loadEditorMedia,
+  loadVideoEditorState,
+  saveEditorMedia,
+  saveVideoEditorState,
+  type StoredVideoEditorState,
+} from "@/lib/video-editor-storage";
 
 export type VideoAsset = {
   id: string;
   name: string;
   src: string;
   file?: File;
+  mediaId?: string;
 };
 
 type TimelineClip = VideoAsset & {
@@ -38,6 +47,16 @@ type ClipTrimDrag = {
   trimEnd: number;
 };
 
+type EditorTool = "select" | "razor";
+
+type ClipReorderDrag = {
+  clipId: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dragging: boolean;
+};
+
 function formatTime(seconds: number) {
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
   const minutes = Math.floor(safeSeconds / 60);
@@ -65,12 +84,47 @@ function loadMedia(video: HTMLVideoElement, src: string) {
   });
 }
 
+async function fetchMediaFile(src: string, name: string) {
+  let response: Response;
+  try {
+    response = await fetch(src);
+  } catch {
+    response = await fetch("/api/media/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: src }),
+    });
+  }
+  if (!response.ok) {
+    let message = `Could not download "${name}" (${response.status}).`;
+    try {
+      const payload: unknown = await response.json();
+      if (typeof payload === "object" && payload !== null
+        && "error" in payload && typeof payload.error === "string") {
+        message = payload.error;
+      }
+    } catch {
+      // Keep the status-based message if the response isn't JSON.
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  if (blob.size === 0) throw new Error(`"${name}" is empty and cannot be saved.`);
+  if (blob.size > 512 * 1024 * 1024) throw new Error(`"${name}" is larger than the 512 MB editor-storage limit.`);
+  return new File([blob], name, { type: blob.type || "video/mp4" });
+}
+
 export default function VideoEditor({ assets, hidden = false }: { assets: VideoAsset[]; hidden?: boolean }) {
   const [uploadedAssets, setUploadedAssets] = useState<VideoAsset[]>([]);
   const [sequences, setSequences] = useState<VideoSequence[]>([
     { id: "sequence-1", name: "Sequence 1", clips: [], selectedId: "", playheadTime: 0 },
   ]);
   const [activeSequenceId, setActiveSequenceId] = useState("sequence-1");
+  const [activeTool, setActiveTool] = useState<EditorTool>("select");
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const [persistenceStatus, setPersistenceStatus] = useState("Restoring editor…");
+  const [persistenceError, setPersistenceError] = useState("");
+  const [draggingClipId, setDraggingClipId] = useState("");
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -84,6 +138,140 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const pendingSeek = useRef<{ id: string; time: number } | null>(null);
   const clipButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const trimDrag = useRef<ClipTrimDrag | null>(null);
+  const reorderDrag = useRef<ClipReorderDrag | null>(null);
+  const suppressClipClick = useRef(false);
+  const uploadsHeadingRef = useRef<HTMLHeadingElement>(null);
+  const unsavedMediaName = uploadedAssets.find((asset) => !asset.mediaId)?.name
+    ?? sequences.flatMap((sequence) => sequence.clips).find((clip) => !clip.mediaId)?.name;
+  const persistenceValidationError = unsavedMediaName ? `Media for "${unsavedMediaName}" is not saved yet.` : "";
+
+  useEffect(() => {
+    let cancelled = false;
+    const restoredUrls: string[] = [];
+
+    void (async () => {
+      try {
+        const saved = await loadVideoEditorState();
+        if (!saved) {
+          if (!cancelled) {
+            setPersistenceStatus("Saved on this device");
+            setPersistenceReady(true);
+          }
+          return;
+        }
+
+        const mediaFiles = new Map<string, File>();
+        const mediaIds = new Set([
+          ...saved.uploadedAssets.map((asset) => asset.mediaId),
+          ...saved.sequences.flatMap((sequence) => sequence.clips.map((clip) => clip.mediaId)),
+        ]);
+        await Promise.all([...mediaIds].map(async (mediaId) => {
+          mediaFiles.set(mediaId, await loadEditorMedia(mediaId));
+        }));
+
+        const createAsset = (id: string, name: string, mediaId: string): VideoAsset => {
+          const file = mediaFiles.get(mediaId);
+          if (!file) throw new Error(`Saved media "${name}" could not be restored.`);
+          const src = URL.createObjectURL(file);
+          restoredUrls.push(src);
+          return { id, name, mediaId, src, file };
+        };
+        const nextAssets = saved.uploadedAssets.map((asset) => createAsset(asset.id, asset.name, asset.mediaId));
+        const nextSequences: VideoSequence[] = saved.sequences.map((sequence) => ({
+          ...sequence,
+          clips: sequence.clips.map((clip) => ({
+            ...createAsset(clip.id, clip.name, clip.mediaId),
+            duration: clip.duration,
+            trimStart: clip.trimStart,
+            trimEnd: clip.trimEnd,
+          })),
+        }));
+        const nextActiveSequenceId = nextSequences.some((sequence) => sequence.id === saved.activeSequenceId)
+          ? saved.activeSequenceId
+          : nextSequences[0]?.id ?? "sequence-1";
+        const activeSequence = nextSequences.find((sequence) => sequence.id === nextActiveSequenceId);
+        const selectedClip = activeSequence?.clips.find((clip) => clip.id === activeSequence.selectedId)
+          ?? activeSequence?.clips[0];
+        if (activeSequence && selectedClip) {
+          const clipOffset = activeSequence.clips.slice(0, activeSequence.clips.indexOf(selectedClip))
+            .reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+          const clipTime = Math.min(
+            selectedClip.trimEnd,
+            Math.max(selectedClip.trimStart, selectedClip.trimStart + activeSequence.playheadTime - clipOffset),
+          );
+          pendingSeek.current = { id: selectedClip.id, time: clipTime };
+        }
+
+        if (cancelled) {
+          restoredUrls.forEach((url) => URL.revokeObjectURL(url));
+          return;
+        }
+        if (nextSequences.length > 0) setSequences(nextSequences);
+        setUploadedAssets(nextAssets);
+        setActiveSequenceId(nextActiveSequenceId);
+        setActiveTool(saved.activeTool === "razor" ? "razor" : "select");
+        setPersistenceStatus("Restored from this device");
+        setPersistenceReady(true);
+      } catch (caught) {
+        restoredUrls.forEach((url) => URL.revokeObjectURL(url));
+        if (cancelled) return;
+        setPersistenceError(caught instanceof Error ? caught.message : "Could not restore the video editor.");
+        setPersistenceStatus("Editor restore failed");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      restoredUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!persistenceReady) return;
+    if (persistenceValidationError) return;
+    const state: StoredVideoEditorState = {
+      version: 1,
+      sequences: sequences.map((sequence) => ({
+        ...sequence,
+        clips: sequence.clips.map((clip) => ({
+          id: clip.id,
+          name: clip.name,
+          mediaId: clip.mediaId ?? "",
+          duration: clip.duration,
+          trimStart: clip.trimStart,
+          trimEnd: clip.trimEnd,
+        })),
+      })),
+      uploadedAssets: uploadedAssets.map((asset) => ({
+        id: asset.id,
+        name: asset.name,
+        mediaId: asset.mediaId ?? "",
+      })),
+      activeSequenceId,
+      activeTool,
+    };
+
+    let cancelled = false;
+    const persist = () => {
+      setPersistenceStatus("Saving editor…");
+      void saveVideoEditorState(state).then(() => {
+        if (cancelled) return;
+        setPersistenceError("");
+        setPersistenceStatus("Saved on this device");
+      }).catch((caught: unknown) => {
+        if (cancelled) return;
+        setPersistenceError(caught instanceof Error ? caught.message : "Could not save the video editor.");
+        setPersistenceStatus("Editor save failed");
+      });
+    };
+    const timeout = window.setTimeout(persist, 250);
+    window.addEventListener("pagehide", persist);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+      window.removeEventListener("pagehide", persist);
+    };
+  }, [activeSequenceId, activeTool, persistenceReady, persistenceValidationError, sequences, uploadedAssets]);
 
   const activeSequence = sequences.find((sequence) => sequence.id === activeSequenceId) ?? sequences[0];
   const clips = activeSequence?.clips ?? [];
@@ -184,7 +372,13 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     probe.preload = "metadata";
     let normalizedUrl: string | null = null;
     try {
-      let clipAsset: VideoAsset = { id: asset.id, name: asset.name, src: asset.src };
+      let clipAsset: VideoAsset = {
+        id: asset.id,
+        name: asset.name,
+        src: asset.src,
+        mediaId: asset.mediaId ?? `clip-media-${crypto.randomUUID()}`,
+        ...(asset.file ? { file: asset.file } : {}),
+      };
       try {
         await loadMedia(probe, asset.src);
       } catch (originalError) {
@@ -208,7 +402,12 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         const normalizedVideo = await response.blob();
         if (normalizedVideo.size === 0) throw new Error(`Could not prepare "${asset.name}" for preview.`);
         normalizedUrl = URL.createObjectURL(normalizedVideo);
-        clipAsset = { id: asset.id, name: asset.name, src: normalizedUrl };
+        const normalizedFile = new File([normalizedVideo], asset.name, { type: normalizedVideo.type || "video/mp4" });
+        clipAsset = {
+          ...clipAsset,
+          src: normalizedUrl,
+          file: normalizedFile,
+        };
         await loadMedia(probe, normalizedUrl);
       }
       const duration = probe.duration;
@@ -222,6 +421,14 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         trimStart: 0,
         trimEnd: duration,
       };
+      const mediaFile = clipAsset.file ?? await fetchMediaFile(asset.src, asset.name);
+      if (mediaFile.size > 512 * 1024 * 1024) {
+        throw new Error(`"${asset.name}" is larger than the 512 MB editor-storage limit.`);
+      }
+      const mediaId = clipAsset.mediaId;
+      if (!mediaId) throw new Error(`Could not assign persistent storage to "${asset.name}".`);
+      await saveEditorMedia(mediaId, mediaFile);
+      clip.file = mediaFile;
       setSequences((current) => current.map((sequence) => {
         if (sequence.id !== targetSequenceId) return sequence;
         const playheadTime = sequence.clips.reduce((total, currentClip) => total + currentClip.trimEnd - currentClip.trimStart, 0);
@@ -233,7 +440,9 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         };
       }));
       if (normalizedUrl) {
-        setUploadedAssets((current) => current.map((item) => item.id === asset.id ? clipAsset : item));
+        setUploadedAssets((current) => current.map((item) => item.id === asset.id
+          ? { ...clipAsset, file: mediaFile }
+          : item));
         URL.revokeObjectURL(asset.src);
         normalizedUrl = null;
       }
@@ -268,6 +477,37 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     } else if (clipIndex < selectedIndex) {
       setPlayheadTime((current) => Math.max(0, current + durationChange));
     }
+  };
+
+  const splitClipAt = (clipId: string, clientX: number, element: HTMLElement) => {
+    if (isExporting) return;
+    const clip = clips.find((item) => item.id === clipId);
+    if (!clip) return;
+    const bounds = element.getBoundingClientRect();
+    if (bounds.width <= 0) return;
+    const fraction = Math.min(1, Math.max(0, (clientX - bounds.left) / bounds.width));
+    const splitTime = clip.trimStart + fraction * (clip.trimEnd - clip.trimStart);
+    if (splitTime - clip.trimStart < 0.1 || clip.trimEnd - splitTime < 0.1) return;
+
+    const offset = getClipOffset(clipId);
+    const leftClip: TimelineClip = {
+      ...clip,
+      id: `${clip.id}-left-${crypto.randomUUID()}`,
+      trimEnd: splitTime,
+    };
+    const rightClip: TimelineClip = {
+      ...clip,
+      id: `${clip.id}-right-${crypto.randomUUID()}`,
+      trimStart: splitTime,
+    };
+    playbackWanted.current = false;
+    previewRef.current?.pause();
+    setIsPlaying(false);
+    setClips((current) => current.flatMap((item) => item.id === clipId ? [leftClip, rightClip] : [item]));
+    setSelectedId(rightClip.id);
+    pendingSeek.current = { id: rightClip.id, time: splitTime };
+    setPlayheadTime(offset + splitTime - clip.trimStart);
+    setClipContextMenu(null);
   };
 
   const startTrimDrag = (
@@ -351,6 +591,56 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     setClipOrder(reordered);
   };
 
+  const startClipReorder = (event: ReactPointerEvent<HTMLButtonElement>, clipId: string) => {
+    if (isExporting || activeTool !== "select" || event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    reorderDrag.current = {
+      clipId,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      dragging: false,
+    };
+  };
+
+  const moveClipReorder = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = reorderDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.dragging && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 5) {
+      drag.dragging = true;
+      suppressClipClick.current = true;
+      playbackWanted.current = false;
+      previewRef.current?.pause();
+      setIsPlaying(false);
+      selectClip(drag.clipId);
+      setDraggingClipId(drag.clipId);
+    }
+  };
+
+  const finishClipReorder = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = reorderDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    reorderDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (!drag.dragging) return;
+
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-clip-id]");
+    const targetId = target?.dataset.clipId;
+    if (targetId && targetId !== drag.clipId) {
+      const targetIndex = clips.findIndex((clip) => clip.id === targetId);
+      const bounds = target?.getBoundingClientRect();
+      if (targetIndex >= 0 && bounds) {
+        moveClipTo(drag.clipId, targetIndex + (event.clientX >= bounds.left + bounds.width / 2 ? 1 : 0));
+      }
+    }
+    setDraggingClipId("");
+    window.setTimeout(() => {
+      suppressClipClick.current = false;
+    }, 0);
+  };
+
   const removeClip = (id: string) => {
     const index = clips.findIndex((clip) => clip.id === id);
     const next = clips.filter((clip) => clip.id !== id);
@@ -392,18 +682,48 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     removeClip(selectedClip.id);
   };
 
-  const addUploads = (files: FileList | null) => {
-    if (!files) return;
-    const accepted = Array.from(files).filter((file) => file.type.startsWith("video/"));
-    if (accepted.length !== files.length) setError("Only video files can be added to the editor.");
-    const nextAssets = accepted.map((file) => ({
-      id: `upload-${crypto.randomUUID()}`,
-      name: file.name,
-      src: URL.createObjectURL(file),
-      file,
+  const addUploads = useCallback(async (files: FileList | File | null, includeImages = false) => {
+    if (!files) return false;
+    const selectedFiles = files instanceof File ? [files] : Array.from(files);
+    const accepted = selectedFiles.filter((file) => file.type.startsWith("video/")
+      || (includeImages && file.type.startsWith("image/")));
+    if (accepted.length !== selectedFiles.length) setError("Only video files can be added to the editor.");
+    try {
+      const nextAssets = await Promise.all(accepted.map(async (file) => {
+        if (file.size > 512 * 1024 * 1024) {
+          throw new Error(`"${file.name}" is larger than the 512 MB editor-storage limit.`);
+        }
+        const id = `upload-${crypto.randomUUID()}`;
+        await saveEditorMedia(id, file);
+        return {
+          id,
+          name: file.name,
+          src: URL.createObjectURL(file),
+          file,
+          mediaId: id,
+        };
+      }));
+      setUploadedAssets((current) => [...current, ...nextAssets]);
+      setPersistenceError("");
+      return accepted.length === selectedFiles.length && accepted.length > 0;
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Could not save uploaded media.";
+      setPersistenceError(message);
+      setPersistenceStatus("Editor save failed");
+      throw caught;
+    }
+  }, []);
+
+  const focusUploads = useCallback(() => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      uploadsHeadingRef.current?.scrollIntoView({ block: "nearest" });
+      uploadsHeadingRef.current?.focus({ preventScroll: true });
     }));
-    setUploadedAssets((current) => [...current, ...nextAssets]);
-  };
+  }, []);
+
+  useEffect(() => registerEditorUploadBridge(async (file) => {
+    if (!await addUploads(file, true)) throw new Error("The editor accepts image and video files only.");
+  }, focusUploads), [addUploads, focusUploads]);
 
   const getClipOffset = (id: string) => {
     const index = clips.findIndex((clip) => clip.id === id);
@@ -594,7 +914,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
 
         <section className="ff-editor-media">
           <div className="ff-editor-section-heading">
-            <h2>Uploads</h2>
+            <h2 ref={uploadsHeadingRef} tabIndex={-1}>Footage</h2>
             <label className="ff-editor-upload">
               Add files
               <input
@@ -602,23 +922,33 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                 accept="video/*"
                 multiple
                 onChange={(event) => {
-                  addUploads(event.target.files);
+                  void addUploads(event.target.files).catch((caught: unknown) => {
+                    setError(caught instanceof Error ? caught.message : "Could not save uploaded media.");
+                  });
                   event.target.value = "";
                 }}
               />
             </label>
           </div>
           {uploadedAssets.map((asset) => (
-            <button className="ff-editor-asset" key={asset.id} onClick={() => void addAsset(asset)} disabled={isExporting || Boolean(loadingAssetId)}>
-              <span aria-hidden="true">▣</span>
-              <span>{loadingAssetId === asset.id ? "Preparing video…" : asset.name}</span>
-              <strong>+</strong>
-            </button>
+            asset.file?.type.startsWith("image/") ? (
+              <div className="ff-editor-asset" key={asset.id} title="Images are available in Uploads; the timeline accepts video clips.">
+                <img className="ff-editor-upload-thumbnail" src={asset.src} alt="" />
+                <span>{asset.name}</span>
+                <strong aria-hidden="true">IMG</strong>
+              </div>
+            ) : (
+              <button className="ff-editor-asset" key={asset.id} onClick={() => void addAsset(asset)} disabled={isExporting || Boolean(loadingAssetId)}>
+                <span aria-hidden="true">▣</span>
+                <span>{loadingAssetId === asset.id ? "Preparing video…" : asset.name}</span>
+                <strong>+</strong>
+              </button>
+            )
           ))}
           {uploadedAssets.length === 0 && <p className="ff-editor-empty">Upload video clips from this device.</p>}
         </section>
 
-        <p className="ff-editor-sidebar-note">Sequences, uploads, and timeline edits stay in this tab only. MOV and MP4 exports use H.264 video and AAC audio.</p>
+        <p className="ff-editor-sidebar-note">Footage, sequences, and timeline edits are saved in this browser. MOV and MP4 exports use H.264 video and AAC audio.</p>
       </aside>
 
       <div className="ff-editor-workspace">
@@ -709,6 +1039,40 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                 Delete
               </button>
               <span>{clips.length} clips · {formatTime(totalDuration)} · {formatTime(playheadTime)}</span>
+              <div className="ff-editor-tools" role="group" aria-label="Timeline tools">
+                <button
+                  type="button"
+                  className="ff-editor-tool"
+                  aria-label="Selection tool"
+                  aria-pressed={activeTool === "select"}
+                  title="Selection tool"
+                  disabled={isExporting}
+                  onClick={() => setActiveTool("select")}
+                >
+                  <span aria-hidden="true">↖</span>
+                </button>
+                <button
+                  type="button"
+                  className="ff-editor-tool"
+                  aria-label="Razor tool"
+                  aria-pressed={activeTool === "razor"}
+                  title="Razor tool: click a clip to split it"
+                  disabled={isExporting}
+                  onClick={() => setActiveTool("razor")}
+                >
+                  <span aria-hidden="true">✂</span>
+                </button>
+                <button
+                  type="button"
+                  className="ff-editor-tool"
+                  aria-label="Ripple delete selected clip"
+                  title="Ripple delete selected clip"
+                  disabled={!selectedClip || isExporting}
+                  onClick={() => selectedClip && removeClip(selectedClip.id)}
+                >
+                  <span aria-hidden="true">⌫</span>
+                </button>
+              </div>
             </div>
             <div className="ff-editor-export-actions">
               <button type="button" className="ff-run" onClick={() => void exportVideo("mov")} disabled={clips.length === 0 || isExporting}>
@@ -725,7 +1089,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             </div>
           </div>
           <p className="ff-editor-instructions">
-            Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
+            Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Choose the Razor tool and click a clip to split it. Use Ripple delete to remove the selected clip and close the gap. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
           </p>
           {isExporting && (
             <div className="ff-editor-export-status" role="status" aria-live="polite">
@@ -775,6 +1139,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                     <li
                       className={clip.id === selectedClip?.id ? "ff-editor-clip ff-editor-clip-active" : "ff-editor-clip"}
                       key={clip.id}
+                      data-clip-id={clip.id}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -789,12 +1154,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                         });
                       }}
                       style={{ flexBasis: `${((clip.trimEnd - clip.trimStart) / totalDuration) * 100}%` }}
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        const draggedId = event.dataTransfer.getData("text/plain");
-                        if (draggedId) moveClipTo(draggedId, index);
-                      }}
+                      data-dragging={draggingClipId === clip.id || undefined}
                     >
                       <div className="ff-editor-clip-trim-bar" aria-label={`${clip.name} trim handles`}>
                         <button
@@ -835,20 +1195,28 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                       </div>
                       <button
                         type="button"
-                        className="ff-editor-clip-select"
-                        draggable={!isExporting}
+                        className={`ff-editor-clip-select${activeTool === "razor"
+                          ? " ff-editor-clip-select-razor"
+                          : " ff-editor-clip-select-draggable"}`}
+                        draggable={false}
                         ref={(element) => {
                           if (element) clipButtonRefs.current.set(clip.id, element);
                           else clipButtonRefs.current.delete(clip.id);
                         }}
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData("text/plain", clip.id);
-                          event.dataTransfer.effectAllowed = "move";
-                          selectClip(clip.id);
-                          setClipContextMenu(null);
-                        }}
-                        onClick={() => {
-                          selectClip(clip.id);
+                        onPointerDown={(event) => startClipReorder(event, clip.id)}
+                        onPointerMove={moveClipReorder}
+                        onPointerUp={finishClipReorder}
+                        onPointerCancel={finishClipReorder}
+                        onClick={(event) => {
+                          if (suppressClipClick.current) {
+                            suppressClipClick.current = false;
+                            return;
+                          }
+                          if (activeTool === "razor") {
+                            splitClipAt(clip.id, event.clientX, event.currentTarget.parentElement ?? event.currentTarget);
+                          } else {
+                            selectClip(clip.id);
+                          }
                         }}
                       >
                         <span className="ff-editor-clip-number">{String(index + 1).padStart(2, "0")}</span>
@@ -911,6 +1279,10 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                 )}
               </div>
             </div>
+          )}
+          <p className="ff-editor-footer" role="status" aria-live="polite">{persistenceStatus}</p>
+          {(persistenceError || persistenceValidationError) && (
+            <p className="ff-editor-error" role="alert">{persistenceError || persistenceValidationError}</p>
           )}
           <p className="ff-editor-footer">Server export requires FFmpeg with libx264 installed. Clips are uploaded for rendering and removed from the server afterward; keep this tab open until the download starts.</p>
         </div>

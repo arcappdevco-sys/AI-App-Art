@@ -866,6 +866,37 @@ body {
   margin: 7px 10px 0;
 }
 
+.ff-media-send {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: #b9c9b3;
+  font-size: 10px;
+}
+
+.ff-media-send-error {
+  flex-basis: 100%;
+  color: #e0675a;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ff-send-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #6d7a74;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ff-send-spin 700ms linear infinite;
+}
+
+@keyframes ff-send-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .ff-download {
   display: inline-flex;
   align-items: center;
@@ -1064,6 +1095,27 @@ body {
   color: var(--accent);
   font-size: 15px;
   font-weight: 500;
+}
+
+.ff-editor-image-asset {
+  cursor: default;
+}
+
+.ff-editor-asset.ff-editor-image-asset:hover {
+  border-color: var(--line);
+  background: var(--panel-raised);
+}
+
+.ff-editor-image-asset strong {
+  font-size: 9px;
+}
+
+.ff-editor-upload-thumbnail {
+  width: 28px;
+  height: 24px;
+  flex: 0 0 28px;
+  border-radius: 3px;
+  object-fit: cover;
 }
 
 .ff-editor-asset:disabled {
@@ -1273,6 +1325,50 @@ body {
 
 .ff-editor-sequence-delete {
   color: #e4a397;
+}
+
+.ff-editor-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid #34413f;
+  border-radius: 6px;
+  background: #0c1213;
+}
+
+.ff-editor-tool {
+  display: inline-flex;
+  width: 29px;
+  height: 27px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #9eadaa;
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
+}
+
+.ff-editor-tool[aria-pressed="true"] {
+  background: #26342b;
+  color: var(--accent);
+}
+
+.ff-editor-tool:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.ff-editor-tool:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.ff-editor-tool:focus-visible {
+  outline: 2px solid #55baff;
+  outline-offset: 1px;
 }
 
 .ff-editor-timeline-heading .ff-run {
@@ -1538,12 +1634,22 @@ body {
   text-align: left;
 }
 
-.ff-editor-clip-select[draggable="true"] {
+.ff-editor-clip-select-draggable {
   cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
-.ff-editor-clip-select[draggable="true"]:active {
+.ff-editor-clip-select-draggable:active {
   cursor: grabbing;
+}
+
+.ff-editor-clip[data-dragging="true"] {
+  opacity: 0.55;
+}
+
+.ff-editor-clip-select-razor {
+  cursor: crosshair;
 }
 
 .ff-editor-clip-number {

@@ -777,7 +777,7 @@ export default function Page() {
       </aside>
 
       <main className="ff-canvas">
-        <WorkflowRunContext.Provider value={{ runNode, isRunning }}>
+        <WorkflowRunContext.Provider value={{ runNode, isRunning, openEditor: () => setActiveView("editor") }}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}

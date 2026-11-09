@@ -1,7 +1,14 @@
 "use client";
-import { createContext, Fragment, useContext, useState } from "react";
+import { createContext, Fragment, useContext, useState, useSyncExternalStore } from "react";
 import { Handle, Position, useEdges, useReactFlow, type NodeProps } from "@xyflow/react";
 import { registry, PORT_COLORS } from "@/lib/registry";
+import {
+  addFileToEditorUploads,
+  getEditorUploadVersion,
+  isEditorUploadSourceSent,
+  openEditorUploads,
+  subscribeToEditorUploadChanges,
+} from "@/lib/editor-upload-bridge";
 import { SEEDANCE_MODELS, SEEDANCE_RATES } from "@/lib/seedance";
 import { VEO_RATES } from "@/lib/veo";
 import { normalizeOmniParams, OMNI_DEFAULTS, OMNI_MODELS, OMNI_RATES, OMNI_TASKS } from "@/lib/omni";
@@ -15,23 +22,219 @@ import {
 export const WorkflowRunContext = createContext<{
   runNode: (nodeId: string) => void;
   isRunning: boolean;
+  openEditor: () => void;
 } | null>(null);
 
-function Media({ value }: { value: unknown }) {
+function mediaType(value: unknown): "video" | "image" | null {
   if (typeof value !== "string" || !value) return null;
-  const isVideo = /\.(mp4|webm|mov)(\?|$)/i.test(value);
-  const isImage = /^data:image\//.test(value) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(value);
-  if (!isVideo && !isImage) return null;
+  if (/\.(mp4|webm|mov)(\?|$)/i.test(value)) return "video";
+  if (/^data:image\//.test(value) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(value)) return "image";
+  return null;
+}
+
+function mediaFileType(blob: Blob, sourceUrl: string) {
+  const extensions: Record<string, { type: string; extension: string }> = {
+    "image/png": { type: "image/png", extension: "png" },
+    "image/jpeg": { type: "image/jpeg", extension: "jpg" },
+    "image/webp": { type: "image/webp", extension: "webp" },
+    "image/gif": { type: "image/gif", extension: "gif" },
+    "video/mp4": { type: "video/mp4", extension: "mp4" },
+    "video/webm": { type: "video/webm", extension: "webm" },
+    "video/quicktime": { type: "video/quicktime", extension: "mov" },
+  };
+  const contentType = blob.type.split(";")[0].trim().toLowerCase();
+  if (extensions[contentType]) return extensions[contentType];
+  const match = /\.(png|jpe?g|webp|gif|mp4|webm|mov)(?:$|[?#])/i.exec(sourceUrl);
+  if (!match) throw new Error("The media type could not be determined.");
+  const extension = match[1].toLowerCase();
+  const type = extension === "jpg" || extension === "jpeg" ? "image/jpeg"
+    : extension === "png" ? "image/png"
+      : extension === "webp" ? "image/webp"
+        : extension === "gif" ? "image/gif"
+          : extension === "mp4" ? "video/mp4"
+            : extension === "webm" ? "video/webm" : "video/quicktime";
+  return { type, extension: extension === "jpeg" ? "jpg" : extension };
+}
+
+async function readMediaBlob(response: Response) {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > 512 * 1024 * 1024) {
+    throw new Error("Media files must be 512 MB or smaller.");
+  }
+  if (!response.body) {
+    const blob = await response.blob();
+    if (blob.size > 512 * 1024 * 1024) throw new Error("Media files must be 512 MB or smaller.");
+    return blob;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 512 * 1024 * 1024) {
+        await reader.cancel();
+        throw new Error("Media files must be 512 MB or smaller.");
+      }
+      const chunk = new Uint8Array(value.byteLength);
+      chunk.set(value);
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new Blob(chunks, { type: response.headers.get("content-type") ?? "" });
+}
+
+async function resolveMediaBlob(sourceUrl: string) {
+  const protocol = new URL(sourceUrl, window.location.href).protocol;
+  if (protocol !== "blob:" && protocol !== "data:" && protocol !== "http:" && protocol !== "https:") {
+    throw new Error("Only data, blob, HTTP, and HTTPS media URLs can be sent.");
+  }
+
+  if (protocol !== "http:" && protocol !== "https:") {
+    const response = await fetch(sourceUrl);
+    if (!response.ok) throw new Error(`Could not read the media (${response.status}).`);
+    return readMediaBlob(response);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(sourceUrl);
+  } catch {
+    response = await fetch("/api/media/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: sourceUrl }),
+    });
+  }
+  if (!response.ok) {
+    let reason = `The media source returned HTTP ${response.status}.`;
+    if (response.url.endsWith("/api/media/download")) {
+      try {
+        const payload: unknown = await response.json();
+        if (typeof payload === "object" && payload !== null
+          && "error" in payload && typeof payload.error === "string") reason = payload.error;
+      } catch {
+        // Keep the status-based message if the server response isn't JSON.
+      }
+    }
+    throw new Error(reason);
+  }
+  return readMediaBlob(response);
+}
+
+function createMediaFileName(label: string, extension: string) {
+  const now = new Date();
+  const date = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("");
+  const time = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+  const safeLabel = label.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-|-$/g, "") || "workflow";
+  return `${safeLabel}-${date}-${time}.${extension}`;
+}
+
+function PreviewSendAction({ sourceUrl, nodeLabel }: { sourceUrl: string; nodeLabel: string }) {
+  const runControl = useContext(WorkflowRunContext);
+  useSyncExternalStore(subscribeToEditorUploadChanges, getEditorUploadVersion, getEditorUploadVersion);
+  const [sending, setSending] = useState(false);
+  const [sentHere, setSentHere] = useState(false);
+  const [error, setError] = useState("");
+  const alreadySent = !sentHere && isEditorUploadSourceSent(sourceUrl);
+
+  const send = async (resend = false) => {
+    setSending(true);
+    setError("");
+    try {
+      const blob = await resolveMediaBlob(sourceUrl);
+      if (blob.size === 0) throw new Error("The media file is empty.");
+      if (blob.size > 512 * 1024 * 1024) throw new Error("Media files must be 512 MB or smaller.");
+      const { type, extension } = mediaFileType(blob, sourceUrl);
+      const file = new File([blob], createMediaFileName(nodeLabel, extension), { type });
+      await addFileToEditorUploads(sourceUrl, file, resend);
+      setSentHere(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not send this media to the editor.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const stopNodeDrag = (event: React.MouseEvent<HTMLButtonElement>) => event.stopPropagation();
+  const openEditor = () => {
+    runControl?.openEditor();
+    openEditorUploads();
+  };
+
+  return (
+    <div className="ff-media-send">
+      {sending ? (
+        <button type="button" className="ff-download nodrag" disabled aria-label="Sending media to editor uploads">
+          <span className="ff-send-spinner" aria-hidden="true" />
+          Sending…
+        </button>
+      ) : alreadySent ? (
+        <>
+          <span role="status">Already in editor uploads</span>
+          <button type="button" className="ff-download nodrag" aria-label="Send this media again" onClick={(event) => {
+            stopNodeDrag(event);
+            void send(true);
+          }}>
+            Send again
+          </button>
+        </>
+      ) : sentHere ? (
+        <>
+          <span role="status">Sent to editor uploads</span>
+          <button type="button" className="ff-download nodrag" onClick={(event) => {
+            stopNodeDrag(event);
+            openEditor();
+          }}>
+            Open editor
+          </button>
+          <button type="button" className="ff-download nodrag" aria-label="Send this media again" onClick={(event) => {
+            stopNodeDrag(event);
+            void send(true);
+          }}>
+            Send again
+          </button>
+        </>
+      ) : (
+        <button type="button" className="ff-download nodrag" aria-label={`Send ${nodeLabel} media to editor uploads`} onClick={(event) => {
+          stopNodeDrag(event);
+          void send();
+        }}>
+          Send to editor
+        </button>
+      )}
+      {error && <span className="ff-media-send-error" role="alert">{error}</span>}
+    </div>
+  );
+}
+
+function Media({ value, previewLabel }: { value: unknown; previewLabel?: string }) {
+  if (typeof value !== "string" || !value) return null;
+  const type = mediaType(value);
+  if (!type) return null;
 
   return (
     <>
-      {isVideo ? (
+      {type === "video" ? (
         <video className="ff-media nodrag" src={value} controls loop muted />
       ) : (
         <img className="ff-media" src={value} alt="" />
       )}
       <div className="ff-media-actions">
         <a className="ff-download" href={value} target="_blank" rel="noreferrer">Download</a>
+        {previewLabel && <PreviewSendAction key={value} sourceUrl={value} nodeLabel={previewLabel} />}
       </div>
     </>
   );
@@ -43,6 +246,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const renderedEdges = useEdges();
   const d = data as any;
   const def = registry[d.type];
+  const isPreviewNode = d.type === "output/preview";
   const isPromptAssistant = d.type === "assistant/prompt";
   const isPromptNode = d.type === "input/prompt";
   const isAssistantEnabled = isPromptAssistant || (isPromptNode && Boolean(d.params.assistant_enabled));
@@ -1774,7 +1978,22 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         </div>
       ))}
 
-      {Object.values(d.outputs ?? {}).map((v, i) => <Media key={i} value={v} />)}
+      {Object.values(d.outputs ?? {}).map((v, i) => (
+        <Media key={i} value={v} previewLabel={isPreviewNode ? d.title || def.label || "workflow" : undefined} />
+      ))}
+      {isPreviewNode && !Object.values(d.outputs ?? {}).some((value) => mediaType(value)) && (
+        <div className="ff-media-actions">
+          <button
+            type="button"
+            className="ff-download nodrag"
+            disabled
+            title="Nothing to send yet"
+            aria-label="Nothing to send yet"
+          >
+            Send to editor
+          </button>
+        </div>
+      )}
       {d.log ? <div className="ff-log">{d.log}</div> : null}
     </div>
   );
