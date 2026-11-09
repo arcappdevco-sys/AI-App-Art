@@ -27,6 +27,11 @@ type AudioClip = {
   volume: number;
 };
 
+type ClipTransition = {
+  afterClipIndex: number;
+  duration: number;
+};
+
 type ProbeResult = {
   format?: { duration?: string };
   streams?: Array<{ codec_type?: string }>;
@@ -107,21 +112,56 @@ function parseTimeline(value: FormDataEntryValue | null, clipCount: number): Cli
     throw new Error(`Choose between 1 and ${MAX_CLIPS} clips to export.`);
   }
 
-  let totalDuration = 0;
-  const timeline = parsed.map((item, index) => {
+  return parsed.map((item, index) => {
     if (typeof item !== "object" || item === null) throw new Error(`Clip ${index + 1} has invalid trim settings.`);
     const { start, end } = item as Record<string, unknown>;
     if (typeof start !== "number" || typeof end !== "number"
       || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
       throw new Error(`Clip ${index + 1} has invalid trim settings.`);
     }
-    totalDuration += end - start;
     return { start, end };
   });
-  if (totalDuration > MAX_SEQUENCE_SECONDS) {
-    throw new Error(`Sequences must be ${MAX_SEQUENCE_SECONDS / 60} minutes or shorter to export.`);
+}
+
+function parseTransitions(value: FormDataEntryValue | null, timeline: ClipTrim[]): ClipTransition[] {
+  if (value === null) return [];
+  if (typeof value !== "string") throw new Error("Export transitions must be valid JSON.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Export transitions must be valid JSON.");
   }
-  return timeline;
+  if (!Array.isArray(parsed) || parsed.length > Math.max(0, timeline.length - 1)) {
+    throw new Error("Export transitions have invalid boundaries.");
+  }
+  const seenBoundaries = new Set<number>();
+  const transitions = parsed.map((item, index) => {
+    if (typeof item !== "object" || item === null) throw new Error(`Transition ${index + 1} has invalid settings.`);
+    const { afterClipIndex, duration } = item as Record<string, unknown>;
+    if (!Number.isInteger(afterClipIndex) || typeof afterClipIndex !== "number"
+      || afterClipIndex < 0 || afterClipIndex >= timeline.length - 1
+      || seenBoundaries.has(afterClipIndex)
+      || typeof duration !== "number" || !Number.isFinite(duration) || duration < 0.1) {
+      throw new Error(`Transition ${index + 1} has invalid settings.`);
+    }
+    const maxDuration = Math.min(
+      timeline[afterClipIndex].end - timeline[afterClipIndex].start,
+      timeline[afterClipIndex + 1].end - timeline[afterClipIndex + 1].start,
+    ) - 0.05;
+    if (duration > maxDuration) throw new Error(`Transition ${index + 1} is longer than its adjacent clips.`);
+    seenBoundaries.add(afterClipIndex);
+    return { afterClipIndex, duration };
+  });
+  transitions.sort((left, right) => left.afterClipIndex - right.afterClipIndex);
+  for (let index = 0; index < timeline.length; index += 1) {
+    const incoming = transitions.find((transition) => transition.afterClipIndex === index - 1)?.duration ?? 0;
+    const outgoing = transitions.find((transition) => transition.afterClipIndex === index)?.duration ?? 0;
+    if (incoming + outgoing > timeline[index].end - timeline[index].start - 0.05) {
+      throw new Error(`Transitions overlap too much on clip ${index + 1}.`);
+    }
+  }
+  return transitions;
 }
 
 function parseAudioTimeline(value: FormDataEntryValue | null, fileCount: number): AudioClip[] {
@@ -180,9 +220,16 @@ export async function POST(request: Request) {
   const audioFiles = audioEntries as File[];
   let timeline: ClipTrim[];
   let audioTimeline: AudioClip[];
+  let transitions: ClipTransition[];
   try {
     timeline = parseTimeline(formData.get("timeline"), videoFiles.length);
+    transitions = parseTransitions(formData.get("transitions"), timeline);
     audioTimeline = parseAudioTimeline(formData.get("audioTimeline"), audioFiles.length);
+    const sequenceDuration = timeline.reduce((sum, item) => sum + item.end - item.start, 0)
+      - transitions.reduce((sum, transition) => sum + transition.duration, 0);
+    if (sequenceDuration > MAX_SEQUENCE_SECONDS) {
+      throw new Error(`Sequences must be ${MAX_SEQUENCE_SECONDS / 60} minutes or shorter to export.`);
+    }
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Export timeline is invalid." }, { status: 400 });
   }
@@ -247,31 +294,31 @@ export async function POST(request: Request) {
       ], request.signal);
       return JSON.parse(stdout) as ProbeResult;
     }));
+    const totalDuration = timeline.reduce((sum, item) => sum + item.end - item.start, 0)
+      - transitions.reduce((sum, transition) => sum + transition.duration, 0);
     for (const [index, probe] of audioProbeResults.entries()) {
       const duration = Number(probe.format?.duration);
       const trim = audioTimeline[index];
       if (!Number.isFinite(duration) || !probe.streams?.some((stream) => stream.codec_type === "audio")) {
         return NextResponse.json({ error: `Audio clip ${index + 1} is not a supported audio file.` }, { status: 422 });
       }
-      if (trim.trimEnd > duration + 0.25 || trim.start >= timeline.reduce((sum, item) => sum + item.end - item.start, 0)) {
+      if (trim.trimEnd > duration + 0.25 || trim.start >= totalDuration) {
         return NextResponse.json({ error: `Audio clip ${index + 1} has trim or placement outside the sequence.` }, { status: 400 });
       }
     }
 
     const filterParts: string[] = [];
-    const concatInputs: string[] = [];
     const args = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"];
     for (const path of inputPaths) args.push("-i", path);
     for (const path of audioInputPaths) args.push("-i", path);
 
-    const totalDuration = timeline.reduce((sum, item) => sum + item.end - item.start, 0);
     let silenceIndex = inputPaths.length + audioInputPaths.length;
     for (const [index, trim] of timeline.entries()) {
       const duration = trim.end - trim.start;
       const start = trim.start.toFixed(3);
       const end = trim.end.toFixed(3);
       filterParts.push(
-        `[${index}:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${index}]`,
+        `[${index}:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,settb=AVTB,format=yuv420p[v${index}]`,
       );
       if (probeResults[index].streams?.some((stream) => stream.codec_type === "audio")) {
         filterParts.push(
@@ -284,10 +331,34 @@ export async function POST(request: Request) {
           `[${audioIndex}:a:0]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}]`,
         );
       }
-      concatInputs.push(`[v${index}][a${index}]`);
     }
 
-    filterParts.push(`${concatInputs.join("")}concat=n=${timeline.length}:v=1:a=1[vout][aout]`);
+    const transitionsByBoundary = new Map(transitions.map((transition) => [transition.afterClipIndex, transition]));
+    let videoSequenceLabel = "v0";
+    let audioSequenceLabel = "a0";
+    let combinedDuration = timeline[0].end - timeline[0].start;
+    for (let index = 1; index < timeline.length; index += 1) {
+      const videoOutput = `vseq${index}`;
+      const audioOutput = `aseq${index}`;
+      const transition = transitionsByBoundary.get(index - 1);
+      if (transition) {
+        const duration = transition.duration.toFixed(3);
+        const offset = (combinedDuration - transition.duration).toFixed(3);
+        filterParts.push(
+          `[${videoSequenceLabel}][v${index}]xfade=transition=fade:duration=${duration}:offset=${offset}[${videoOutput}]`,
+          `[${audioSequenceLabel}][a${index}]acrossfade=d=${duration}:c1=tri:c2=tri[${audioOutput}]`,
+        );
+        combinedDuration += timeline[index].end - timeline[index].start - transition.duration;
+      } else {
+        filterParts.push(
+          `[${videoSequenceLabel}][v${index}]concat=n=2:v=1:a=0[${videoOutput}]`,
+          `[${audioSequenceLabel}][a${index}]concat=n=2:v=0:a=1[${audioOutput}]`,
+        );
+        combinedDuration += timeline[index].end - timeline[index].start;
+      }
+      videoSequenceLabel = videoOutput;
+      audioSequenceLabel = audioOutput;
+    }
     for (const [index, audioClip] of audioTimeline.entries()) {
       const inputIndex = videoFiles.length + audioClip.fileIndex;
       const delay = Math.round(audioClip.start * 1000);
@@ -296,15 +367,15 @@ export async function POST(request: Request) {
       );
     }
     if (audioTimeline.length > 0) {
-      const mixInputs = ["[aout]", ...audioTimeline.map((_, index) => `[track${index}]`)].join("");
+      const mixInputs = [`[${audioSequenceLabel}]`, ...audioTimeline.map((_, index) => `[track${index}]`)].join("");
       filterParts.push(`${mixInputs}amix=inputs=${audioTimeline.length + 1}:duration=first:dropout_transition=0:normalize=0[amixed]`);
     }
     const outputPath = join(directory, `sequence.${format}`);
     args.push(
       "-filter_complex_threads", "2",
       "-filter_complex", filterParts.join(";"),
-      "-map", "[vout]",
-      "-map", audioTimeline.length > 0 ? "[amixed]" : "[aout]",
+      "-map", `[${videoSequenceLabel}]`,
+      "-map", audioTimeline.length > 0 ? "[amixed]" : `[${audioSequenceLabel}]`,
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "20",

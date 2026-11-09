@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { registerEditorUploadBridge } from "@/lib/editor-upload-bridge";
 import {
+  deleteEditorMedia,
   loadEditorMedia,
   loadVideoEditorState,
+  reconcileEditorMedia,
   saveEditorMedia,
   saveVideoEditorState,
+  type StoredEditorTransition,
   type StoredVideoEditorState,
 } from "@/lib/video-editor-storage";
 
@@ -22,6 +25,7 @@ type TimelineClip = VideoAsset & {
   duration: number;
   trimStart: number;
   trimEnd: number;
+  audioWaveform?: number[] | null;
 };
 
 type TimelineAudioClip = VideoAsset & {
@@ -32,11 +36,14 @@ type TimelineAudioClip = VideoAsset & {
   volume: number;
 };
 
+type TimelineTransition = StoredEditorTransition;
+
 type VideoSequence = {
   id: string;
   name: string;
   clips: TimelineClip[];
   audioClips: TimelineAudioClip[];
+  transitions: TimelineTransition[];
   selectedId: string;
   playheadTime: number;
 };
@@ -62,7 +69,7 @@ type ClipTrimDrag = {
   trimEnd: number;
 };
 
-type EditorTool = "select" | "razor";
+type EditorTool = "select" | "razor" | "transition";
 const EDITOR_HISTORY_LIMIT = 50;
 
 type ClipReorderDrag = {
@@ -72,6 +79,50 @@ type ClipReorderDrag = {
   startY: number;
   dragging: boolean;
 };
+
+type TransitionResizeDrag = {
+  leftClipId: string;
+  edge: "start" | "end";
+  pointerId: number;
+  startX: number;
+  duration: number;
+  snapshot: EditorHistorySnapshot;
+};
+
+function getClipTimelineOffset(clips: TimelineClip[], transitions: TimelineTransition[], clipId: string) {
+  const index = clips.findIndex((clip) => clip.id === clipId);
+  if (index < 0) return 0;
+  const overlap = transitions.reduce((total, transition) => {
+    const leftIndex = clips.findIndex((clip) => clip.id === transition.leftClipId);
+    return leftIndex >= 0 && leftIndex < index && clips[leftIndex + 1]?.id === transition.rightClipId
+      ? total + transition.duration
+      : total;
+  }, 0);
+  return clips.slice(0, index).reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0) - overlap;
+}
+
+function getSequenceTimelineDuration(clips: TimelineClip[], transitions: TimelineTransition[]) {
+  return clips.reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0)
+    - transitions.reduce((total, transition) => {
+      const leftIndex = clips.findIndex((clip) => clip.id === transition.leftClipId);
+      return leftIndex >= 0 && clips[leftIndex + 1]?.id === transition.rightClipId
+        ? total + transition.duration
+        : total;
+    }, 0);
+}
+
+function getSnapshotMedia(snapshot: EditorHistorySnapshot) {
+    const media = new Map<string, File>();
+    const addMedia = (asset: VideoAsset) => {
+      if (asset.mediaId && asset.file) media.set(asset.mediaId, asset.file);
+    };
+    snapshot.uploadedAssets.forEach(addMedia);
+    snapshot.sequences.forEach((sequence) => {
+      sequence.clips.forEach(addMedia);
+      sequence.audioClips.forEach(addMedia);
+    });
+    return media;
+}
 
 function formatTime(seconds: number) {
   const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
@@ -98,6 +149,35 @@ function loadMedia(video: HTMLVideoElement, src: string) {
     video.src = src;
     video.load();
   });
+}
+
+async function getSourceAudioWaveform(file: File): Promise<number[] | null> {
+  const formData = new FormData();
+  formData.append("clip", file, file.name);
+  const response = await fetch("/api/video/waveform", { method: "POST", body: formData });
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`Could not analyze the audio in "${file.name}" (${response.status}).`);
+  }
+  if (!response.ok) {
+    const message = typeof payload === "object" && payload !== null
+      && "error" in payload && typeof payload.error === "string"
+      ? payload.error
+      : `Could not analyze the audio in "${file.name}" (${response.status}).`;
+    throw new Error(message);
+  }
+  if (typeof payload !== "object" || payload === null || !("waveform" in payload)) {
+    throw new Error(`The server returned invalid audio analysis for "${file.name}".`);
+  }
+  const waveform: unknown = payload.waveform;
+  if (waveform === null) return null;
+  if (!Array.isArray(waveform)
+    || !waveform.every((sample: unknown) => typeof sample === "number" && Number.isFinite(sample))) {
+    throw new Error(`The server returned invalid audio analysis for "${file.name}".`);
+  }
+  return waveform;
 }
 
 function loadAudioMetadata(audio: HTMLAudioElement, src: string) {
@@ -154,10 +234,11 @@ async function fetchMediaFile(src: string, name: string) {
 export default function VideoEditor({ assets, hidden = false }: { assets: VideoAsset[]; hidden?: boolean }) {
   const [uploadedAssets, setUploadedAssets] = useState<VideoAsset[]>([]);
   const [sequences, setSequences] = useState<VideoSequence[]>([
-    { id: "sequence-1", name: "Sequence 1", clips: [], audioClips: [], selectedId: "", playheadTime: 0 },
+    { id: "sequence-1", name: "Sequence 1", clips: [], audioClips: [], transitions: [], selectedId: "", playheadTime: 0 },
   ]);
   const [activeSequenceId, setActiveSequenceId] = useState("sequence-1");
   const [activeTool, setActiveTool] = useState<EditorTool>("select");
+  const [selectedTransitionId, setSelectedTransitionId] = useState("");
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [persistenceReady, setPersistenceReady] = useState(false);
@@ -171,8 +252,11 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [exportStage, setExportStage] = useState("");
   const [loadingAssetId, setLoadingAssetId] = useState("");
   const [loadingAudioAssetId, setLoadingAudioAssetId] = useState("");
+  const [removingFootageId, setRemovingFootageId] = useState("");
+  const [isRestoringHistory, setIsRestoringHistory] = useState(false);
   const [error, setError] = useState("");
   const previewRef = useRef<HTMLVideoElement>(null);
+  const transitionPreviewRef = useRef<HTMLVideoElement>(null);
   const audioElements = useRef(new Map<string, HTMLAudioElement>());
   const playbackWanted = useRef(false);
   const advancing = useRef(false);
@@ -180,6 +264,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const clipButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const trimDrag = useRef<ClipTrimDrag | null>(null);
   const reorderDrag = useRef<ClipReorderDrag | null>(null);
+  const transitionResizeDrag = useRef<TransitionResizeDrag | null>(null);
   const suppressClipClick = useRef(false);
   const uploadsHeadingRef = useRef<HTMLHeadingElement>(null);
   const editorSnapshotRef = useRef<EditorHistorySnapshot>({
@@ -189,6 +274,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   });
   const undoStack = useRef<EditorHistorySnapshot[]>([]);
   const redoStack = useRef<EditorHistorySnapshot[]>([]);
+  const historyRestoreInProgress = useRef(false);
   const renameStart = useRef<{ snapshot: EditorHistorySnapshot; sequenceId: string; name: string } | null>(null);
   const audioEditStart = useRef<EditorHistorySnapshot | null>(null);
   const unsavedMediaName = uploadedAssets.find((asset) => !asset.mediaId)?.name
@@ -210,21 +296,41 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     updateHistoryAvailability();
   }, [updateHistoryAvailability]);
 
-  const restoreHistorySnapshot = (snapshot: EditorHistorySnapshot) => {
+  const restoreHistorySnapshot = async (snapshot: EditorHistorySnapshot) => {
+    const currentSnapshot = editorSnapshotRef.current;
+    const currentMedia = getSnapshotMedia(currentSnapshot);
+    const nextMedia = getSnapshotMedia(snapshot);
+    await reconcileEditorMedia(currentMedia, nextMedia);
+
+    const currentAssets = new Map(currentSnapshot.uploadedAssets.map((asset) => [asset.id, asset]));
+    const restoredAssets = snapshot.uploadedAssets.map((asset) => {
+      const currentAsset = currentAssets.get(asset.id);
+      return !currentAsset && asset.file
+        ? { ...asset, src: URL.createObjectURL(asset.file) }
+        : asset;
+    });
+    const restoredSources = new Set(snapshot.sequences.flatMap((sequence) =>
+      [...sequence.clips, ...sequence.audioClips].map((clip) => clip.src)));
+    currentSnapshot.uploadedAssets.forEach((asset) => {
+      if (!snapshot.uploadedAssets.some((nextAsset) => nextAsset.id === asset.id)
+        && !restoredSources.has(asset.src) && asset.src.startsWith("blob:")) {
+        URL.revokeObjectURL(asset.src);
+      }
+    });
+    const restoredSnapshot = { ...snapshot, uploadedAssets: restoredAssets };
     playbackWanted.current = false;
     previewRef.current?.pause();
     pauseAudio();
     setIsPlaying(false);
-    setSequences(snapshot.sequences);
-    setUploadedAssets(snapshot.uploadedAssets);
-    setActiveSequenceId(snapshot.activeSequenceId);
+    editorSnapshotRef.current = restoredSnapshot;
+    setSequences(restoredSnapshot.sequences);
+    setUploadedAssets(restoredSnapshot.uploadedAssets);
+    setActiveSequenceId(restoredSnapshot.activeSequenceId);
     setClipContextMenu(null);
-    const active = snapshot.sequences.find((sequence) => sequence.id === snapshot.activeSequenceId);
+    const active = restoredSnapshot.sequences.find((sequence) => sequence.id === restoredSnapshot.activeSequenceId);
     const selected = active?.clips.find((clip) => clip.id === active.selectedId) ?? active?.clips[0];
     if (active && selected) {
-      const selectedIndex = active.clips.findIndex((clip) => clip.id === selected.id);
-      const offset = active.clips.slice(0, selectedIndex)
-        .reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+      const offset = getClipTimelineOffset(active.clips, active.transitions, selected.id);
       const elapsed = Math.min(
         Math.max(0, active.playheadTime - offset),
         selected.trimEnd - selected.trimStart,
@@ -236,20 +342,48 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     setError("");
   };
 
-  const undo = () => {
-    const previous = undoStack.current.pop();
-    if (!previous) return;
-    redoStack.current = [...redoStack.current, editorSnapshotRef.current].slice(-EDITOR_HISTORY_LIMIT);
-    restoreHistorySnapshot(previous);
-    updateHistoryAvailability();
+  const undo = async () => {
+    const previous = undoStack.current.at(-1);
+    if (!previous || historyRestoreInProgress.current) return;
+    historyRestoreInProgress.current = true;
+    setIsRestoringHistory(true);
+    try {
+      const current = editorSnapshotRef.current;
+      await restoreHistorySnapshot(previous);
+      undoStack.current = undoStack.current.slice(0, -1);
+      redoStack.current = [...redoStack.current, current].slice(-EDITOR_HISTORY_LIMIT);
+      updateHistoryAvailability();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Could not restore the previous editor state.";
+      setPersistenceError(message);
+      setPersistenceStatus("Editor restore failed");
+      setError(message);
+    } finally {
+      historyRestoreInProgress.current = false;
+      setIsRestoringHistory(false);
+    }
   };
 
-  const redo = () => {
-    const next = redoStack.current.pop();
-    if (!next) return;
-    undoStack.current = [...undoStack.current, editorSnapshotRef.current].slice(-EDITOR_HISTORY_LIMIT);
-    restoreHistorySnapshot(next);
-    updateHistoryAvailability();
+  const redo = async () => {
+    const next = redoStack.current.at(-1);
+    if (!next || historyRestoreInProgress.current) return;
+    historyRestoreInProgress.current = true;
+    setIsRestoringHistory(true);
+    try {
+      const current = editorSnapshotRef.current;
+      await restoreHistorySnapshot(next);
+      redoStack.current = redoStack.current.slice(0, -1);
+      undoStack.current = [...undoStack.current, current].slice(-EDITOR_HISTORY_LIMIT);
+      updateHistoryAvailability();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Could not restore the next editor state.";
+      setPersistenceError(message);
+      setPersistenceStatus("Editor restore failed");
+      setError(message);
+    } finally {
+      historyRestoreInProgress.current = false;
+      setIsRestoringHistory(false);
+    }
   };
 
   useEffect(() => {
@@ -289,11 +423,13 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         const nextAssets = saved.uploadedAssets.map((asset) => createAsset(asset.id, asset.name, asset.mediaId));
         const nextSequences: VideoSequence[] = saved.sequences.map((sequence) => ({
           ...sequence,
+          transitions: sequence.transitions ?? [],
           clips: sequence.clips.map((clip) => ({
             ...createAsset(clip.id, clip.name, clip.mediaId),
             duration: clip.duration,
             trimStart: clip.trimStart,
             trimEnd: clip.trimEnd,
+            audioWaveform: clip.audioWaveform ?? null,
           })),
           audioClips: (sequence.audioClips ?? []).map((clip) => ({
             ...createAsset(clip.id, clip.name, clip.mediaId),
@@ -311,8 +447,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         const selectedClip = activeSequence?.clips.find((clip) => clip.id === activeSequence.selectedId)
           ?? activeSequence?.clips[0];
         if (activeSequence && selectedClip) {
-          const clipOffset = activeSequence.clips.slice(0, activeSequence.clips.indexOf(selectedClip))
-            .reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+          const clipOffset = getClipTimelineOffset(activeSequence.clips, activeSequence.transitions, selectedClip.id);
           const clipTime = Math.min(
             selectedClip.trimEnd,
             Math.max(selectedClip.trimStart, selectedClip.trimStart + activeSequence.playheadTime - clipOffset),
@@ -327,7 +462,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         if (nextSequences.length > 0) setSequences(nextSequences);
         setUploadedAssets(nextAssets);
         setActiveSequenceId(nextActiveSequenceId);
-        setActiveTool(saved.activeTool === "razor" ? "razor" : "select");
+        setActiveTool(saved.activeTool === "razor" || saved.activeTool === "transition" ? saved.activeTool : "select");
         setPersistenceStatus("Restored from this device");
         setPersistenceReady(true);
       } catch (caught) {
@@ -348,9 +483,10 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     if (!persistenceReady) return;
     if (persistenceValidationError) return;
     const state: StoredVideoEditorState = {
-      version: 2,
+      version: 3,
       sequences: sequences.map((sequence) => ({
         ...sequence,
+        transitions: sequence.transitions,
         clips: sequence.clips.map((clip) => ({
           id: clip.id,
           name: clip.name,
@@ -358,6 +494,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
           duration: clip.duration,
           trimStart: clip.trimStart,
           trimEnd: clip.trimEnd,
+          audioWaveform: clip.audioWaveform ?? null,
         })),
         audioClips: sequence.audioClips.map((clip) => ({
           id: clip.id,
@@ -404,19 +541,92 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const activeSequence = sequences.find((sequence) => sequence.id === activeSequenceId) ?? sequences[0];
   const clips = activeSequence?.clips ?? [];
   const audioClips = activeSequence?.audioClips ?? [];
+  const transitions = activeSequence?.transitions ?? [];
   const selectedId = activeSequence?.selectedId ?? "";
   const playheadTime = activeSequence?.playheadTime ?? 0;
   const setClips = (next: SetStateAction<TimelineClip[]>) => {
     setSequences((current) => current.map((sequence) => {
       if (sequence.id !== activeSequenceId) return sequence;
       const clips = typeof next === "function" ? next(sequence.clips) : next;
-      const duration = clips.reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+      const transitions: TimelineTransition[] = [];
+      for (let index = 0; index < clips.length - 1; index += 1) {
+        const left = clips[index];
+        const right = clips[index + 1];
+        const transition = sequence.transitions.find((item) => item.leftClipId === left.id
+          && item.rightClipId === right.id);
+        if (!transition) continue;
+        const incoming = transitions.find((item) => item.rightClipId === left.id);
+        const maxDuration = Math.min(
+          left.trimEnd - left.trimStart - (incoming?.duration ?? 0),
+          right.trimEnd - right.trimStart,
+        ) - 0.1;
+        if (maxDuration >= 0.1) {
+          transitions.push({ ...transition, duration: Math.min(transition.duration, maxDuration) });
+        }
+      }
+      const duration = clips.reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0)
+        - transitions.reduce((total, transition) => total + transition.duration, 0);
       const audioClips = duration < 0.1 ? [] : sequence.audioClips.flatMap((clip) => {
         const start = Math.min(clip.start, Math.max(0, duration - 0.1));
         const trimEnd = Math.min(clip.trimEnd, clip.trimStart + duration - start);
         return trimEnd - clip.trimStart >= 0.1 ? [{ ...clip, start, trimEnd }] : [];
       });
-      return { ...sequence, clips, audioClips };
+      return {
+        ...sequence,
+        clips,
+        audioClips,
+        transitions,
+        playheadTime: Math.min(sequence.playheadTime, Math.max(0, duration)),
+      };
+    }));
+  };
+  const setTransitions = (next: TimelineTransition[]) => {
+    setSequences((current) => current.map((sequence) => {
+      if (sequence.id !== activeSequenceId) return sequence;
+      const transitions: TimelineTransition[] = [];
+      for (let index = 0; index < sequence.clips.length - 1; index += 1) {
+        const left = sequence.clips[index];
+        const right = sequence.clips[index + 1];
+        const transition = next.find((item) => item.leftClipId === left.id
+          && item.rightClipId === right.id);
+        if (!transition || transition.duration < 0.1) continue;
+        const incoming = transitions.find((item) => item.rightClipId === left.id);
+        const maxDuration = Math.min(
+          left.trimEnd - left.trimStart - (incoming?.duration ?? 0),
+          right.trimEnd - right.trimStart,
+        ) - 0.1;
+        if (maxDuration >= 0.1) {
+          transitions.push({ ...transition, duration: Math.min(transition.duration, maxDuration) });
+        }
+      }
+      const duration = sequence.clips.reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0)
+        - transitions.reduce((total, transition) => total + transition.duration, 0);
+      const audioClips = duration < 0.1 ? [] : sequence.audioClips.flatMap((clip) => {
+        const start = Math.min(clip.start, Math.max(0, duration - 0.1));
+        const trimEnd = Math.min(clip.trimEnd, clip.trimStart + duration - start);
+        return trimEnd - clip.trimStart >= 0.1 ? [{ ...clip, start, trimEnd }] : [];
+      });
+      const selectedClip = sequence.clips.find((clip) => clip.id === sequence.selectedId);
+      const currentOffset = selectedClip
+        ? getClipTimelineOffset(sequence.clips, sequence.transitions, selectedClip.id)
+        : 0;
+      const currentElapsed = selectedClip
+        ? Math.min(
+          Math.max(0, sequence.playheadTime - currentOffset),
+          selectedClip.trimEnd - selectedClip.trimStart,
+        )
+        : 0;
+      return {
+        ...sequence,
+        transitions,
+        audioClips,
+        playheadTime: selectedClip
+          ? Math.min(
+            getClipTimelineOffset(sequence.clips, transitions, selectedClip.id) + currentElapsed,
+            Math.max(0, duration),
+          )
+          : Math.min(sequence.playheadTime, Math.max(0, duration)),
+      };
     }));
   };
   const setSelectedId = (next: SetStateAction<string>) => {
@@ -430,9 +640,11 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       : sequence));
   };
   const selectedClip = clips.find((clip) => clip.id === selectedId) ?? clips[0];
-  const totalDuration = clips.reduce((total, clip) => total + Math.max(0, clip.trimEnd - clip.trimStart), 0);
+  const totalDuration = Math.max(0, clips.reduce((total, clip) => total + Math.max(0, clip.trimEnd - clip.trimStart), 0)
+    - transitions.reduce((total, transition) => total + transition.duration, 0));
 
   const pauseAudio = () => {
+    transitionPreviewRef.current?.pause();
     audioElements.current.forEach((audio) => audio.pause());
   };
 
@@ -479,6 +691,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       name: `Sequence ${nextNumber}`,
       clips: [],
       audioClips: [],
+      transitions: [],
       selectedId: "",
       playheadTime: 0,
     };
@@ -500,9 +713,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     if (!nextSequence) return;
     const nextClip = nextSequence.clips.find((clip) => clip.id === nextSequence.selectedId) ?? nextSequence.clips[0];
     if (nextClip) {
-      const clipIndex = nextSequence.clips.findIndex((clip) => clip.id === nextClip.id);
-      const clipOffset = nextSequence.clips.slice(0, clipIndex)
-        .reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+      const clipOffset = getClipTimelineOffset(nextSequence.clips, nextSequence.transitions, nextClip.id);
       const clipElapsed = Math.min(
         Math.max(0, nextSequence.playheadTime - clipOffset),
         nextClip.trimEnd - nextClip.trimStart,
@@ -605,6 +816,12 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       if (mediaFile.size > 512 * 1024 * 1024) {
         throw new Error(`"${asset.name}" is larger than the 512 MB editor-storage limit.`);
       }
+      let waveformError = "";
+      try {
+        clip.audioWaveform = await getSourceAudioWaveform(mediaFile);
+      } catch (caught) {
+        waveformError = caught instanceof Error ? caught.message : `Could not analyze the audio in "${asset.name}".`;
+      }
       const mediaId = clipAsset.mediaId;
       if (!mediaId) throw new Error(`Could not assign persistent storage to "${asset.name}".`);
       await saveEditorMedia(mediaId, mediaFile);
@@ -621,7 +838,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       recordHistory(historySnapshot);
       setSequences((current) => current.map((sequence) => {
         if (sequence.id !== targetSequenceId) return sequence;
-        const playheadTime = sequence.clips.reduce((total, currentClip) => total + currentClip.trimEnd - currentClip.trimStart, 0);
+        const playheadTime = getSequenceTimelineDuration(sequence.clips, sequence.transitions);
         return {
           ...sequence,
           clips: [...sequence.clips, clip],
@@ -638,6 +855,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       }
       playbackWanted.current = false;
       setIsPlaying(false);
+      setError(waveformError);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not add this video.");
     } finally {
@@ -846,8 +1064,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       setPlayheadTime(0);
       return;
     }
-    const index = reordered.findIndex((clip) => clip.id === active.id);
-    const offset = reordered.slice(0, index).reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+    const offset = getClipTimelineOffset(reordered, transitions, active.id);
     const localTime = active.id === selectedId && previewRef.current
       ? Math.min(Math.max(0, previewRef.current.currentTime - active.trimStart), active.trimEnd - active.trimStart)
       : 0;
@@ -930,9 +1147,9 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     const nextSelected = selectedId === id
       ? next[Math.min(index, next.length - 1)]
       : next.find((clip) => clip.id === selectedId) ?? next[Math.min(index, next.length - 1)];
-    const nextSelectedIndex = nextSelected ? next.findIndex((clip) => clip.id === nextSelected.id) : -1;
-    const nextOffset = next.slice(0, Math.max(0, nextSelectedIndex))
-      .reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+    const nextOffset = nextSelected
+      ? getClipTimelineOffset(next, transitions, nextSelected.id)
+      : 0;
     if (nextSelected) {
       const currentTime = nextSelected.id === selectedId && previewRef.current
         ? previewRef.current.currentTime
@@ -964,17 +1181,23 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       && target.closest("input, textarea, select, [contenteditable='true']");
     if ((event.ctrlKey || event.metaKey) && !isEditingText && !isExporting) {
       const key = event.key.toLowerCase();
-      if (key === "z") {
+      if (key === "z" && !isRestoringHistory) {
         event.preventDefault();
-        if (event.shiftKey) redo();
-        else undo();
+        if (event.shiftKey) void redo();
+        else void undo();
         return;
       }
-      if (key === "y") {
+      if (key === "y" && !isRestoringHistory) {
         event.preventDefault();
-        redo();
+        void redo();
         return;
       }
+    }
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedTransition && !isExporting) {
+      if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']")) return;
+      event.preventDefault();
+      removeTransition(selectedTransition.leftClipId);
+      return;
     }
     if ((event.key !== "Delete" && event.key !== "Backspace") || !selectedClip || isExporting) return;
     if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']")) return;
@@ -1016,6 +1239,27 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     }
   }, [recordHistory]);
 
+  const removeUploadedAsset = async (asset: VideoAsset) => {
+    if (removingFootageId || isRestoringHistory) return;
+    setRemovingFootageId(asset.id);
+    setError("");
+    try {
+      const current = editorSnapshotRef.current;
+      const inUse = asset.mediaId && current.sequences.some((sequence) =>
+        [...sequence.clips, ...sequence.audioClips].some((clip) => clip.mediaId === asset.mediaId));
+      const sourceInUse = current.sequences.some((sequence) =>
+        [...sequence.clips, ...sequence.audioClips].some((clip) => clip.src === asset.src));
+      if (asset.mediaId && !inUse) await deleteEditorMedia(asset.mediaId);
+      recordHistory(current);
+      setUploadedAssets((assetsNow) => assetsNow.filter((item) => item.id !== asset.id));
+      if (!sourceInUse && asset.src.startsWith("blob:")) URL.revokeObjectURL(asset.src);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : `Could not remove "${asset.name}" from Footage.`);
+    } finally {
+      setRemovingFootageId("");
+    }
+  };
+
   const focusUploads = useCallback(() => {
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       uploadsHeadingRef.current?.scrollIntoView({ block: "nearest" });
@@ -1028,39 +1272,223 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   }, focusUploads), [addUploads, focusUploads]);
 
   const getClipOffset = (id: string) => {
-    const index = clips.findIndex((clip) => clip.id === id);
-    return clips.slice(0, Math.max(0, index)).reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0);
+    return getClipTimelineOffset(clips, transitions, id);
+  };
+
+  const getTransitionAtTime = (time: number) => transitions.find((transition) => {
+    const left = clips.find((clip) => clip.id === transition.leftClipId);
+    const rightIndex = clips.findIndex((clip) => clip.id === transition.rightClipId);
+    if (!left || rightIndex < 0 || clips[rightIndex - 1]?.id !== left.id) return false;
+    const start = getClipOffset(left.id) + left.trimEnd - left.trimStart - transition.duration;
+    return time >= start && time < start + transition.duration;
+  });
+
+  const getTransitionStart = (transition: TimelineTransition) => {
+    const left = clips.find((clip) => clip.id === transition.leftClipId);
+    if (!left) return 0;
+    return getClipOffset(left.id) + left.trimEnd - left.trimStart - transition.duration;
+  };
+
+  const maxTransitionDuration = (left: TimelineClip, right: TimelineClip) => {
+    const incoming = transitions.find((transition) => transition.rightClipId === left.id);
+    const outgoing = transitions.find((transition) => transition.leftClipId === right.id);
+    return Math.max(0, Math.min(
+      left.trimEnd - left.trimStart - (incoming?.duration ?? 0),
+      right.trimEnd - right.trimStart - (outgoing?.duration ?? 0),
+    ) - 0.1);
+  };
+
+  const previewTransition = getTransitionAtTime(playheadTime);
+  const selectedClipOutgoingTransition = transitions.find((transition) => transition.leftClipId === selectedClip?.id);
+  const previewTransitionClip = previewTransition
+    ? clips.find((clip) => clip.id === previewTransition.rightClipId)
+    : selectedClipOutgoingTransition
+      ? clips.find((clip) => clip.id === selectedClipOutgoingTransition.rightClipId)
+    : undefined;
+  const selectedTransition = transitions.find((transition) => transition.leftClipId === selectedTransitionId);
+
+  const syncTransitionPlayback = (timelineTime: number, shouldPlay: boolean) => {
+    const transition = getTransitionAtTime(timelineTime);
+    const nextClip = transition && clips.find((clip) => clip.id === transition.rightClipId);
+    const video = transitionPreviewRef.current;
+    const progress = transition
+      ? Math.min(1, Math.max(0, (timelineTime - getTransitionStart(transition)) / transition.duration))
+      : 0;
+    if (previewRef.current) previewRef.current.volume = 1 - progress;
+    if (!video) return;
+    if (!transition) {
+      const upcoming = transitions.find((item) => item.leftClipId === selectedClip?.id);
+      const upcomingClip = upcoming && clips.find((clip) => clip.id === upcoming.rightClipId);
+      if (shouldPlay && upcomingClip) {
+        video.muted = true;
+        video.volume = 0;
+        if (video.paused) void video.play().catch(() => {
+          playbackWanted.current = false;
+          previewRef.current?.pause();
+          setIsPlaying(false);
+          setError("The browser could not prepare the transition preview.");
+        });
+      } else {
+        video.pause();
+      }
+      return;
+    }
+    if (!nextClip) {
+      video?.pause();
+      return;
+    }
+    video.muted = false;
+    video.volume = progress;
+    const sourceTime = nextClip.trimStart + timelineTime - getTransitionStart(transition);
+    if (Math.abs(video.currentTime - sourceTime) > 0.15) video.currentTime = sourceTime;
+    if (shouldPlay && playbackWanted.current) {
+      if (video.paused) void video.play().catch(() => {
+        playbackWanted.current = false;
+        previewRef.current?.pause();
+        pauseAudio();
+        setIsPlaying(false);
+        setError("The browser could not play the transition preview.");
+      });
+    } else {
+      video.pause();
+    }
+  };
+
+  const changeTransitionBoundary = (left: TimelineClip, right: TimelineClip) => {
+    const existing = transitions.find((transition) => transition.leftClipId === left.id
+      && transition.rightClipId === right.id);
+    if (existing) {
+      setSelectedTransitionId(left.id);
+      return;
+    }
+    if (activeTool !== "transition") return;
+    const maxDuration = maxTransitionDuration(left, right);
+    if (maxDuration < 0.1) {
+      setError("These clips are too short to add a cross dissolve.");
+      return;
+    }
+    const duration = Math.min(1, maxDuration);
+    playbackWanted.current = false;
+    previewRef.current?.pause();
+    pauseAudio();
+    setIsPlaying(false);
+    recordHistory();
+    setTransitions([...transitions, { leftClipId: left.id, rightClipId: right.id, duration }]);
+    setSelectedTransitionId(left.id);
+    const transitionStart = getClipOffset(left.id) + left.trimEnd - left.trimStart - duration;
+    const sourceTime = left.trimEnd - duration;
+    if (selectedId === left.id && previewRef.current) {
+      previewRef.current.currentTime = sourceTime;
+    } else {
+      pendingSeek.current = { id: left.id, time: sourceTime };
+    }
+    setSelectedId(left.id);
+    setPlayheadTime(transitionStart);
+    setError("");
+  };
+
+  const updateTransitionDuration = (leftClipId: string, duration: number) => {
+    const transition = transitions.find((item) => item.leftClipId === leftClipId);
+    if (!transition || !Number.isFinite(duration)) return;
+    const leftIndex = clips.findIndex((clip) => clip.id === transition.leftClipId);
+    const left = clips[leftIndex];
+    const right = clips[leftIndex + 1];
+    if (!left || right?.id !== transition.rightClipId) return;
+    const maxDuration = maxTransitionDuration(left, right);
+    setTransitions(transitions.map((item) => item.leftClipId === leftClipId
+      ? { ...item, duration: Math.min(maxDuration, Math.max(0.1, duration)) }
+      : item));
+  };
+
+  const removeTransition = (leftClipId: string) => {
+    if (!transitions.some((transition) => transition.leftClipId === leftClipId)) return;
+    playbackWanted.current = false;
+    previewRef.current?.pause();
+    pauseAudio();
+    setIsPlaying(false);
+    recordHistory();
+    setTransitions(transitions.filter((transition) => transition.leftClipId !== leftClipId));
+    setSelectedTransitionId("");
+  };
+
+  const startTransitionResize = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    transition: TimelineTransition,
+    edge: TransitionResizeDrag["edge"],
+  ) => {
+    if (isExporting || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    transitionResizeDrag.current = {
+      leftClipId: transition.leftClipId,
+      edge,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      duration: transition.duration,
+      snapshot: editorSnapshotRef.current,
+    };
+    playbackWanted.current = false;
+    previewRef.current?.pause();
+    pauseAudio();
+    setIsPlaying(false);
+    setSelectedTransitionId(transition.leftClipId);
+  };
+
+  const moveTransitionResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = transitionResizeDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const direction = drag.edge === "start" ? -1 : 1;
+    updateTransitionDuration(drag.leftClipId, drag.duration + direction * (event.clientX - drag.startX) / 72);
+  };
+
+  const finishTransitionResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = transitionResizeDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    transitionResizeDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (JSON.stringify(drag.snapshot.sequences) !== JSON.stringify(editorSnapshotRef.current.sequences)) {
+      recordHistory(drag.snapshot);
+    }
   };
 
   const selectClip = (clipId: string) => {
     const clip = clips.find((item) => item.id === clipId);
     if (!clip) return;
+    const clipIndex = clips.findIndex((item) => item.id === clipId);
+    const incomingTransition = clipIndex > 0
+      ? transitions.find((transition) => transition.rightClipId === clipId)
+      : undefined;
+    const initialTime = clip.trimStart + (incomingTransition?.duration ?? 0);
+    const sourceTime = selectedId === clipId && previewRef.current
+      ? previewRef.current.currentTime
+      : initialTime;
     playbackWanted.current = false;
     setIsPlaying(false);
     previewRef.current?.pause();
     pauseAudio();
+    transitionPreviewRef.current?.pause();
     setPlayheadTime(getClipOffset(clipId)
-      + (selectedId === clipId && previewRef.current
-        ? Math.min(Math.max(0, previewRef.current.currentTime - clip.trimStart), clip.trimEnd - clip.trimStart)
-        : 0));
-    if (selectedId !== clipId) pendingSeek.current = { id: clip.id, time: clip.trimStart };
+      + Math.min(Math.max(0, sourceTime - clip.trimStart), clip.trimEnd - clip.trimStart));
+    if (selectedId !== clipId) pendingSeek.current = { id: clip.id, time: initialTime };
     setSelectedId(clipId);
   };
 
   const seekTimeline = (time: number) => {
     if (clips.length === 0) return;
     const boundedTime = Math.min(Math.max(0, time), totalDuration);
-    let elapsed = 0;
     let targetClip = clips[clips.length - 1];
     let targetTime = targetClip.trimEnd;
     for (const clip of clips) {
       const clipLength = clip.trimEnd - clip.trimStart;
-      if (boundedTime < elapsed + clipLength) {
+      const clipOffset = getClipOffset(clip.id);
+      if (boundedTime < clipOffset + clipLength) {
         targetClip = clip;
-        targetTime = clip.trimStart + boundedTime - elapsed;
+        targetTime = clip.trimStart + boundedTime - clipOffset;
         break;
       }
-      elapsed += clipLength;
     }
 
     playbackWanted.current = false;
@@ -1075,6 +1503,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     } else if (previewRef.current) {
       previewRef.current.currentTime = targetTime;
     }
+    syncTransitionPlayback(boundedTime, false);
   };
 
   const handleTimeUpdate = () => {
@@ -1084,6 +1513,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       + Math.min(Math.max(0, video.currentTime - selectedClip.trimStart), selectedClip.trimEnd - selectedClip.trimStart);
     setPlayheadTime(timelineTime);
     syncAudioPlayback(timelineTime, playbackWanted.current);
+    syncTransitionPlayback(timelineTime, playbackWanted.current);
     if (!playbackWanted.current || advancing.current
       || (!video.ended && video.currentTime < selectedClip.trimEnd - 0.05)) return;
     advancing.current = true;
@@ -1097,7 +1527,9 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       video.currentTime = selectedClip.trimEnd;
     } else {
       setPlayheadTime(getClipOffset(selectedClip.id) + selectedClip.trimEnd - selectedClip.trimStart);
-      pendingSeek.current = { id: next.id, time: next.trimStart };
+      const transition = transitions.find((item) => item.leftClipId === selectedClip.id
+        && item.rightClipId === next.id);
+      pendingSeek.current = { id: next.id, time: next.trimStart + (transition?.duration ?? 0) };
       setSelectedId(next.id);
     }
     window.setTimeout(() => {
@@ -1121,10 +1553,21 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     if (video.currentTime < selectedClip.trimStart || video.currentTime >= selectedClip.trimEnd) {
       video.currentTime = selectedClip.trimStart;
     }
+    const transitionVideo = transitionPreviewRef.current;
+    const transition = getTransitionAtTime(playheadTime);
+    if (transitionVideo && previewTransitionClip) {
+      transitionVideo.muted = true;
+      transitionVideo.currentTime = transition
+        ? previewTransitionClip.trimStart + playheadTime - getTransitionStart(transition)
+        : previewTransitionClip.trimStart;
+    }
     try {
-      await video.play();
+      const playRequests = [video.play()];
+      if (transitionVideo) playRequests.push(transitionVideo.play());
+      await Promise.all(playRequests);
       const timelineTime = getClipOffset(selectedClip.id) + video.currentTime - selectedClip.trimStart;
       syncAudioPlayback(timelineTime, true);
+      syncTransitionPlayback(timelineTime, true);
     } catch {
       playbackWanted.current = false;
       setIsPlaying(false);
@@ -1150,6 +1593,10 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       formData.append("timeline", JSON.stringify(clips.map(({ trimStart, trimEnd }) => ({
         start: trimStart,
         end: trimEnd,
+      }))));
+      formData.append("transitions", JSON.stringify(transitions.map((transition) => ({
+        afterClipIndex: clips.findIndex((clip) => clip.id === transition.leftClipId),
+        duration: transition.duration,
       }))));
       formData.append("audioTimeline", JSON.stringify(audioClips.map((clip, fileIndex) => ({
         fileIndex,
@@ -1183,7 +1630,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         formData.append("audio", file, clip.name);
       }
 
-      setExportStage(`Uploading video and audio tracks and rendering H.264 ${format.toUpperCase()} on the server…`);
+      setExportStage(`Uploading video and audio tracks and rendering transitions in H.264 ${format.toUpperCase()} on the server…`);
       const response = await fetch("/api/video/export", { method: "POST", body: formData });
       if (!response.ok) {
         let payload: unknown;
@@ -1250,6 +1697,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                 type="file"
                 accept="video/*,audio/*"
                 multiple
+                disabled={Boolean(removingFootageId) || isRestoringHistory}
                 onChange={(event) => {
                   void addUploads(event.target.files).catch((caught: unknown) => {
                     setError(caught instanceof Error ? caught.message : "Could not save uploaded media.");
@@ -1260,36 +1708,52 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             </label>
           </div>
           {uploadedAssets.map((asset) => (
-            asset.file?.type.startsWith("image/") ? (
-              <div className="ff-editor-asset" key={asset.id} title="Images are available in Footage; the timeline accepts video and audio clips.">
-                <img className="ff-editor-upload-thumbnail" src={asset.src} alt="" />
-                <span>{asset.name}</span>
-                <strong aria-hidden="true">IMG</strong>
-              </div>
-            ) : asset.file?.type.startsWith("audio/") ? (
+            <div className="ff-editor-asset-row" key={asset.id}>
+              {asset.file?.type.startsWith("image/") ? (
+                <div className="ff-editor-asset ff-editor-image-asset" title="Images are available in Footage; the timeline accepts video and audio clips.">
+                  <img className="ff-editor-upload-thumbnail" src={asset.src} alt="" />
+                  <span>{asset.name}</span>
+                  <strong aria-hidden="true">IMG</strong>
+                </div>
+              ) : asset.file?.type.startsWith("audio/") ? (
+                <button
+                  className="ff-editor-asset"
+                  onClick={() => void addAudioAsset(asset)}
+                  disabled={isExporting || Boolean(loadingAudioAssetId) || Boolean(removingFootageId) || isRestoringHistory}
+                  title="Add audio at the current playhead position"
+                >
+                  <span aria-hidden="true">♫</span>
+                  <span>{loadingAudioAssetId === asset.id ? "Reading audio…" : asset.name}</span>
+                  <strong>{loadingAudioAssetId === asset.id ? "…" : "+ Audio"}</strong>
+                </button>
+              ) : (
+                <button
+                  className="ff-editor-asset"
+                  onClick={() => void addAsset(asset)}
+                  disabled={isExporting || Boolean(loadingAssetId) || Boolean(removingFootageId) || isRestoringHistory}
+                >
+                  <span aria-hidden="true">▣</span>
+                  <span>{loadingAssetId === asset.id ? "Preparing video…" : asset.name}</span>
+                  <strong>+</strong>
+                </button>
+              )}
               <button
-                className="ff-editor-asset"
-                key={asset.id}
-                onClick={() => void addAudioAsset(asset)}
-                disabled={isExporting || Boolean(loadingAudioAssetId)}
-                title="Add audio at the current playhead position"
+                type="button"
+                className="ff-editor-asset-delete"
+                aria-label={`Delete ${asset.name} from Footage`}
+                title="Delete from Footage"
+                disabled={isExporting || Boolean(loadingAssetId) || Boolean(loadingAudioAssetId)
+                  || Boolean(removingFootageId) || isRestoringHistory}
+                onClick={() => void removeUploadedAsset(asset)}
               >
-                <span aria-hidden="true">♫</span>
-                <span>{loadingAudioAssetId === asset.id ? "Reading audio…" : asset.name}</span>
-                <strong>{loadingAudioAssetId === asset.id ? "…" : "+ Audio"}</strong>
+                ×
               </button>
-            ) : (
-              <button className="ff-editor-asset" key={asset.id} onClick={() => void addAsset(asset)} disabled={isExporting || Boolean(loadingAssetId)}>
-                <span aria-hidden="true">▣</span>
-                <span>{loadingAssetId === asset.id ? "Preparing video…" : asset.name}</span>
-                <strong>+</strong>
-              </button>
-            )
+            </div>
           ))}
           {uploadedAssets.length === 0 && <p className="ff-editor-empty">Upload video or audio files from this device.</p>}
         </section>
 
-        <p className="ff-editor-sidebar-note">Footage, sequences, and timeline edits are saved in this browser. Audio tracks are included in MOV and MP4 exports.</p>
+        <p className="ff-editor-sidebar-note">Footage, sequences, and timeline edits are saved in this browser. Transitions and audio tracks are included in MOV and MP4 exports.</p>
       </aside>
 
       <div className="ff-editor-workspace">
@@ -1312,7 +1776,13 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                 }
                 const timelineTime = getClipOffset(selectedClip.id) + video.currentTime - selectedClip.trimStart;
                 setPlayheadTime(timelineTime);
+                const transition = getTransitionAtTime(timelineTime);
+                const transitionProgress = transition
+                  ? (timelineTime - getTransitionStart(transition)) / transition.duration
+                  : 0;
+                video.volume = 1 - transitionProgress;
                 syncAudioPlayback(timelineTime, playbackWanted.current);
+                syncTransitionPlayback(timelineTime, playbackWanted.current);
                 if (playbackWanted.current) {
                   void video.play().catch(() => {
                     playbackWanted.current = false;
@@ -1337,6 +1807,52 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               <strong>Your timeline preview</strong>
               <p>Add a generated video or upload a clip to begin.</p>
             </div>
+          )}
+          {previewTransitionClip && (previewTransition || selectedClipOutgoingTransition) && (
+            <video
+              key={`transition-${previewTransitionClip.id}`}
+              ref={transitionPreviewRef}
+              className="ff-editor-transition-preview"
+              src={previewTransitionClip.src}
+              playsInline
+              muted
+              aria-hidden="true"
+              style={{
+                opacity: previewTransition
+                  ? Math.min(1, Math.max(0,
+                    (playheadTime - getTransitionStart(previewTransition)) / previewTransition.duration))
+                  : 0,
+              }}
+              onCanPlay={(event) => {
+                const video = event.currentTarget;
+                const transition = getTransitionAtTime(playheadTime);
+                const activeTransition = transition?.rightClipId === previewTransitionClip.id ? transition : undefined;
+                const sourceTime = activeTransition
+                  ? previewTransitionClip.trimStart + playheadTime - getTransitionStart(activeTransition)
+                  : previewTransitionClip.trimStart;
+                video.currentTime = sourceTime;
+                video.muted = !activeTransition;
+                video.volume = activeTransition
+                  ? Math.min(1, Math.max(0,
+                    (playheadTime - getTransitionStart(activeTransition)) / activeTransition.duration))
+                  : 0;
+                if (playbackWanted.current) {
+                  void video.play().catch(() => {
+                    playbackWanted.current = false;
+                    previewRef.current?.pause();
+                    pauseAudio();
+                    setIsPlaying(false);
+                    setError("The browser could not play the transition preview.");
+                  });
+                }
+              }}
+              onError={() => {
+                playbackWanted.current = false;
+                setIsPlaying(false);
+                pauseAudio();
+                setError("Could not load the next video for the transition preview.");
+              }}
+            />
           )}
           {selectedClip && (
             <div className="ff-editor-preview-controls">
@@ -1412,8 +1928,8 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                   className="ff-editor-tool"
                   aria-label="Undo"
                   title="Undo (Ctrl/Cmd+Z)"
-                  disabled={!canUndo || isExporting}
-                  onClick={undo}
+                  disabled={!canUndo || isExporting || isRestoringHistory || Boolean(removingFootageId)}
+                  onClick={() => void undo()}
                 >
                   <span aria-hidden="true">↶</span>
                 </button>
@@ -1422,8 +1938,8 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                   className="ff-editor-tool"
                   aria-label="Redo"
                   title="Redo (Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z)"
-                  disabled={!canRedo || isExporting}
-                  onClick={redo}
+                  disabled={!canRedo || isExporting || isRestoringHistory || Boolean(removingFootageId)}
+                  onClick={() => void redo()}
                 >
                   <span aria-hidden="true">↷</span>
                 </button>
@@ -1452,6 +1968,17 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                 <button
                   type="button"
                   className="ff-editor-tool"
+                  aria-label="Transition tool"
+                  aria-pressed={activeTool === "transition"}
+                  title="Transition tool: click between clips to add a cross dissolve"
+                  disabled={isExporting}
+                  onClick={() => setActiveTool("transition")}
+                >
+                  <span aria-hidden="true">⇄</span>
+                </button>
+                <button
+                  type="button"
+                  className="ff-editor-tool"
                   aria-label="Ripple delete selected clip"
                   title="Ripple delete selected clip"
                   disabled={!selectedClip || isExporting}
@@ -1476,8 +2003,22 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             </div>
           </div>
           <p className="ff-editor-instructions">
-            Add audio from Footage to place it at the playhead. Set its start, source in/out points, and volume; overlapping audio clips are mixed. Audio plays in sync with video and is included in exports. Undo and redo with Ctrl/Cmd+Z and Ctrl/Cmd+Y; history holds up to 50 actions and clears on reload. Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Choose the Razor tool and click a clip to split it. Use Ripple delete to remove the selected clip and close the gap. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
+            Video clips with embedded audio show a source waveform automatically, aligned to the visible trim. Add audio from Footage to place a separate track at the playhead. Set its start, source in/out points, and volume; overlapping audio clips are mixed. Audio plays in sync with video and is included in exports. Choose the Transition tool and click between clips to add a cross dissolve; select its marker to change the duration or remove it. Transitions overlap adjacent clips, shorten the sequence, and crossfade their source audio. Undo and redo with Ctrl/Cmd+Z and Ctrl/Cmd+Y; history holds up to 50 actions and clears on reload. Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Choose the Razor tool and click a clip to split it. Use Ripple delete to remove the selected clip and close the gap. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
           </p>
+          {selectedTransition && (
+            <div className="ff-editor-transition-controls" role="group" aria-label="Cross dissolve settings">
+              <strong>Cross dissolve</strong>
+              <span>{selectedTransition.duration.toFixed(1)} s · drag either edge to resize</span>
+              <button
+                type="button"
+                className="ff-editor-sequence-action"
+                onClick={() => removeTransition(selectedTransition.leftClipId)}
+                disabled={isExporting}
+              >
+                Remove transition
+              </button>
+            </div>
+          )}
           {isExporting && (
             <div className="ff-editor-export-status" role="status" aria-live="polite">
               <span className="ff-editor-export-spinner" />
@@ -1522,27 +2063,48 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                   aria-hidden="true"
                 />
                 <ol className="ff-editor-clip-list">
-                  {clips.map((clip, index) => (
-                    <li
-                      className={clip.id === selectedClip?.id ? "ff-editor-clip ff-editor-clip-active" : "ff-editor-clip"}
-                      key={clip.id}
-                      data-clip-id={clip.id}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        playbackWanted.current = false;
-                        setIsPlaying(false);
-                        previewRef.current?.pause();
-                        selectClip(clip.id);
-                        setClipContextMenu({
-                          clipId: clip.id,
-                          x: Math.max(8, Math.min(event.clientX, window.innerWidth - 168)),
-                          y: Math.max(8, Math.min(event.clientY, window.innerHeight - 52)),
-                        });
-                      }}
-                      style={{ flexBasis: `${((clip.trimEnd - clip.trimStart) / totalDuration) * 100}%` }}
-                      data-dragging={draggingClipId === clip.id || undefined}
-                    >
+                  {clips.map((clip, index) => {
+                    const transition = transitions.find((item) => item.leftClipId === clip.id);
+                    const waveform = clip.audioWaveform ?? [];
+                    const waveformPath = waveform.length > 0
+                      ? [
+                        ...waveform.map((sample, sampleIndex) => {
+                          const height = 1 + Math.max(0, Math.min(1, sample)) * 14;
+                          return `${sampleIndex} ${16 - height}`;
+                        }),
+                        ...waveform.map((sample, sampleIndex) => {
+                          const height = 1 + Math.max(0, Math.min(1, sample)) * 14;
+                          return `${waveform.length - sampleIndex - 1} ${16 + height}`;
+                        }),
+                      ].join(" L ")
+                      : "";
+                    return (
+                      <li
+                        className={clip.id === selectedClip?.id ? "ff-editor-clip ff-editor-clip-active" : "ff-editor-clip"}
+                        key={clip.id}
+                        data-clip-id={clip.id}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          playbackWanted.current = false;
+                          setIsPlaying(false);
+                          previewRef.current?.pause();
+                          selectClip(clip.id);
+                          setClipContextMenu({
+                            clipId: clip.id,
+                            x: Math.max(8, Math.min(event.clientX, window.innerWidth - 168)),
+                            y: Math.max(8, Math.min(event.clientY, window.innerHeight - 52)),
+                          });
+                        }}
+                        style={{
+                          flexBasis: `${((clip.trimEnd - clip.trimStart) / totalDuration) * 100}%`,
+                          marginLeft: index > 0
+                            ? `${-((transitions.find((item) => item.rightClipId === clip.id)?.duration ?? 0)
+                              / totalDuration) * 100}%`
+                            : undefined,
+                        }}
+                        data-dragging={draggingClipId === clip.id || undefined}
+                      >
                       <div className="ff-editor-clip-trim-bar" aria-label={`${clip.name} trim handles`}>
                         <button
                           type="button"
@@ -1584,7 +2146,9 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                         type="button"
                         className={`ff-editor-clip-select${activeTool === "razor"
                           ? " ff-editor-clip-select-razor"
-                          : " ff-editor-clip-select-draggable"}`}
+                          : activeTool === "transition"
+                            ? " ff-editor-clip-select-transition"
+                            : " ff-editor-clip-select-draggable"}`}
                         draggable={false}
                         ref={(element) => {
                           if (element) clipButtonRefs.current.set(clip.id, element);
@@ -1601,7 +2165,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                           }
                           if (activeTool === "razor") {
                             splitClipAt(clip.id, event.clientX, event.currentTarget.parentElement ?? event.currentTarget);
-                          } else {
+                          } else if (activeTool === "select") {
                             selectClip(clip.id);
                           }
                         }}
@@ -1610,6 +2174,18 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                         <span className="ff-editor-clip-name">{clip.name}</span>
                         <span className="ff-editor-clip-duration">{formatTime(clip.trimEnd - clip.trimStart)}</span>
                       </button>
+                      {waveformPath && (
+                        <div className="ff-editor-source-waveform" aria-label={`${clip.name} source audio waveform`}>
+                          <span aria-hidden="true">♫</span>
+                          <svg
+                            viewBox={`${(clip.trimStart / clip.duration) * waveform.length} 0 ${((clip.trimEnd - clip.trimStart) / clip.duration) * waveform.length} 32`}
+                            preserveAspectRatio="none"
+                            aria-hidden="true"
+                          >
+                            <path d={`M ${waveformPath} Z`} />
+                          </svg>
+                        </div>
+                      )}
                       <div className="ff-editor-trim">
                         <label>
                           In
@@ -1643,8 +2219,102 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                         <button type="button" aria-label={`Move ${clip.name} down`} title="Move down" onClick={() => moveClip(clip.id, 1)} disabled={index === clips.length - 1 || isExporting}>↓</button>
                         <button type="button" aria-label={`Remove ${clip.name}`} title="Remove clip" onClick={() => removeClip(clip.id)} disabled={isExporting}>×</button>
                       </div>
-                    </li>
-                  ))}
+                      {index < clips.length - 1
+                        && (activeTool === "transition" || Boolean(transition))
+                        && (
+                          <div
+                            className={`ff-editor-transition-block${selectedTransitionId === clip.id ? " ff-editor-transition-block-active" : ""}`}
+                            style={{
+                              width: `${((transition?.duration ?? 0.1)
+                                / (clip.trimEnd - clip.trimStart)) * 100}%`,
+                              right: "0",
+                            }}
+                            aria-label={transition
+                              ? `Select cross dissolve between ${clip.name} and ${clips[index + 1].name}`
+                              : `Add cross dissolve between ${clip.name} and ${clips[index + 1].name}`}
+                            title={transition
+                              ? `Cross dissolve · ${transition.duration.toFixed(1)} seconds`
+                              : "Add cross dissolve"}
+                            role="button"
+                            aria-disabled={isExporting}
+                            tabIndex={isExporting ? -1 : 0}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                changeTransitionBoundary(clip, clips[index + 1]);
+                              }
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              changeTransitionBoundary(clip, clips[index + 1]);
+                            }}
+                          >
+                              {transition ? (
+                              <>
+                                  <span className="ff-editor-transition-cross" aria-hidden="true" />
+                                  <span className="ff-editor-transition-label">Cross Dissolve</span>
+                                  <button
+                                    type="button"
+                                    className="ff-editor-transition-remove"
+                                    aria-label={`Delete cross dissolve between ${clip.name} and ${clips[index + 1].name}`}
+                                    title="Delete cross dissolve"
+                                    disabled={isExporting}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      removeTransition(transition.leftClipId);
+                                    }}
+                                  >
+                                    ×
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="ff-editor-transition-handle ff-editor-transition-handle-start"
+                                    aria-label={`Resize start of cross dissolve between ${clip.name} and ${clips[index + 1].name}`}
+                                    title="Drag left or right to resize the transition"
+                                    disabled={isExporting}
+                                    onPointerDown={(event) => startTransitionResize(event, transition, "start")}
+                                    onPointerMove={moveTransitionResize}
+                                    onPointerUp={finishTransitionResize}
+                                    onPointerCancel={finishTransitionResize}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onKeyDown={(event) => {
+                                      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                                      event.preventDefault();
+                                      recordHistory();
+                                      updateTransitionDuration(
+                                        transition.leftClipId,
+                                        transition.duration + (event.key === "ArrowLeft" ? 0.1 : -0.1),
+                                      );
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    className="ff-editor-transition-handle ff-editor-transition-handle-end"
+                                    aria-label={`Resize end of cross dissolve between ${clip.name} and ${clips[index + 1].name}`}
+                                    title="Drag left or right to resize the transition"
+                                    disabled={isExporting}
+                                    onPointerDown={(event) => startTransitionResize(event, transition, "end")}
+                                    onPointerMove={moveTransitionResize}
+                                    onPointerUp={finishTransitionResize}
+                                    onPointerCancel={finishTransitionResize}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onKeyDown={(event) => {
+                                      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                                      event.preventDefault();
+                                      recordHistory();
+                                      updateTransitionDuration(
+                                        transition.leftClipId,
+                                        transition.duration + (event.key === "ArrowRight" ? 0.1 : -0.1),
+                                      );
+                                    }}
+                                  />
+                                </>
+                              ) : <span aria-hidden="true">+</span>}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ol>
                 <section className="ff-editor-audio-lane" aria-label="Audio track">
                   <div className="ff-editor-audio-heading">

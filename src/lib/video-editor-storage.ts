@@ -7,6 +7,7 @@ export type StoredEditorClip = {
   duration: number;
   trimStart: number;
   trimEnd: number;
+  audioWaveform?: number[] | null;
 };
 
 export type StoredEditorAudioClip = {
@@ -20,6 +21,12 @@ export type StoredEditorAudioClip = {
   volume: number;
 };
 
+export type StoredEditorTransition = {
+  leftClipId: string;
+  rightClipId: string;
+  duration: number;
+};
+
 export type StoredEditorSequence = {
   id: string;
   name: string;
@@ -27,6 +34,7 @@ export type StoredEditorSequence = {
   selectedId: string;
   playheadTime: number;
   audioClips?: StoredEditorAudioClip[];
+  transitions?: StoredEditorTransition[];
 };
 
 export type StoredEditorAsset = {
@@ -36,11 +44,11 @@ export type StoredEditorAsset = {
 };
 
 export type StoredVideoEditorState = {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   sequences: StoredEditorSequence[];
   uploadedAssets: StoredEditorAsset[];
   activeSequenceId: string;
-  activeTool: "select" | "razor";
+  activeTool: "select" | "razor" | "transition";
 };
 
 type StoredMedia = {
@@ -108,6 +116,38 @@ export async function saveEditorMedia(id: string, file: File) {
     type: file.type,
     blob: file,
   } satisfies StoredMedia);
+  await done;
+}
+
+export async function deleteEditorMedia(id: string) {
+  const database = await openDatabase();
+  const transaction = database.transaction(MEDIA_STORE, "readwrite");
+  const done = transactionDone(transaction);
+  transaction.objectStore(MEDIA_STORE).delete(id);
+  await done;
+}
+
+export async function reconcileEditorMedia(
+  current: ReadonlyMap<string, File>,
+  next: ReadonlyMap<string, File>,
+) {
+  const database = await openDatabase();
+  const transaction = database.transaction(MEDIA_STORE, "readwrite");
+  const done = transactionDone(transaction);
+  const store = transaction.objectStore(MEDIA_STORE);
+  for (const [id, file] of next) {
+    if (current.get(id) !== file) {
+      store.put({
+        id,
+        name: file.name,
+        type: file.type,
+        blob: file,
+      } satisfies StoredMedia);
+    }
+  }
+  for (const id of current.keys()) {
+    if (!next.has(id)) store.delete(id);
+  }
   await done;
 }
 

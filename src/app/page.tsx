@@ -20,7 +20,26 @@ import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 const nodeTypes = { workflow: WorkflowNode };
 const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
 const LEGACY_WORKFLOW_STORAGE_KEY = "fal-flow:workflow";
+const UI_THEME_STORAGE_KEY = "fal-flow:ui-theme";
+const UI_BUTTON_COLOR_STORAGE_KEY = "fal-flow:ui-button-color";
 const DEFAULT_WORKFLOW_NAME = "Untitled workflow";
+const UI_THEMES = ["midnight", "ocean", "violet", "light"] as const;
+type UiTheme = (typeof UI_THEMES)[number];
+const UI_BUTTON_COLORS = ["blue", "violet", "coral", "amber", "slate"] as const;
+type UiButtonColor = (typeof UI_BUTTON_COLORS)[number];
+const UI_THEME_LABELS: Record<UiTheme, string> = {
+  midnight: "Midnight",
+  ocean: "Ocean",
+  violet: "Violet",
+  light: "Light",
+};
+const UI_BUTTON_COLOR_LABELS: Record<UiButtonColor, string> = {
+  blue: "Blue",
+  violet: "Violet",
+  coral: "Coral",
+  amber: "Amber",
+  slate: "Slate",
+};
 const imageModelGroups = [
   { provider: "Google", access: "FREE TIER", types: ["google/gemini-image"] },
   { provider: "fal", access: "PAID · API CONNECTED", types: ["fal/nano-banana"] },
@@ -131,6 +150,9 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
 
 export default function Page() {
   const [activeView, setActiveView] = useState<"workflow" | "editor">("workflow");
+  const [uiTheme, setUiTheme] = useState<UiTheme>("midnight");
+  const [uiButtonColor, setUiButtonColor] = useState<UiButtonColor>("blue");
+  const [themeError, setThemeError] = useState("");
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
@@ -148,6 +170,44 @@ export default function Page() {
   const lastSavedPayload = useRef("");
   const workflowsRef = useRef<SavedWorkflow[]>([]);
   const activeWorkflowIdRef = useRef("");
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const savedTheme = window.localStorage.getItem(UI_THEME_STORAGE_KEY);
+        if (savedTheme && UI_THEMES.includes(savedTheme as UiTheme)) setUiTheme(savedTheme as UiTheme);
+        const savedButtonColor = window.localStorage.getItem(UI_BUTTON_COLOR_STORAGE_KEY);
+        if (savedButtonColor && UI_BUTTON_COLORS.includes(savedButtonColor as UiButtonColor)) {
+          setUiButtonColor(savedButtonColor as UiButtonColor);
+        }
+      } catch (error) {
+        console.error("Could not load saved appearance preferences.", error);
+        setThemeError("Could not load saved appearance preferences.");
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  const changeUiTheme = (theme: UiTheme) => {
+    setUiTheme(theme);
+    setThemeError("");
+    try {
+      window.localStorage.setItem(UI_THEME_STORAGE_KEY, theme);
+    } catch (error) {
+      console.error("Could not save the selected UI theme.", error);
+      setThemeError("Theme change could not be saved.");
+    }
+  };
+  const changeUiButtonColor = (color: UiButtonColor) => {
+    setUiButtonColor(color);
+    setThemeError("");
+    try {
+      window.localStorage.setItem(UI_BUTTON_COLOR_STORAGE_KEY, color);
+    } catch (error) {
+      console.error("Could not save the selected button color.", error);
+      setThemeError("Button color change could not be saved.");
+    }
+  };
   const videoAssets = useMemo<VideoAsset[]>(() => nodes.flatMap((node) => {
     const data = node.data as {
       type?: string;
@@ -593,7 +653,7 @@ export default function Page() {
   };
 
   return (
-    <div className="ff-app">
+    <div className="ff-app" data-theme={uiTheme} data-button-color={uiButtonColor}>
       <header className="ff-toolbar">
         <div className="ff-brand">
           <span className="ff-brand-mark" aria-hidden="true">F</span>
@@ -669,6 +729,41 @@ export default function Page() {
           ) : (
             <span className="ff-toolbar-note">H.264 MOV and MP4 export rendered on the server</span>
           )}
+          <label className="ff-theme-control">
+            <span>Theme</span>
+            <select
+              className="ff-theme-select"
+              aria-label="UI color theme"
+              value={uiTheme}
+              onChange={(event) => {
+                if (UI_THEMES.includes(event.target.value as UiTheme)) {
+                  changeUiTheme(event.target.value as UiTheme);
+                }
+              }}
+            >
+              {UI_THEMES.map((theme) => (
+                <option key={theme} value={theme}>{UI_THEME_LABELS[theme]}</option>
+              ))}
+            </select>
+          </label>
+          <label className="ff-theme-control">
+            <span>Buttons</span>
+            <select
+              className="ff-theme-select"
+              aria-label="Button color"
+              value={uiButtonColor}
+              onChange={(event) => {
+                if (UI_BUTTON_COLORS.includes(event.target.value as UiButtonColor)) {
+                  changeUiButtonColor(event.target.value as UiButtonColor);
+                }
+              }}
+            >
+              {UI_BUTTON_COLORS.map((color) => (
+                <option key={color} value={color}>{UI_BUTTON_COLOR_LABELS[color]}</option>
+              ))}
+            </select>
+          </label>
+          {themeError && <span className="ff-theme-error" role="status">{themeError}</span>}
         </div>
       </header>
 
@@ -822,7 +917,7 @@ export default function Page() {
             ));
           }}
           onConnect={onConnect} isValidConnection={isValidConnection}
-          colorMode="dark" fitView deleteKeyCode={["Backspace", "Delete"]}
+          colorMode={uiTheme === "light" ? "light" : "dark"} fitView deleteKeyCode={["Backspace", "Delete"]}
         >
           <Background gap={28} size={1} />
           <Controls />

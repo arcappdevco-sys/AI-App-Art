@@ -1,4 +1,7 @@
 :root {
+  --button-bg: #4f70e5;
+  --button-hover: #6685f5;
+  --button-text: #ffffff;
   --bg: #0c1112;
   --panel: #111819;
   --panel-raised: #172021;
@@ -8,6 +11,173 @@
   --muted: #91a19e;
   --accent: #c6f36b;
   --accent-dark: #1b2911;
+  --toolbar-surface: #101617;
+  --surface-deep: #0c1213;
+  --surface-hover: #182122;
+  --surface-hover-raised: #1c2929;
+  --surface-selected: #25302b;
+  --surface-active: #26342b;
+  --control-bg: #202b28;
+  --line-strong: #34413f;
+  --line-control: #3b4a45;
+  --line-hover: #50605e;
+  --text-strong: #dce8e2;
+  --text-secondary: #cbd6d2;
+  --accent-contrast: #15200d;
+  --accent-hover: #d7ff8b;
+  --canvas-center: #172021;
+  --canvas-mid: #111819;
+  --canvas-edge: #0c1112;
+  --grid-dot: #34403e;
+  --clip-bg: #151e1f;
+  --clip-active-bg: #1a241c;
+  --clip-trim-bg: #101716;
+  --waveform-bg: #101916;
+  --audio-control-bg: #141d1d;
+  --audio-block-bg: #245247;
+  --audio-block-text: #e0f6eb;
+}
+
+.ff-app[data-button-color="violet"] {
+  --button-bg: #8d5ed1;
+  --button-hover: #a174e3;
+  --button-text: #ffffff;
+}
+
+.ff-app[data-button-color="coral"] {
+  --button-bg: #d96554;
+  --button-hover: #e67b68;
+  --button-text: #ffffff;
+}
+
+.ff-app[data-button-color="amber"] {
+  --button-bg: #e0ad3f;
+  --button-hover: #edbf5c;
+  --button-text: #251a05;
+}
+
+.ff-app[data-button-color="slate"] {
+  --button-bg: #647a91;
+  --button-hover: #7a91aa;
+  --button-text: #ffffff;
+}
+
+.ff-app[data-theme="ocean"] {
+  --bg: #0b141b;
+  --panel: #101d26;
+  --panel-raised: #172733;
+  --node: #172733;
+  --line: #293d49;
+  --text: #e5f1f5;
+  --muted: #95abb5;
+  --accent: #69c9e8;
+  --accent-dark: #102b36;
+  --toolbar-surface: #0f1b23;
+  --surface-deep: #0c1921;
+  --surface-hover: #1b303c;
+  --surface-hover-raised: #203946;
+  --surface-selected: #1c3947;
+  --surface-active: #1d4050;
+  --control-bg: #20313a;
+  --line-strong: #38515d;
+  --line-control: #3c5966;
+  --line-hover: #5b8291;
+  --text-strong: #d9eaf0;
+  --text-secondary: #c6dae1;
+  --accent-contrast: #09212a;
+  --accent-hover: #8cdef4;
+  --canvas-center: #172733;
+  --canvas-mid: #101d26;
+  --canvas-edge: #0b141b;
+  --grid-dot: #3b515a;
+  --clip-bg: #15252f;
+  --clip-active-bg: #1a3440;
+  --clip-trim-bg: #0d1b23;
+  --waveform-bg: #101d24;
+  --audio-control-bg: #15252f;
+  --audio-block-bg: #183e4a;
+  --audio-block-text: #e0f5fb;
+}
+
+.ff-app[data-theme="violet"] {
+  --bg: #14111b;
+  --panel: #1b1724;
+  --panel-raised: #25202f;
+  --node: #25202f;
+  --line: #3b3348;
+  --text: #f0eaf7;
+  --muted: #aa9eb9;
+  --accent: #c6a0f6;
+  --accent-dark: #2e2040;
+  --toolbar-surface: #191521;
+  --surface-deep: #17131f;
+  --surface-hover: #30283b;
+  --surface-hover-raised: #383044;
+  --surface-selected: #3b2e4c;
+  --surface-active: #443255;
+  --control-bg: #302a38;
+  --line-strong: #4a4058;
+  --line-control: #554966;
+  --line-hover: #7d6b92;
+  --text-strong: #e8def2;
+  --text-secondary: #d7cce3;
+  --accent-contrast: #241735;
+  --accent-hover: #d8baf9;
+  --canvas-center: #25202f;
+  --canvas-mid: #1b1724;
+  --canvas-edge: #14111b;
+  --grid-dot: #51465d;
+  --clip-bg: #251f30;
+  --clip-active-bg: #382a48;
+  --clip-trim-bg: #1a1523;
+  --waveform-bg: #1b1724;
+  --audio-control-bg: #251f30;
+  --audio-block-bg: #3b2852;
+  --audio-block-text: #f3eafd;
+}
+
+.ff-app[data-theme="light"] {
+  color-scheme: light;
+  --bg: #e9eef4;
+  --panel: #f5f7fa;
+  --panel-raised: #ffffff;
+  --node: #ffffff;
+  --line: #d3dce5;
+  --text: #263547;
+  --muted: #647689;
+  --accent: #5366d8;
+  --accent-dark: #e4e9ff;
+  --toolbar-surface: #f5f7fa;
+  --surface-deep: #edf2f7;
+  --surface-hover: #e5ebf2;
+  --surface-hover-raised: #e1e9f1;
+  --surface-selected: #e4eaf5;
+  --surface-active: #e4e8fb;
+  --control-bg: #edf2f7;
+  --line-strong: #c6d1dc;
+  --line-control: #bac8d6;
+  --line-hover: #899aab;
+  --text-strong: #2b3d50;
+  --text-secondary: #405469;
+  --accent-contrast: #ffffff;
+  --accent-hover: #6879e6;
+  --canvas-center: #e1e8ef;
+  --canvas-mid: #edf2f7;
+  --canvas-edge: #e9eef4;
+  --grid-dot: #aab8c6;
+  --clip-bg: #ffffff;
+  --clip-active-bg: #e4e9ff;
+  --clip-trim-bg: #dce4ee;
+  --waveform-bg: #eaf0f6;
+  --audio-control-bg: #f5f7fa;
+  --audio-block-bg: #dce8f4;
+  --audio-block-text: #263547;
+}
+
+.ff-app[data-button-color] {
+  --accent: var(--button-bg);
+  --accent-hover: var(--button-hover);
+  --accent-contrast: var(--button-text);
 }
 
 body {
@@ -19,6 +189,8 @@ body {
 }
 
 .ff-app {
+  color-scheme: dark;
+  color: var(--text);
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr);
   grid-template-columns: 292px minmax(0, 1fr);
@@ -35,7 +207,7 @@ body {
   grid-template-columns: 292px minmax(0, 1fr) auto;
   align-items: center;
   border-bottom: 1px solid var(--line);
-  background: #101617;
+  background: var(--toolbar-surface);
 }
 
 .ff-brand {
@@ -54,7 +226,7 @@ body {
   place-items: center;
   border-radius: 8px;
   background: var(--accent);
-  color: #16200e;
+  color: var(--accent-contrast);
   font-size: 15px;
   font-weight: 800;
 }
@@ -84,7 +256,7 @@ body {
   align-items: center;
   gap: 9px;
   padding: 0 22px;
-  color: #d7e0dd;
+  color: var(--text);
   font-size: 12px;
   font-weight: 550;
   min-width: 0;
@@ -98,7 +270,7 @@ body {
   border-radius: 5px;
   outline: none;
   background: transparent;
-  color: #d7e0dd;
+  color: var(--text);
   font: inherit;
   font-weight: inherit;
   text-overflow: ellipsis;
@@ -107,11 +279,11 @@ body {
 .ff-workflow-title:hover,
 .ff-workflow-title:focus {
   border-color: var(--line);
-  background: #172021;
+  background: var(--panel-raised);
 }
 
 .ff-workflow-title:focus {
-  border-color: #50605e;
+  border-color: var(--line-hover);
 }
 
 .ff-workflow-select {
@@ -120,8 +292,8 @@ body {
   padding: 6px 24px 6px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #172021;
-  color: #d7e0dd;
+  background: var(--panel-raised);
+  color: var(--text);
   font: inherit;
   font-size: 11px;
 }
@@ -148,7 +320,7 @@ body {
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 12px #c6f36655;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .ff-toolbar-actions {
@@ -156,6 +328,36 @@ body {
   align-items: center;
   gap: 8px;
   padding: 0 18px;
+}
+
+.ff-theme-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.ff-theme-select {
+  min-height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+}
+
+.ff-theme-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ff-theme-error {
+  color: #ef9b84;
+  font-size: 9px;
 }
 
 .ff-toolbar-button,
@@ -169,7 +371,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 7px;
   background: transparent;
-  color: #c5d0cd;
+  color: var(--text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: 11px;
@@ -179,9 +381,9 @@ body {
 
 .ff-toolbar-button:hover,
 .ff-open:hover {
-  border-color: #50605e;
-  background: #182122;
-  color: white;
+  border-color: var(--line-hover);
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .ff-toolbar-button:disabled {
@@ -198,14 +400,14 @@ body {
 }
 
 .ff-run {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #15200d;
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--button-text);
 }
 
 .ff-run:hover:not(:disabled) {
-  border-color: #d7ff8b;
-  background: #d7ff8b;
+  border-color: var(--button-hover);
+  background: var(--button-hover);
 }
 
 .ff-run:disabled {
@@ -278,14 +480,14 @@ body {
   height: 20px;
   place-items: center;
   border-radius: 6px;
-  background: #27311f;
+  background: var(--accent-dark);
   color: var(--accent);
   font-size: 12px;
 }
 
 .ff-section-icon-muted {
-  background: #20292a;
-  color: #a7b3b0;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
 }
 
 .ff-model-group {
@@ -300,13 +502,13 @@ body {
   justify-content: space-between;
   gap: 5px;
   padding: 2px 3px 1px;
-  color: #c9d4d1;
+  color: var(--text-secondary);
   font-size: 10px;
   font-weight: 650;
 }
 
 .ff-access {
-  color: #a0b879;
+  color: var(--accent);
   font-size: 8px;
   font-weight: 700;
   letter-spacing: 0.55px;
@@ -334,8 +536,8 @@ body {
 
 .ff-node-card:hover {
   transform: translateY(-1px);
-  border-color: #536362;
-  background: #1c2929;
+  border-color: var(--line-hover);
+  background: var(--surface-hover-raised);
 }
 
 .ff-card-mark {
@@ -344,10 +546,10 @@ body {
   height: 28px;
   flex: 0 0 28px;
   place-items: center;
-  border: 1px solid #394746;
+  border: 1px solid var(--line-strong);
   border-radius: 7px;
-  background: #1b2626;
-  color: #d7e5df;
+  background: var(--surface-hover);
+  color: var(--text-strong);
   font-size: 12px;
   font-weight: 700;
 }
@@ -360,7 +562,7 @@ body {
 
 .ff-card-copy strong {
   overflow: hidden;
-  color: #e2eae7;
+  color: var(--text-strong);
   font-size: 10px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -388,7 +590,7 @@ body {
 }
 
 .ff-utility-group {
-  border-bottom: 1px solid #202a2b;
+  border-bottom: 1px solid var(--line);
 }
 
 .ff-utility-group summary {
@@ -396,7 +598,7 @@ body {
   min-height: 31px;
   align-items: center;
   justify-content: space-between;
-  color: #becac6;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 10px;
   font-weight: 600;
@@ -408,7 +610,7 @@ body {
 }
 
 .ff-utility-group summary > span {
-  color: #80908c;
+  color: var(--muted);
   font-size: 12px;
   transition: transform 120ms ease;
 }
@@ -433,7 +635,7 @@ body {
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
-  color: #aebbb7;
+  color: var(--text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: 10px;
@@ -442,12 +644,12 @@ body {
 
 .ff-utility-node:hover {
   border-color: var(--line);
-  background: #182122;
+  background: var(--surface-hover);
   color: var(--text);
 }
 
 .ff-utility-node > span:last-child {
-  color: #84938f;
+  color: var(--muted);
   font-size: 14px;
 }
 
@@ -458,7 +660,7 @@ body {
 }
 
 .ff-utility-node small {
-  color: #81908c;
+  color: var(--muted);
   font-size: 9px;
   font-weight: 400;
 }
@@ -467,7 +669,7 @@ body {
   margin-top: auto;
   padding: 11px 3px 0;
   border-top: 1px solid var(--line);
-  color: #879691;
+  color: var(--muted);
   font-size: 9px;
   line-height: 1.5;
 }
@@ -477,7 +679,7 @@ body {
   min-width: 0;
   min-height: 0;
   background:
-    radial-gradient(ellipse at 50% 42%, #172021 0%, #111819 36%, #0c1112 78%);
+    radial-gradient(ellipse at 50% 42%, var(--canvas-center) 0%, var(--canvas-mid) 36%, var(--canvas-edge) 78%);
 }
 
 .ff-canvas .react-flow {
@@ -485,7 +687,7 @@ body {
 }
 
 .ff-canvas .react-flow__background pattern circle {
-  fill: #34403e;
+  fill: var(--grid-dot);
 }
 
 .ff-canvas .react-flow__controls {
@@ -497,19 +699,19 @@ body {
 
 .ff-canvas .react-flow__controls-button {
   border-bottom-color: var(--line);
-  background: #151d1e;
-  fill: #b7c3bf;
+  background: var(--panel-raised);
+  fill: var(--text-secondary);
 }
 
 .ff-canvas .react-flow__controls-button:hover {
-  background: #202b2b;
+  background: var(--surface-hover);
 }
 
 .ff-canvas .react-flow__minimap {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #141c1d;
+  background: var(--panel);
 }
 
 .ff-validation-panel {
@@ -522,7 +724,7 @@ body {
   overflow: auto;
   border: 1px solid #55433a;
   border-radius: 9px;
-  background: #151d1e;
+  background: var(--panel-raised);
   box-shadow: 0 8px 30px #0008;
 }
 
@@ -534,11 +736,11 @@ body {
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
-  background: #151d1e;
+  background: var(--panel-raised);
 }
 
 .ff-validation-panel header strong {
-  color: #e7efec;
+  color: var(--text);
   font-size: 11px;
 }
 
@@ -573,8 +775,8 @@ body {
   gap: 10px;
   justify-content: space-between;
   padding: 8px 12px;
-  border-bottom: 1px solid #283435;
-  color: #d7e0dd;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
   font-size: 10px;
   line-height: 1.45;
 }
@@ -607,7 +809,7 @@ body {
   align-items: center;
   flex-direction: column;
   gap: 8px;
-  color: #aebbb7;
+  color: var(--text-secondary);
   pointer-events: none;
   text-align: center;
   transform: translate(-50%, -50%);
@@ -619,35 +821,35 @@ body {
   height: 44px;
   margin-bottom: 5px;
   place-items: center;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 13px;
-  background: #182121;
+  background: var(--surface-hover);
   color: var(--accent);
   font-size: 20px;
 }
 
 .ff-empty-state strong {
-  color: #e2eae7;
+  color: var(--text-strong);
   font-size: 13px;
   font-weight: 600;
 }
 
 .ff-empty-state > span:last-child {
-  color: #91a19e;
+  color: var(--muted);
   font-size: 11px;
 }
 
 .ff-node {
   width: 250px;
   padding-bottom: 8px;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 9px;
   background: var(--node);
   box-shadow: 0 10px 28px #0003;
 }
 
 .ff-node[data-status="running"] {
-  border-color: #b3d46a;
+  border-color: var(--accent);
 }
 
 .ff-node[data-status="done"] {
@@ -665,7 +867,7 @@ body {
   justify-content: space-between;
   padding: 0 11px;
   border-bottom: 1px solid var(--line);
-  color: #e4ece9;
+  color: var(--text);
   font-size: 11px;
   font-weight: 650;
 }
@@ -700,10 +902,10 @@ body {
 .ff-node-run {
   min-height: 23px;
   padding: 0 7px;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 5px;
-  background: #202b28;
-  color: #dce8e2;
+  background: var(--control-bg);
+  color: var(--text-strong);
   cursor: pointer;
   font: inherit;
   font-size: 9px;
@@ -733,7 +935,7 @@ body {
 }
 
 .ff-node[data-status="running"] .ff-dot {
-  background: #b3d46a;
+  background: var(--accent);
 }
 
 .ff-node[data-status="done"] .ff-dot {
@@ -784,9 +986,9 @@ body {
 .ff-param select {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 5px;
-  background: #101718;
+  background: var(--surface-deep);
   color: var(--text);
   padding: 6px 7px;
   font: inherit;
@@ -818,7 +1020,7 @@ body {
 }
 
 .ff-toggle {
-  accent-color: #b3d46a;
+  accent-color: var(--accent);
 }
 
 .ff-param-help,
@@ -833,7 +1035,7 @@ body {
 
 .ff-param-help,
 .ff-node-hint {
-  color: #84938e;
+  color: var(--muted);
 }
 
 .ff-node-warning {
@@ -847,8 +1049,8 @@ body {
 .ff-node-cost {
   margin: 9px 10px 10px;
   padding-top: 7px;
-  border-top: 1px solid #293432;
-  color: #b9c9b3;
+  border-top: 1px solid var(--line);
+  color: var(--text-secondary);
 }
 
 .ff-media {
@@ -871,7 +1073,7 @@ body {
   align-items: center;
   flex-wrap: wrap;
   gap: 7px;
-  color: #b9c9b3;
+  color: var(--text-secondary);
   font-size: 10px;
 }
 
@@ -902,10 +1104,10 @@ body {
   align-items: center;
   min-height: 27px;
   padding: 0 9px;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 5px;
-  background: #202b28;
-  color: #dce8e2;
+  background: var(--control-bg);
+  color: var(--text-strong);
   cursor: pointer;
   font: inherit;
   font-size: 10px;
@@ -936,7 +1138,7 @@ body {
   padding: 3px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: #0c1213;
+  background: var(--surface-deep);
 }
 
 .ff-mode-tabs button {
@@ -945,7 +1147,7 @@ body {
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: #9eadaa;
+  color: var(--muted);
   cursor: pointer;
   font: inherit;
   font-size: 10px;
@@ -954,7 +1156,7 @@ body {
 }
 
 .ff-mode-tabs button[aria-pressed="true"] {
-  background: #25302b;
+  background: var(--surface-selected);
   color: var(--accent);
 }
 
@@ -971,6 +1173,37 @@ body {
   color: var(--muted);
   font-size: 10px;
   white-space: nowrap;
+}
+
+@media (max-width: 1450px) and (min-width: 901px) {
+  .ff-save-status {
+    display: none;
+  }
+
+  .ff-workflow-name {
+    gap: 6px;
+    padding: 0 10px;
+  }
+
+  .ff-workflow-select {
+    max-width: 110px;
+    min-width: 80px;
+  }
+
+  .ff-workflow-title {
+    width: 112px;
+    min-width: 60px;
+  }
+
+  .ff-toolbar-actions {
+    gap: 4px;
+    padding: 0 8px;
+  }
+
+  .ff-toolbar-button,
+  .ff-run {
+    padding: 0 6px;
+  }
 }
 
 .ff-editor-layout {
@@ -1079,9 +1312,44 @@ body {
   text-align: left;
 }
 
+.ff-editor-asset-row {
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.ff-editor-asset-row > .ff-editor-asset {
+  width: auto;
+  min-width: 0;
+  flex: 1;
+}
+
+.ff-editor-asset-delete {
+  width: 32px;
+  flex: 0 0 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-raised);
+  color: #e4a397;
+  cursor: pointer;
+  font: inherit;
+  font-size: 17px;
+}
+
+.ff-editor-asset-delete:hover:not(:disabled) {
+  border-color: #b66e60;
+  background: #302221;
+}
+
+.ff-editor-asset-delete:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .ff-editor-asset:hover:not(:disabled) {
-  border-color: #536362;
-  background: #1c2929;
+  border-color: var(--line-hover);
+  background: var(--surface-hover-raised);
 }
 
 .ff-editor-asset > span:nth-child(2) {
@@ -1129,10 +1397,10 @@ body {
   min-height: 25px;
   align-items: center;
   padding: 0 8px;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 5px;
-  background: #202b28;
-  color: #dce8e2;
+  background: var(--control-bg);
+  color: var(--text-strong);
   cursor: pointer;
   font-size: 9px;
   font-weight: 600;
@@ -1182,11 +1450,17 @@ body {
 
 .ff-editor-preview > video {
   position: absolute;
+  z-index: 0;
   inset: 0;
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.ff-editor-preview > .ff-editor-transition-preview {
+  z-index: 1;
+  pointer-events: none;
 }
 
 .ff-editor-preview-empty {
@@ -1219,6 +1493,7 @@ body {
 
 .ff-editor-preview-controls {
   position: absolute;
+  z-index: 2;
   right: 10px;
   bottom: 10px;
   left: 10px;
@@ -1244,7 +1519,7 @@ body {
   min-height: 26px;
   border: 1px solid #425049;
   border-radius: 5px;
-  background: #202b28;
+  background: var(--control-bg);
   color: var(--accent);
   cursor: pointer;
   font: inherit;
@@ -1257,7 +1532,7 @@ body {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: #111819;
+  background: var(--panel);
 }
 
 .ff-editor-timeline-heading > div {
@@ -1279,10 +1554,10 @@ body {
   min-width: 0;
   height: 28px;
   padding: 0 7px;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 5px;
-  background: #0c1213;
-  color: #dce5e1;
+  background: var(--surface-deep);
+  color: var(--text-strong);
   font: inherit;
   font-size: 10px;
 }
@@ -1303,10 +1578,10 @@ body {
 .ff-editor-sequence-action {
   min-height: 27px;
   padding: 0 8px;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 5px;
-  background: #202b28;
-  color: #dce8e2;
+  background: var(--control-bg);
+  color: var(--text-strong);
   cursor: pointer;
   font: inherit;
   font-size: 9px;
@@ -1332,9 +1607,40 @@ body {
   align-items: center;
   gap: 2px;
   padding: 2px;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 6px;
-  background: #0c1213;
+  background: var(--surface-deep);
+}
+
+.ff-editor-transition-controls {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 9px;
+  margin-top: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-dark);
+  color: var(--text-strong);
+  font-size: 10px;
+}
+
+.ff-editor-transition-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+}
+
+.ff-editor-transition-controls input {
+  width: 58px;
+  padding: 3px 4px;
+  border: 1px solid var(--line-control);
+  border-radius: 4px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font: inherit;
 }
 
 .ff-editor-tool {
@@ -1346,14 +1652,14 @@ body {
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: #9eadaa;
+  color: var(--muted);
   cursor: pointer;
   font: inherit;
   font-size: 15px;
 }
 
 .ff-editor-tool[aria-pressed="true"] {
-  background: #26342b;
+  background: var(--surface-active);
   color: var(--accent);
 }
 
@@ -1367,7 +1673,7 @@ body {
 }
 
 .ff-editor-tool:focus-visible {
-  outline: 2px solid #55baff;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -1400,7 +1706,7 @@ body {
   align-items: center;
   gap: 8px;
   margin-top: 10px;
-  color: #b8c5c0;
+  color: var(--text-secondary);
   font-size: 10px;
 }
 
@@ -1408,7 +1714,7 @@ body {
   width: 13px;
   height: 13px;
   flex: 0 0 13px;
-  border: 2px solid #53605c;
+  border: 2px solid var(--line-strong);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: ff-editor-spin 800ms linear infinite;
@@ -1447,16 +1753,16 @@ body {
 .ff-editor-ruler {
   position: relative;
   height: 32px;
-  border-bottom: 1px solid #394543;
-  background: #0c1213;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-deep);
 }
 
 .ff-editor-ruler-tick {
   position: absolute;
   top: 0;
   height: 100%;
-  border-left: 1px solid #53605c;
-  color: #a7b3ae;
+  border-left: 1px solid var(--line-strong);
+  color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
   font-size: 9px;
   pointer-events: none;
@@ -1498,8 +1804,8 @@ body {
   appearance: none;
   border: 0;
   border-radius: 2px 2px 6px 6px;
-  background: #55baff;
-  box-shadow: 0 0 0 1px #0b1112;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--bg);
 }
 
 .ff-editor-scrubber::-moz-range-thumb {
@@ -1507,12 +1813,12 @@ body {
   height: 11px;
   border: 0;
   border-radius: 2px 2px 6px 6px;
-  background: #55baff;
-  box-shadow: 0 0 0 1px #0b1112;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--bg);
 }
 
 .ff-editor-scrubber:focus-visible {
-  outline: 1px solid #55baff;
+  outline: 1px solid var(--accent);
   outline-offset: -2px;
 }
 
@@ -1522,7 +1828,7 @@ body {
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #55baff;
+  background: var(--accent);
   pointer-events: none;
 }
 
@@ -1541,7 +1847,7 @@ body {
   display: grid;
   gap: 7px;
   padding: 8px 0 10px;
-  border-top: 1px solid #394543;
+  border-top: 1px solid var(--line);
 }
 
 .ff-editor-audio-heading {
@@ -1549,12 +1855,12 @@ body {
   min-height: 18px;
   align-items: baseline;
   gap: 8px;
-  color: #b7c5c0;
+  color: var(--text-secondary);
   font-size: 9px;
 }
 
 .ff-editor-audio-heading strong {
-  color: #b9d1c6;
+  color: var(--text-strong);
   font-size: 10px;
 }
 
@@ -1563,10 +1869,10 @@ body {
   min-width: 100%;
   height: 34px;
   overflow: hidden;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
-  background-color: #111918;
-  background-image: linear-gradient(to right, #34413f 1px, transparent 1px);
+  background-color: var(--panel);
+  background-image: linear-gradient(to right, var(--line-strong) 1px, transparent 1px);
   background-size: 72px 100%;
 }
 
@@ -1579,7 +1885,7 @@ body {
   height: 100%;
   align-items: center;
   padding: 0 8px;
-  color: #83928d;
+  color: var(--muted);
   font-size: 9px;
 }
 
@@ -1593,10 +1899,10 @@ body {
   gap: 5px;
   overflow: hidden;
   padding: 0 6px;
-  border: 1px solid #4f9a89;
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  background: #245247;
-  color: #e0f6eb;
+  background: var(--audio-block-bg);
+  color: var(--audio-block-text);
   font-size: 9px;
   white-space: nowrap;
 }
@@ -1613,17 +1919,17 @@ body {
   align-items: center;
   gap: 8px;
   padding: 5px 7px;
-  border: 1px solid #2e3b39;
+  border: 1px solid var(--line);
   border-radius: 5px;
-  background: #141d1d;
-  color: #b8c5c0;
+  background: var(--audio-control-bg);
+  color: var(--text-secondary);
   font-size: 9px;
 }
 
 .ff-editor-audio-controls > strong {
   max-width: 180px;
   overflow: hidden;
-  color: #d3e2dc;
+  color: var(--text-strong);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1639,23 +1945,23 @@ body {
   width: 58px;
   height: 24px;
   padding: 0 5px;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
-  background: #0c1213;
-  color: #dce5e1;
+  background: var(--surface-deep);
+  color: var(--text-strong);
   font: inherit;
 }
 
 .ff-editor-audio-volume input {
   width: 86px;
-  accent-color: #68b7a2;
+  accent-color: var(--accent);
 }
 
 .ff-editor-audio-controls > button {
   width: 24px;
   height: 24px;
   margin-left: auto;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
   background: transparent;
   color: #e4a397;
@@ -1677,20 +1983,20 @@ body {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
-  overflow: hidden;
+  overflow: visible;
   padding: 7px;
-  border: 1px solid #293534;
+  border: 1px solid var(--line);
   border-radius: 0;
-  background: #151e1f;
+  background: var(--clip-bg);
 }
 
 .ff-editor-clip-active {
-  border-color: #8eaa5e;
-  background: #1a241c;
+  border-color: var(--accent);
+  background: var(--clip-active-bg);
 }
 
 .ff-editor-clip:focus-within {
-  box-shadow: inset 0 0 0 1px #8eaa5e;
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .ff-editor-clip-trim-bar {
@@ -1701,7 +2007,7 @@ body {
   align-items: stretch;
   justify-content: space-between;
   border-radius: 2px;
-  background: #101716;
+  background: var(--clip-trim-bg);
   touch-action: none;
 }
 
@@ -1712,7 +2018,7 @@ body {
   bottom: 4px;
   left: 7px;
   border-radius: 2px;
-  background: #8eaa5e;
+  background: var(--accent);
   pointer-events: none;
 }
 
@@ -1723,9 +2029,9 @@ body {
   min-width: 14px;
   height: 14px;
   padding: 0;
-  border: 1px solid #d6e5bb;
+  border: 1px solid var(--accent-hover);
   border-radius: 2px;
-  background: #8eaa5e;
+  background: var(--accent);
   cursor: ew-resize;
   touch-action: none;
 }
@@ -1736,8 +2042,8 @@ body {
   bottom: 3px;
   left: 5px;
   width: 2px;
-  border-right: 1px solid #182016;
-  border-left: 1px solid #182016;
+  border-right: 1px solid var(--accent-contrast);
+  border-left: 1px solid var(--accent-contrast);
   content: "";
 }
 
@@ -1747,7 +2053,7 @@ body {
 }
 
 .ff-editor-trim-handle:focus-visible {
-  outline: 2px solid #55baff;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
@@ -1783,15 +2089,192 @@ body {
   cursor: crosshair;
 }
 
+.ff-editor-clip-select-transition {
+  cursor: crosshair;
+}
+
+.ff-editor-source-waveform {
+  display: flex;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  padding: 2px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--waveform-bg);
+  color: var(--accent);
+}
+
+.ff-editor-source-waveform > span {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.ff-editor-source-waveform > svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.ff-editor-source-waveform path {
+  fill: var(--accent);
+  fill-opacity: 0.78;
+}
+
+.ff-editor-transition-block {
+  position: absolute;
+  z-index: 6;
+  top: 7px;
+  display: flex;
+  height: 40px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #8fc9e8;
+  border-radius: 2px;
+  background: #0c4665dd;
+  color: #f2f8fc;
+  cursor: pointer;
+  font: inherit;
+  box-shadow: inset 0 0 0 1px #0a2638, 0 1px 5px #0008;
+}
+
+.ff-editor-transition-block[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ff-editor-transition-block:focus-visible {
+  outline: 2px solid #d7efff;
+  outline-offset: 2px;
+}
+
+.ff-editor-transition-block:hover:not(:disabled),
+.ff-editor-transition-block-active {
+  border-color: #d7efff;
+  background-color: #14658c;
+}
+
+.ff-editor-transition-block:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ff-editor-transition-cross {
+  position: absolute;
+  inset: 3px;
+  background:
+    linear-gradient(153deg, transparent calc(50% - 0.7px), #d7f0ffcc 50%, transparent calc(50% + 0.7px)),
+    linear-gradient(27deg, transparent calc(50% - 0.7px), #d7f0ffcc 50%, transparent calc(50% + 0.7px)),
+    linear-gradient(90deg, #0d365788, #247da288 50%, #0d365788);
+  pointer-events: none;
+}
+
+.ff-editor-transition-label {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 50%;
+  padding: 2px 4px;
+  transform: translate(-50%, -50%);
+  border: 1px solid #a9d8f0;
+  border-radius: 2px;
+  background: #08324beF;
+  color: #f4f9fc;
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.ff-editor-transition-remove {
+  position: absolute;
+  z-index: 3;
+  top: 1px;
+  right: 1px;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #d6e8f4;
+  border-radius: 2px;
+  background: #092d41;
+  color: #f5fbff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.ff-editor-transition-remove:hover:not(:disabled) {
+  border-color: #fff;
+  background: #8f3c38;
+}
+
+.ff-editor-transition-remove:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.ff-editor-transition-remove:focus-visible {
+  outline: 2px solid #d7efff;
+  outline-offset: 1px;
+}
+
+.ff-editor-transition-handle {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  width: 10px;
+  height: 24px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 1px solid #d6e8f4;
+  border-radius: 2px;
+  background: #d3e2e8;
+  box-shadow: 0 1px 3px #0008;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.ff-editor-transition-handle::after {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 3px;
+  width: 2px;
+  border-right: 1px solid #536674;
+  border-left: 1px solid #536674;
+  content: "";
+}
+
+.ff-editor-transition-handle-start {
+  left: -1px;
+}
+
+.ff-editor-transition-handle-end {
+  right: -1px;
+}
+
+.ff-editor-transition-handle:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .ff-editor-clip-number {
-  color: #98ae70;
+  color: var(--accent);
   font-family: var(--font-geist-mono), monospace;
   font-size: 9px;
 }
 
 .ff-editor-clip-name {
   overflow: hidden;
-  color: #cbd6d2;
+  color: var(--text-secondary);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1809,7 +2292,7 @@ body {
   min-width: 0;
   align-items: center;
   gap: 4px;
-  color: #879691;
+  color: var(--muted);
   font-size: 9px;
 }
 
@@ -1823,10 +2306,10 @@ body {
   width: 42px;
   min-height: 25px;
   padding: 0 4px;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
-  background: #0c1213;
-  color: #dce5e1;
+  background: var(--surface-deep);
+  color: var(--text-strong);
   font: inherit;
 }
 
@@ -1849,15 +2332,15 @@ body {
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
-  color: #9caaa5;
+  color: var(--muted);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
 }
 
 .ff-editor-clip-actions button:hover:not(:disabled) {
-  border-color: #3b4a45;
-  background: #202b28;
+  border-color: var(--line-control);
+  background: var(--control-bg);
   color: var(--accent);
 }
 
@@ -1871,9 +2354,9 @@ body {
   z-index: 20;
   min-width: 154px;
   padding: 4px;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 6px;
-  background: #172021;
+  background: var(--panel-raised);
   box-shadow: 0 8px 24px #0009;
 }
 
@@ -1898,7 +2381,7 @@ body {
 .ff-editor-context-menu button:hover,
 .ff-editor-context-menu button:focus-visible {
   outline: none;
-  background: #283332;
+  background: var(--surface-hover);
 }
 
 .ff-editor-context-menu button span {
@@ -1911,13 +2394,33 @@ body {
 }
 
 @media (max-width: 900px) {
-  .ff-app,
-  .ff-toolbar {
+  .ff-app {
+    grid-template-rows: 108px minmax(0, 1fr);
     grid-template-columns: 252px minmax(0, 1fr);
   }
 
   .ff-toolbar {
-    grid-template-columns: 252px minmax(0, 1fr) auto;
+    grid-template-columns: 252px minmax(0, 1fr);
+    grid-template-rows: 64px 44px;
+  }
+
+  .ff-workflow-name {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .ff-toolbar-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+    border-top: 1px solid var(--line);
+    background: var(--toolbar-surface);
+  }
+
+  .ff-save-status {
+    display: none;
   }
 
   .ff-brand {
@@ -1994,7 +2497,7 @@ body {
     justify-content: flex-start;
     overflow-x: auto;
     border-top: 1px solid var(--line);
-    background: #101617;
+    background: var(--toolbar-surface);
   }
 
   .ff-library {
@@ -2079,7 +2582,7 @@ body {
 .ff-omni-note {
   display: block;
   margin: 5px 10px 0;
-  color: #84938e;
+  color: var(--muted);
   font-size: 9px;
   line-height: 1.45;
 }
@@ -2093,10 +2596,10 @@ body {
   width: calc(100% - 20px);
   min-height: 28px;
   margin: 7px 10px 0;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 5px;
-  background: #202b28;
-  color: #dce8e2;
+  background: var(--control-bg);
+  color: var(--text-strong);
   cursor: pointer;
   font: inherit;
   font-size: 10px;
@@ -2116,7 +2619,7 @@ body {
 .ff-kling-note {
   display: block;
   margin: 5px 10px 0;
-  color: #84938e;
+  color: var(--muted);
   font-size: 9px;
   line-height: 1.45;
 }
@@ -2130,20 +2633,20 @@ body {
   gap: 8px;
   margin: 9px 10px 0;
   padding-top: 8px;
-  border-top: 1px solid #293432;
+  border-top: 1px solid var(--line);
 }
 
 .ff-prompt-assistant-context {
   display: grid;
   gap: 3px;
-  color: #cad7d0;
+  color: var(--text-secondary);
   font-size: 9px;
 }
 
 .ff-prompt-assistant-context span,
 .ff-prompt-assistant-context small,
 .ff-prompt-assistant-note {
-  color: #84938e;
+  color: var(--muted);
   font-size: 9px;
   line-height: 1.45;
 }
@@ -2158,9 +2661,9 @@ body {
 
 .ff-prompt-assistant-empty {
   padding: 9px;
-  border: 1px dashed #34413f;
+  border: 1px dashed var(--line-strong);
   border-radius: 6px;
-  color: #84938e;
+  color: var(--muted);
   font-size: 9px;
   line-height: 1.5;
 }
@@ -2169,23 +2672,23 @@ body {
   padding: 7px 8px;
   border: 1px solid #2d3a38;
   border-radius: 6px;
-  background: #111819;
+  background: var(--panel);
 }
 
 .ff-prompt-assistant-user {
-  border-color: #3c493f;
-  background: #19211b;
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
 }
 
 .ff-prompt-assistant-message > span {
-  color: #a9bb9a;
+  color: var(--accent);
   font-size: 9px;
   font-weight: 700;
 }
 
 .ff-prompt-assistant-message p {
   margin: 5px 0 0;
-  color: #d3ddda;
+  color: var(--text);
   font-size: 10px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -2195,16 +2698,16 @@ body {
 .ff-prompt-assistant-compose {
   display: grid;
   gap: 4px;
-  color: #9eada8;
+  color: var(--text-secondary);
   font-size: 9px;
 }
 
 .ff-prompt-assistant-compose textarea {
   box-sizing: border-box;
   width: 100%;
-  border: 1px solid #34413f;
+  border: 1px solid var(--line-strong);
   border-radius: 5px;
-  background: #101718;
+  background: var(--surface-deep);
   color: var(--text);
   padding: 7px;
   font: inherit;
@@ -2213,8 +2716,8 @@ body {
 }
 
 .ff-prompt-assistant-compose textarea:focus {
-  border-color: #63725f;
-  outline: 1px solid #63725f;
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
 }
 
 .ff-prompt-assistant-actions {
@@ -2226,10 +2729,10 @@ body {
 .ff-prompt-assistant-clear {
   min-height: 28px;
   padding: 0 9px;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 5px;
-  background: #202b28;
-  color: #dce8e2;
+  background: var(--control-bg);
+  color: var(--text-strong);
   cursor: pointer;
   font: inherit;
   font-size: 9px;
@@ -2237,13 +2740,13 @@ body {
 }
 
 .ff-prompt-assistant-send {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #17200f;
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--button-text);
 }
 
 .ff-prompt-assistant-send:hover:not(:disabled) {
-  background: #d7ff8b;
+  background: var(--button-hover);
 }
 
 .ff-prompt-assistant-send:disabled,
@@ -2253,7 +2756,7 @@ body {
 }
 
 .ff-prompt-assistant-clear:hover:not(:disabled) {
-  border-color: #50605e;
+  border-color: var(--line-hover);
 }
 
 .ff-prompt-assistant-error {
@@ -2264,7 +2767,7 @@ body {
 }
 
 .ff-prompt-assistant-note strong {
-  color: #c1d0c5;
+  color: var(--text-strong);
 }
 
 .ff-kling-button-list {
@@ -2277,10 +2780,10 @@ body {
 .ff-kling-small-button {
   min-height: 27px;
   padding: 3px 8px;
-  border: 1px solid #3b4a45;
+  border: 1px solid var(--line-control);
   border-radius: 5px;
-  background: #202b28;
-  color: #dce8e2;
+  background: var(--control-bg);
+  color: var(--text-strong);
   cursor: pointer;
   font: inherit;
   font-size: 10px;
@@ -2312,9 +2815,9 @@ body {
 .ff-kling-editor {
   margin: 8px 10px 0;
   padding: 8px;
-  border: 1px solid #2d3b38;
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: #131b1a;
+  background: var(--panel);
 }
 
 .ff-kling-editor-heading,
@@ -2326,7 +2829,7 @@ body {
 }
 
 .ff-kling-editor-heading {
-  color: #c9d6d1;
+  color: var(--text-secondary);
   font-size: 10px;
 }
 
@@ -2335,14 +2838,14 @@ body {
   gap: 6px;
   margin-top: 8px;
   padding-top: 7px;
-  border-top: 1px solid #293432;
+  border-top: 1px solid var(--line);
 }
 
 .ff-kling-field {
   display: grid;
   gap: 4px;
   margin-top: 5px;
-  color: #aab9b4;
+  color: var(--text-secondary);
   font-size: 9px;
 }
 
@@ -2353,16 +2856,16 @@ body {
   box-sizing: border-box;
   min-height: 26px;
   padding: 4px 6px;
-  border: 1px solid #33413d;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
-  background: #0e1514;
-  color: #e7efec;
+  background: var(--surface-deep);
+  color: var(--text);
   font: inherit;
 }
 
 .ff-kling-field input[type="file"] {
   max-width: 100%;
-  color: #aab9b4;
+  color: var(--text-secondary);
   font-size: 9px;
 }
 
