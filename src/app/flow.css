@@ -1448,6 +1448,11 @@ body {
   background: #050707;
 }
 
+.ff-editor-preview-panning,
+.ff-editor-preview-panning > * {
+  cursor: grabbing !important;
+}
+
 .ff-editor-preview > video {
   position: absolute;
   z-index: 0;
@@ -1486,6 +1491,30 @@ body {
   height: 100%;
   object-fit: contain;
   pointer-events: none;
+}
+
+.ff-editor-keyer-pick-overlay {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: start center;
+  padding: 12px;
+  border: 0;
+  background: transparent;
+  color: #e6efeb;
+  cursor: crosshair;
+  font: inherit;
+}
+
+.ff-editor-keyer-pick-overlay span {
+  padding: 7px 10px;
+  border: 1px solid #ffffff30;
+  border-radius: 5px;
+  background: #090e0dd9;
+  font-size: 11px;
 }
 
 .ff-editor-preview-empty {
@@ -1805,6 +1834,27 @@ body {
   color: var(--text-secondary);
   font-size: 9px;
   white-space: nowrap;
+}
+
+.ff-editor-keyer-pick {
+  min-height: 25px;
+  padding: 0 8px;
+  border: 1px solid var(--line-control);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--text-strong);
+  cursor: pointer;
+  font: inherit;
+}
+
+.ff-editor-keyer-pick:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.ff-editor-keyer-pick:disabled,
+.ff-editor-keyer-channel select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .ff-editor-keyer-toggle {

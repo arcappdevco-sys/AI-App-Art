@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Zip, ZipPassThrough } from "fflate";
 import { NextResponse } from "next/server";
+import { createMatteAwareSpillFilter } from "@/lib/chroma-key";
 
 export const maxDuration = 900;
 
@@ -227,12 +228,15 @@ function parseKeyerTimeline(value: FormDataEntryValue | null, clipCount: number)
 }
 
 function createKeyerFilter(keyer: ClipKeyer) {
-  const color = Number.parseInt(keyer.color.slice(1), 16);
-  const screenType = ((color >> 8) & 255) >= (color & 255) ? "green" : "blue";
-  const despill = keyer.spillSuppression > 0
-    ? `,despill=type=${screenType}:mix=${keyer.spillSuppression.toFixed(3)}`
-    : "";
-  return `colorkey=color=0x${keyer.color.slice(1)}:similarity=${keyer.similarity.toFixed(3)}:blend=${keyer.softness.toFixed(3)}${despill}`;
+  const color = keyer.color.slice(1);
+  const keyColor = [
+    Number.parseInt(color.slice(0, 2), 16),
+    Number.parseInt(color.slice(2, 4), 16),
+    Number.parseInt(color.slice(4, 6), 16),
+  ] as const;
+  const spillFilter = createMatteAwareSpillFilter(keyColor, keyer.spillSuppression);
+  const keyFilter = `colorkey=color=0x${color}:similarity=${keyer.similarity.toFixed(3)}:blend=${keyer.softness.toFixed(3)}`;
+  return spillFilter ? `${keyFilter},${spillFilter}` : keyFilter;
 }
 
 function createPngZipStream(framePaths: string[], directory: string) {

@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { registerEditorUploadBridge } from "@/lib/editor-upload-bridge";
+import { getKeyColorChroma, RGB_LUMA_WEIGHTS } from "@/lib/chroma-key";
 import {
   deleteEditorMedia,
   loadEditorMedia,
@@ -101,6 +102,20 @@ type TransitionResizeDrag = {
   startX: number;
   duration: number;
   snapshot: EditorHistorySnapshot;
+};
+
+type PreviewPanPosition = {
+  clipId: string;
+  x: number;
+  y: number;
+};
+
+type PreviewPanDrag = {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startX: number;
+  startY: number;
 };
 
 function getClipTimelineOffset(clips: TimelineClip[], transitions: TimelineTransition[], clipId: string) {
@@ -262,7 +277,10 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [clipContextMenu, setClipContextMenu] = useState<ClipContextMenu | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewZoom, setPreviewZoom] = useState(1);
+  const [previewPan, setPreviewPan] = useState<PreviewPanPosition>({ clipId: "", x: 0, y: 0 });
+  const [isPreviewPanning, setIsPreviewPanning] = useState(false);
   const [keyerViewChannel, setKeyerViewChannel] = useState<KeyerViewChannel>("rgb");
+  const [keyerColorPickerClipId, setKeyerColorPickerClipId] = useState("");
   const [isExporting, setIsExporting] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<"mov" | "mp4" | "png" | null>(null);
   const [exportStage, setExportStage] = useState("");
@@ -283,6 +301,8 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const trimDrag = useRef<ClipTrimDrag | null>(null);
   const reorderDrag = useRef<ClipReorderDrag | null>(null);
   const transitionResizeDrag = useRef<TransitionResizeDrag | null>(null);
+  const previewPanDrag = useRef<PreviewPanDrag | null>(null);
+  const selectedClipIdRef = useRef("");
   const suppressClipClick = useRef(false);
   const uploadsHeadingRef = useRef<HTMLHeadingElement>(null);
   const editorSnapshotRef = useRef<EditorHistorySnapshot>({
@@ -651,6 +671,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     }));
   };
   const setSelectedId = (next: SetStateAction<string>) => {
+    setKeyerColorPickerClipId("");
     setSequences((current) => current.map((sequence) => sequence.id === activeSequenceId
       ? { ...sequence, selectedId: typeof next === "function" ? next(sequence.selectedId) : next }
       : sequence));
@@ -664,10 +685,131 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const totalDuration = Math.max(0, clips.reduce((total, clip) => total + Math.max(0, clip.trimEnd - clip.trimStart), 0)
     - transitions.reduce((total, transition) => total + transition.duration, 0));
   const selectedKeyer = selectedClip ? { ...DEFAULT_KEYER, ...selectedClip.keyer } : DEFAULT_KEYER;
+  const selectedClipId = selectedClip?.id ?? "";
   const hasSelectedClip = Boolean(selectedClip);
-  const changePreviewZoom = useCallback((delta: number) => {
-    setPreviewZoom((current) => Math.round(Math.min(4, Math.max(0.5, current + delta)) * 10) / 10);
+  const isPickingKeyerColor = Boolean(selectedClip && keyerColorPickerClipId === selectedClip.id);
+  const activePreviewPan = selectedClip?.id === previewPan.clipId ? previewPan : { clipId: selectedClip?.id ?? "", x: 0, y: 0 };
+  const getPreviewPanBounds = useCallback((zoom = 1) => {
+    const container = previewContainerRef.current;
+    if (!container) return { x: 0, y: 0 };
+    return {
+      x: Math.max(0, (container.clientWidth * zoom - container.clientWidth) / 2),
+      y: Math.max(0, (container.clientHeight * zoom - container.clientHeight) / 2),
+    };
   }, []);
+  const clampPreviewPan = useCallback((x: number, y: number, zoom = previewZoom) => {
+    const bounds = getPreviewPanBounds(zoom);
+    return {
+      x: Math.min(bounds.x, Math.max(-bounds.x, x)),
+      y: Math.min(bounds.y, Math.max(-bounds.y, y)),
+    };
+  }, [getPreviewPanBounds, previewZoom]);
+  const previewTransform = `translate3d(${activePreviewPan.x}px, ${activePreviewPan.y}px, 0) scale(${previewZoom})`;
+  const setPreviewZoomAndClampPan = useCallback((value: number) => {
+    const nextZoom = Math.round(Math.min(4, Math.max(0.5, value)) * 10) / 10;
+    const bounds = getPreviewPanBounds(nextZoom);
+    setPreviewPan((current) => current.clipId === selectedClipIdRef.current
+      ? {
+        ...current,
+        x: Math.min(bounds.x, Math.max(-bounds.x, current.x)),
+        y: Math.min(bounds.y, Math.max(-bounds.y, current.y)),
+      }
+      : current);
+    setPreviewZoom(nextZoom);
+  }, [getPreviewPanBounds]);
+
+  useEffect(() => {
+    selectedClipIdRef.current = selectedClipId;
+  }, [selectedClipId]);
+
+  const handlePreviewPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 1 || !selectedClip || isExporting) return;
+    event.preventDefault();
+    const pan = clampPreviewPan(activePreviewPan.x, activePreviewPan.y);
+    previewPanDrag.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: pan.x,
+      startY: pan.y,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsPreviewPanning(true);
+  };
+
+  const handlePreviewPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = previewPanDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const pan = clampPreviewPan(
+      drag.startX + event.clientX - drag.startClientX,
+      drag.startY + event.clientY - drag.startClientY,
+    );
+    setPreviewPan({ clipId: selectedClip?.id ?? "", ...pan });
+  };
+
+  const finishPreviewPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (previewPanDrag.current?.pointerId !== event.pointerId) return;
+    previewPanDrag.current = null;
+    setIsPreviewPanning(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  useEffect(() => {
+    if (!isPickingKeyerColor) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setKeyerColorPickerClipId("");
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isPickingKeyerColor]);
+
+  const pickKeyerColor = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const video = previewRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      setError("The video is not ready for color sampling.");
+      return;
+    }
+
+    const containerBounds = previewContainerRef.current?.getBoundingClientRect();
+    if (!containerBounds) {
+      setError("The video preview is not available for color sampling.");
+      return;
+    }
+    const fitScale = Math.min(containerBounds.width / video.videoWidth, containerBounds.height / video.videoHeight) * previewZoom;
+    const frameWidth = video.videoWidth * fitScale;
+    const frameHeight = video.videoHeight * fitScale;
+    const pan = clampPreviewPan(activePreviewPan.x, activePreviewPan.y);
+    const frameLeft = containerBounds.left + (containerBounds.width - frameWidth) / 2 + pan.x;
+    const frameTop = containerBounds.top + (containerBounds.height - frameHeight) / 2 + pan.y;
+    const sourceX = Math.floor((event.clientX - frameLeft) / fitScale);
+    const sourceY = Math.floor((event.clientY - frameTop) / fitScale);
+
+    if (sourceX < 0 || sourceY < 0 || sourceX >= video.videoWidth || sourceY >= video.videoHeight) {
+      setError("Click inside the visible video frame to sample a screen color.");
+      return;
+    }
+
+    try {
+      const sampleCanvas = document.createElement("canvas");
+      sampleCanvas.width = 1;
+      sampleCanvas.height = 1;
+      const context = sampleCanvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("The browser could not initialize color sampling.");
+      context.drawImage(video, sourceX, sourceY, 1, 1, 0, 0, 1, 1);
+      const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+      const color = `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+      recordHistory();
+      updateSelectedClipKeyer({ color });
+      setKeyerColorPickerClipId("");
+      setError("");
+    } catch (sampleError) {
+      setError(sampleError instanceof Error
+        ? sampleError.message
+        : "Could not sample a color from this video.");
+    }
+  };
 
   useEffect(() => {
     const preview = previewContainerRef.current;
@@ -676,11 +818,11 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaY === 0) return;
       event.preventDefault();
-      changePreviewZoom(event.deltaY < 0 ? 0.1 : -0.1);
+      setPreviewZoomAndClampPan(previewZoom + (event.deltaY < 0 ? 0.1 : -0.1));
     };
     preview.addEventListener("wheel", handleWheel, { passive: false });
     return () => preview.removeEventListener("wheel", handleWheel);
-  }, [changePreviewZoom, hasSelectedClip]);
+  }, [hasSelectedClip, previewZoom, setPreviewZoomAndClampPan]);
 
   useEffect(() => {
     const video = previewRef.current;
@@ -701,12 +843,11 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       Number.parseInt(colorHex.slice(0, 2), 16),
       Number.parseInt(colorHex.slice(2, 4), 16),
       Number.parseInt(colorHex.slice(4, 6), 16),
-    ];
+    ] as const;
+    const keyChroma = getKeyColorChroma(keyColor);
     const threshold = Math.min(1, Math.max(0, selectedKeyer.similarity));
     const softness = Math.max(0.005, selectedKeyer.softness);
     const spillSuppression = Math.min(1, Math.max(0, selectedKeyer.spillSuppression));
-    const spillChannel = keyColor[2] > keyColor[1] ? 2 : 1;
-    const otherChannels = spillChannel === 1 ? [0, 2] : [0, 1];
     let frameRequest = 0;
     let frameFailed = false;
 
@@ -727,21 +868,36 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         const pixels = image.data;
         const softnessRange = 1 / softness;
         for (let index = 0; index < pixels.length; index += 4) {
-          const red = pixels[index] - keyColor[0];
-          const green = pixels[index + 1] - keyColor[1];
-          const blue = pixels[index + 2] - keyColor[2];
-          const distance = Math.sqrt(red * red + green * green + blue * blue) / 441.673;
+          const red = pixels[index];
+          const green = pixels[index + 1];
+          const blue = pixels[index + 2];
+          const redDelta = red - keyColor[0];
+          const greenDelta = green - keyColor[1];
+          const blueDelta = blue - keyColor[2];
+          const distance = Math.sqrt(redDelta * redDelta + greenDelta * greenDelta + blueDelta * blueDelta) / 441.673;
           const amount = Math.min(1, Math.max(0, (distance - threshold) * softnessRange));
           const smoothAmount = amount * amount * (3 - 2 * amount);
           const outputAlpha = Math.round(pixels[index + 3] * smoothAmount);
-          if (spillSuppression > 0 && smoothAmount > 0) {
-            const spill = Math.max(0, pixels[index + spillChannel] - Math.max(
-              pixels[index + otherChannels[0]],
-              pixels[index + otherChannels[1]],
-            )) * spillSuppression * smoothAmount;
-            pixels[index + spillChannel] = Math.max(0, pixels[index + spillChannel] - spill);
-            pixels[index + otherChannels[0]] = Math.min(255, pixels[index + otherChannels[0]] + spill / 2);
-            pixels[index + otherChannels[1]] = Math.min(255, pixels[index + otherChannels[1]] + spill / 2);
+          if (spillSuppression > 0 && keyChroma.magnitudeSquared >= 0.001 && outputAlpha > 0 && outputAlpha < 255) {
+            const luminance = red * RGB_LUMA_WEIGHTS[0] + green * RGB_LUMA_WEIGHTS[1] + blue * RGB_LUMA_WEIGHTS[2];
+            const projection = Math.max(0, (
+              (red - luminance) * keyChroma.vector[0]
+              + (green - luminance) * keyChroma.vector[1]
+              + (blue - luminance) * keyChroma.vector[2]
+            ) / keyChroma.magnitudeSquared);
+            let maxCorrection = Number.POSITIVE_INFINITY;
+            const channels = [red, green, blue];
+            for (let channel = 0; channel < channels.length; channel += 1) {
+              const component = keyChroma.vector[channel];
+              if (component > 0) maxCorrection = Math.min(maxCorrection, channels[channel] / component);
+              else if (component < 0) maxCorrection = Math.min(maxCorrection, (255 - channels[channel]) / -component);
+            }
+            const matte = outputAlpha / 255;
+            const edgeWeight = 4 * matte * (1 - matte);
+            const correction = Math.min(projection * spillSuppression * edgeWeight, maxCorrection);
+            pixels[index] = red - keyChroma.vector[0] * correction;
+            pixels[index + 1] = green - keyChroma.vector[1] * correction;
+            pixels[index + 2] = blue - keyChroma.vector[2] * correction;
           }
           if (keyerViewChannel === "alpha") {
             pixels[index] = outputAlpha;
@@ -874,6 +1030,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     pendingSeek.current = null;
     recordHistory();
     setSequences((current) => [...current, sequence]);
+    setKeyerColorPickerClipId("");
     setActiveSequenceId(sequence.id);
     setClipContextMenu(null);
     setIsPlaying(false);
@@ -898,6 +1055,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     playbackWanted.current = false;
     previewRef.current?.pause();
     pauseAudio();
+    setKeyerColorPickerClipId("");
     setActiveSequenceId(sequenceId);
     setClipContextMenu(null);
     setIsPlaying(false);
@@ -922,6 +1080,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     pendingSeek.current = null;
     recordHistory();
     setSequences((current) => current.filter((sequence) => sequence.id !== activeSequenceId));
+    setKeyerColorPickerClipId("");
     setActiveSequenceId(nextSequence.id);
     setClipContextMenu(null);
     setIsPlaying(false);
@@ -1942,15 +2101,19 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
 
       <div className="ff-editor-workspace">
         <div
-          className={`ff-editor-preview${selectedKeyer.enabled ? " ff-editor-key-preview" : ""}`}
+          className={`ff-editor-preview${selectedKeyer.enabled ? " ff-editor-key-preview" : ""}${isPreviewPanning ? " ff-editor-preview-panning" : ""}`}
           ref={previewContainerRef}
+          onPointerDown={handlePreviewPointerDown}
+          onPointerMove={handlePreviewPointerMove}
+          onPointerUp={finishPreviewPan}
+          onPointerCancel={finishPreviewPan}
         >
           {selectedClip ? (
             <video
               key={selectedClip.id}
               ref={previewRef}
               className={selectedKeyer.enabled ? "ff-editor-preview-keyed-source" : undefined}
-              style={{ transform: `scale(${previewZoom})` }}
+              style={{ transform: previewTransform }}
               src={selectedClip.src}
               playsInline
               onCanPlay={(event) => {
@@ -2001,9 +2164,20 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             <canvas
               ref={keyerCanvasRef}
               className="ff-editor-keyer-canvas"
-              style={{ transform: `scale(${previewZoom})` }}
+              style={{ transform: previewTransform }}
               aria-label={`Chroma-key preview for ${selectedClip.name}`}
             />
+          )}
+          {selectedClip && isPickingKeyerColor && (
+            <button
+              type="button"
+              className="ff-editor-keyer-pick-overlay"
+              aria-label="Click inside the video frame to sample a screen color"
+              title="Click a screen color in the video · Esc to cancel"
+              onClick={pickKeyerColor}
+            >
+              <span>Click the screen color in the video · Esc to cancel</span>
+            </button>
           )}
           {previewTransitionClip && (previewTransition || selectedClipOutgoingTransition) && (
             <video
@@ -2012,7 +2186,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               className="ff-editor-transition-preview"
               src={previewTransitionClip.src}
               style={{
-                transform: `scale(${previewZoom})`,
+                transform: previewTransform,
                 opacity: previewTransition
                   ? Math.min(1, Math.max(0,
                     (playheadTime - getTransitionStart(previewTransition)) / previewTransition.duration))
@@ -2068,7 +2242,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                   max="4"
                   step="0.1"
                   value={previewZoom}
-                  onChange={(event) => setPreviewZoom(Number(event.target.value))}
+                  onChange={(event) => setPreviewZoomAndClampPan(Number(event.target.value))}
                 />
                 <output>{Math.round(previewZoom * 100)}%</output>
               </label>
@@ -2261,103 +2435,112 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                   Enable
                 </label>
               </div>
-              {selectedKeyer.enabled && (
-                <>
-                  <div className="ff-editor-keyer-fields">
-                    <label className="ff-editor-keyer-channel">
-                      View channel
-                      <select
-                        aria-label="Chroma key view channel"
-                        value={keyerViewChannel}
-                        onChange={(event) => {
-                          const channel = event.target.value;
-                          if (isKeyerViewChannel(channel)) setKeyerViewChannel(channel);
-                        }}
-                      >
-                        <option value="rgb">RGB</option>
-                        <option value="red">Red</option>
-                        <option value="green">Green</option>
-                        <option value="blue">Blue</option>
-                        <option value="alpha">Alpha</option>
-                      </select>
-                    </label>
-                  </div>
-                  <div className="ff-editor-keyer-fields">
-                  <label className="ff-editor-keyer-color">
-                    Screen color
-                    <input
-                      type="color"
-                      aria-label="Chroma key color"
-                      value={selectedKeyer.color}
-                      disabled={isExporting}
-                      onPointerDown={beginKeyerEdit}
-                      onPointerUp={finishKeyerEdit}
-                      onKeyDown={beginKeyerEdit}
-                      onKeyUp={finishKeyerEdit}
-                      onBlur={finishKeyerEdit}
-                      onChange={(event) => updateSelectedClipKeyer({ color: event.target.value })}
-                    />
-                  </label>
-                  <label className="ff-editor-keyer-range">
-                    Similarity
-                    <input
-                      type="range"
-                      aria-label="Chroma key similarity"
-                      min="0"
-                      max="0.8"
-                      step="0.01"
-                      value={selectedKeyer.similarity}
-                      disabled={isExporting}
-                      onPointerDown={beginKeyerEdit}
-                      onPointerUp={finishKeyerEdit}
-                      onKeyDown={beginKeyerEdit}
-                      onKeyUp={finishKeyerEdit}
-                      onBlur={finishKeyerEdit}
-                      onChange={(event) => updateSelectedClipKeyer({ similarity: Number(event.target.value) })}
-                    />
-                    <output>{selectedKeyer.similarity.toFixed(2)}</output>
-                  </label>
-                  <label className="ff-editor-keyer-range">
-                    Edge softness
-                    <input
-                      type="range"
-                      aria-label="Chroma key edge softness"
-                      min="0.01"
-                      max="0.6"
-                      step="0.01"
-                      value={selectedKeyer.softness}
-                      disabled={isExporting}
-                      onPointerDown={beginKeyerEdit}
-                      onPointerUp={finishKeyerEdit}
-                      onKeyDown={beginKeyerEdit}
-                      onKeyUp={finishKeyerEdit}
-                      onBlur={finishKeyerEdit}
-                      onChange={(event) => updateSelectedClipKeyer({ softness: Number(event.target.value) })}
-                    />
-                    <output>{selectedKeyer.softness.toFixed(2)}</output>
-                  </label>
-                  <label className="ff-editor-keyer-range">
-                    Spill suppression
-                    <input
-                      type="range"
-                      aria-label="Chroma key spill suppression"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={selectedKeyer.spillSuppression}
-                      disabled={isExporting}
-                      onPointerDown={beginKeyerEdit}
-                      onPointerUp={finishKeyerEdit}
-                      onKeyDown={beginKeyerEdit}
-                      onKeyUp={finishKeyerEdit}
-                      onBlur={finishKeyerEdit}
-                      onChange={(event) => updateSelectedClipKeyer({ spillSuppression: Number(event.target.value) })}
-                    />
-                    <output>{Math.round(selectedKeyer.spillSuppression * 100)}%</output>
-                  </label>
-                  </div>
-                </>
-              )}
+              <div className="ff-editor-keyer-fields">
+                <label className="ff-editor-keyer-channel">
+                  View channel
+                  <select
+                    aria-label="Chroma key view channel"
+                    value={keyerViewChannel}
+                    disabled={!selectedKeyer.enabled || isExporting}
+                    onChange={(event) => {
+                      const channel = event.target.value;
+                      if (isKeyerViewChannel(channel)) setKeyerViewChannel(channel);
+                    }}
+                  >
+                    <option value="rgb">RGB</option>
+                    <option value="red">Red</option>
+                    <option value="green">Green</option>
+                    <option value="blue">Blue</option>
+                    <option value="alpha">Alpha</option>
+                  </select>
+                </label>
+              </div>
+              <div className="ff-editor-keyer-fields">
+                <label className="ff-editor-keyer-color">
+                  Screen color
+                  <input
+                    type="color"
+                    aria-label="Chroma key color"
+                    value={selectedKeyer.color}
+                    disabled={isExporting}
+                    onPointerDown={beginKeyerEdit}
+                    onPointerUp={finishKeyerEdit}
+                    onKeyDown={beginKeyerEdit}
+                    onKeyUp={finishKeyerEdit}
+                    onBlur={finishKeyerEdit}
+                    onChange={(event) => updateSelectedClipKeyer({ color: event.target.value })}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="ff-editor-keyer-pick"
+                  aria-pressed={isPickingKeyerColor}
+                  disabled={isExporting}
+                  onClick={() => {
+                    setKeyerColorPickerClipId(isPickingKeyerColor ? "" : selectedClip?.id ?? "");
+                    setError("");
+                  }}
+                >
+                  {isPickingKeyerColor ? "Cancel picking" : "Pick from preview"}
+                </button>
+                <label className="ff-editor-keyer-range">
+                  Similarity
+                  <input
+                    type="range"
+                    aria-label="Chroma key similarity"
+                    min="0"
+                    max="0.8"
+                    step="0.01"
+                    value={selectedKeyer.similarity}
+                    disabled={isExporting}
+                    onPointerDown={beginKeyerEdit}
+                    onPointerUp={finishKeyerEdit}
+                    onKeyDown={beginKeyerEdit}
+                    onKeyUp={finishKeyerEdit}
+                    onBlur={finishKeyerEdit}
+                    onChange={(event) => updateSelectedClipKeyer({ similarity: Number(event.target.value) })}
+                  />
+                  <output>{selectedKeyer.similarity.toFixed(2)}</output>
+                </label>
+                <label className="ff-editor-keyer-range">
+                  Edge softness
+                  <input
+                    type="range"
+                    aria-label="Chroma key edge softness"
+                    min="0.01"
+                    max="0.6"
+                    step="0.01"
+                    value={selectedKeyer.softness}
+                    disabled={isExporting}
+                    onPointerDown={beginKeyerEdit}
+                    onPointerUp={finishKeyerEdit}
+                    onKeyDown={beginKeyerEdit}
+                    onKeyUp={finishKeyerEdit}
+                    onBlur={finishKeyerEdit}
+                    onChange={(event) => updateSelectedClipKeyer({ softness: Number(event.target.value) })}
+                  />
+                  <output>{selectedKeyer.softness.toFixed(2)}</output>
+                </label>
+                <label className="ff-editor-keyer-range">
+                  Spill suppression
+                  <input
+                    type="range"
+                    aria-label="Chroma key spill suppression"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={selectedKeyer.spillSuppression}
+                    disabled={isExporting}
+                    onPointerDown={beginKeyerEdit}
+                    onPointerUp={finishKeyerEdit}
+                    onKeyDown={beginKeyerEdit}
+                    onKeyUp={finishKeyerEdit}
+                    onBlur={finishKeyerEdit}
+                    onChange={(event) => updateSelectedClipKeyer({ spillSuppression: Number(event.target.value) })}
+                  />
+                  <output>{Math.round(selectedKeyer.spillSuppression * 100)}%</output>
+                </label>
+              </div>
             </section>
           )}
           {selectedTransition && (
