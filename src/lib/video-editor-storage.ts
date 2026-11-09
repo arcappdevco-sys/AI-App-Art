@@ -9,12 +9,24 @@ export type StoredEditorClip = {
   trimEnd: number;
 };
 
+export type StoredEditorAudioClip = {
+  id: string;
+  name: string;
+  mediaId: string;
+  duration: number;
+  start: number;
+  trimStart: number;
+  trimEnd: number;
+  volume: number;
+};
+
 export type StoredEditorSequence = {
   id: string;
   name: string;
   clips: StoredEditorClip[];
   selectedId: string;
   playheadTime: number;
+  audioClips?: StoredEditorAudioClip[];
 };
 
 export type StoredEditorAsset = {
@@ -24,7 +36,7 @@ export type StoredEditorAsset = {
 };
 
 export type StoredVideoEditorState = {
-  version: 1;
+  version: 1 | 2;
   sequences: StoredEditorSequence[];
   uploadedAssets: StoredEditorAsset[];
   activeSequenceId: string;

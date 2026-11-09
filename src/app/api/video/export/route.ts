@@ -10,12 +10,21 @@ export const maxDuration = 900;
 const MAX_REQUEST_BYTES = 512 * 1024 * 1024;
 const MAX_CLIP_BYTES = 200 * 1024 * 1024;
 const MAX_CLIPS = 20;
+const MAX_AUDIO_CLIPS = 20;
 const MAX_SEQUENCE_SECONDS = 600;
 const MAX_PROCESS_MS = 15 * 60 * 1000;
 
 type ClipTrim = {
   start: number;
   end: number;
+};
+
+type AudioClip = {
+  fileIndex: number;
+  start: number;
+  trimStart: number;
+  trimEnd: number;
+  volume: number;
 };
 
 type ProbeResult = {
@@ -115,10 +124,36 @@ function parseTimeline(value: FormDataEntryValue | null, clipCount: number): Cli
   return timeline;
 }
 
+function parseAudioTimeline(value: FormDataEntryValue | null, fileCount: number): AudioClip[] {
+  if (value === null && fileCount === 0) return [];
+  if (typeof value !== "string") throw new Error("Export request is missing its audio timeline.");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Audio timeline must be valid JSON.");
+  }
+  if (!Array.isArray(parsed) || parsed.length !== fileCount || fileCount > MAX_AUDIO_CLIPS) {
+    throw new Error(`Choose no more than ${MAX_AUDIO_CLIPS} audio clips to export.`);
+  }
+  return parsed.map((item, index) => {
+    if (typeof item !== "object" || item === null) throw new Error(`Audio clip ${index + 1} has invalid settings.`);
+    const { fileIndex, start, trimStart, trimEnd, volume } = item as Record<string, unknown>;
+    if (!Number.isInteger(fileIndex) || fileIndex !== index
+      || typeof start !== "number" || !Number.isFinite(start) || start < 0
+      || typeof trimStart !== "number" || !Number.isFinite(trimStart) || trimStart < 0
+      || typeof trimEnd !== "number" || !Number.isFinite(trimEnd) || trimEnd <= trimStart
+      || typeof volume !== "number" || !Number.isFinite(volume) || volume < 0 || volume > 2) {
+      throw new Error(`Audio clip ${index + 1} has invalid settings.`);
+    }
+    return { fileIndex, start, trimStart, trimEnd, volume };
+  });
+}
+
 export async function POST(request: Request) {
   const contentLength = request.headers.get("content-length");
   if (contentLength !== null && Number(contentLength) > MAX_REQUEST_BYTES) {
-    return NextResponse.json({ error: "The total video upload must be 512 MB or smaller." }, { status: 413 });
+    return NextResponse.json({ error: "The total media upload must be 512 MB or smaller." }, { status: 413 });
   }
 
   let formData: FormData;
@@ -129,8 +164,12 @@ export async function POST(request: Request) {
   }
 
   const files = formData.getAll("clip");
+  const audioEntries = formData.getAll("audio");
   if (files.some((file) => !(file instanceof File))) {
     return NextResponse.json({ error: "Every sequence clip must be a video file." }, { status: 400 });
+  }
+  if (audioEntries.some((file) => !(file instanceof File))) {
+    return NextResponse.json({ error: "Every audio track item must be an audio file." }, { status: 400 });
   }
   const requestedFormat = formData.get("format");
   if (requestedFormat !== null && requestedFormat !== "mov" && requestedFormat !== "mp4") {
@@ -138,18 +177,24 @@ export async function POST(request: Request) {
   }
   const format = requestedFormat ?? "mov";
   const videoFiles = files as File[];
+  const audioFiles = audioEntries as File[];
   let timeline: ClipTrim[];
+  let audioTimeline: AudioClip[];
   try {
     timeline = parseTimeline(formData.get("timeline"), videoFiles.length);
+    audioTimeline = parseAudioTimeline(formData.get("audioTimeline"), audioFiles.length);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Export timeline is invalid." }, { status: 400 });
   }
-  const totalBytes = videoFiles.reduce((sum, file) => sum + file.size, 0);
+  const totalBytes = [...videoFiles, ...audioFiles].reduce((sum, file) => sum + file.size, 0);
   if (videoFiles.some((file) => file.size < 1 || file.size > MAX_CLIP_BYTES)) {
     return NextResponse.json({ error: "Each video clip must be 200 MB or smaller." }, { status: 413 });
   }
+  if (audioFiles.some((file) => file.size < 1 || file.size > MAX_CLIP_BYTES)) {
+    return NextResponse.json({ error: "Each audio clip must be 200 MB or smaller." }, { status: 413 });
+  }
   if (totalBytes > MAX_REQUEST_BYTES) {
-    return NextResponse.json({ error: "The total video upload must be 512 MB or smaller." }, { status: 413 });
+    return NextResponse.json({ error: "The total media upload must be 512 MB or smaller." }, { status: 413 });
   }
 
   const directory = await mkdtemp(join(tmpdir(), "fal-flow-export-"));
@@ -165,6 +210,12 @@ export async function POST(request: Request) {
       const path = join(directory, `clip-${index}.input`);
       await writeFile(path, new Uint8Array(await file.arrayBuffer()), { flag: "wx" });
       inputPaths.push(path);
+    }
+    const audioInputPaths: string[] = [];
+    for (const [index, file] of audioFiles.entries()) {
+      const path = join(directory, `audio-${index}.input`);
+      await writeFile(path, new Uint8Array(await file.arrayBuffer()), { flag: "wx" });
+      audioInputPaths.push(path);
     }
 
     const probeResults = await Promise.all(inputPaths.map(async (path) => {
@@ -187,13 +238,34 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `Clip ${index + 1} ends beyond the video duration.` }, { status: 400 });
       }
     }
+    const audioProbeResults = await Promise.all(audioInputPaths.map(async (path) => {
+      const { stdout } = await runProcess(ffprobe, [
+        "-v", "error",
+        "-show_entries", "format=duration:stream=codec_type",
+        "-of", "json",
+        path,
+      ], request.signal);
+      return JSON.parse(stdout) as ProbeResult;
+    }));
+    for (const [index, probe] of audioProbeResults.entries()) {
+      const duration = Number(probe.format?.duration);
+      const trim = audioTimeline[index];
+      if (!Number.isFinite(duration) || !probe.streams?.some((stream) => stream.codec_type === "audio")) {
+        return NextResponse.json({ error: `Audio clip ${index + 1} is not a supported audio file.` }, { status: 422 });
+      }
+      if (trim.trimEnd > duration + 0.25 || trim.start >= timeline.reduce((sum, item) => sum + item.end - item.start, 0)) {
+        return NextResponse.json({ error: `Audio clip ${index + 1} has trim or placement outside the sequence.` }, { status: 400 });
+      }
+    }
 
     const filterParts: string[] = [];
     const concatInputs: string[] = [];
     const args = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"];
     for (const path of inputPaths) args.push("-i", path);
+    for (const path of audioInputPaths) args.push("-i", path);
 
-    let silenceIndex = inputPaths.length;
+    const totalDuration = timeline.reduce((sum, item) => sum + item.end - item.start, 0);
+    let silenceIndex = inputPaths.length + audioInputPaths.length;
     for (const [index, trim] of timeline.entries()) {
       const duration = trim.end - trim.start;
       const start = trim.start.toFixed(3);
@@ -216,12 +288,23 @@ export async function POST(request: Request) {
     }
 
     filterParts.push(`${concatInputs.join("")}concat=n=${timeline.length}:v=1:a=1[vout][aout]`);
+    for (const [index, audioClip] of audioTimeline.entries()) {
+      const inputIndex = videoFiles.length + audioClip.fileIndex;
+      const delay = Math.round(audioClip.start * 1000);
+      filterParts.push(
+        `[${inputIndex}:a:0]atrim=start=${audioClip.trimStart.toFixed(3)}:end=${audioClip.trimEnd.toFixed(3)},asetpts=PTS-STARTPTS,volume=${audioClip.volume.toFixed(3)},aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,adelay=${delay}|${delay},apad,atrim=duration=${totalDuration.toFixed(3)}[track${index}]`,
+      );
+    }
+    if (audioTimeline.length > 0) {
+      const mixInputs = ["[aout]", ...audioTimeline.map((_, index) => `[track${index}]`)].join("");
+      filterParts.push(`${mixInputs}amix=inputs=${audioTimeline.length + 1}:duration=first:dropout_transition=0:normalize=0[amixed]`);
+    }
     const outputPath = join(directory, `sequence.${format}`);
     args.push(
       "-filter_complex_threads", "2",
       "-filter_complex", filterParts.join(";"),
       "-map", "[vout]",
-      "-map", "[aout]",
+      "-map", audioTimeline.length > 0 ? "[amixed]" : "[aout]",
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "20",
