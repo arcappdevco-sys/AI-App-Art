@@ -1442,6 +1442,7 @@ body {
 }
 
 .ff-editor-clip {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 94px;
@@ -1463,6 +1464,64 @@ body {
 
 .ff-editor-clip:focus-within {
   box-shadow: inset 0 0 0 1px #8eaa5e;
+}
+
+.ff-editor-clip-trim-bar {
+  position: relative;
+  display: flex;
+  height: 14px;
+  flex: 0 0 14px;
+  align-items: stretch;
+  justify-content: space-between;
+  border-radius: 2px;
+  background: #101716;
+  touch-action: none;
+}
+
+.ff-editor-trim-bar-fill {
+  position: absolute;
+  top: 4px;
+  right: 7px;
+  bottom: 4px;
+  left: 7px;
+  border-radius: 2px;
+  background: #8eaa5e;
+  pointer-events: none;
+}
+
+.ff-editor-trim-handle {
+  position: relative;
+  z-index: 1;
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid #d6e5bb;
+  border-radius: 2px;
+  background: #8eaa5e;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.ff-editor-trim-handle::after {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 5px;
+  width: 2px;
+  border-right: 1px solid #182016;
+  border-left: 1px solid #182016;
+  content: "";
+}
+
+.ff-editor-trim-handle:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.ff-editor-trim-handle:focus-visible {
+  outline: 2px solid #55baff;
+  outline-offset: 1px;
 }
 
 .ff-editor-clip-select {

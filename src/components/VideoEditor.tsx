@@ -1,11 +1,12 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent, type SetStateAction } from "react";
+import { useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 
 export type VideoAsset = {
   id: string;
   name: string;
   src: string;
+  file?: File;
 };
 
 type TimelineClip = VideoAsset & {
@@ -26,6 +27,15 @@ type ClipContextMenu = {
   clipId: string;
   x: number;
   y: number;
+};
+
+type ClipTrimDrag = {
+  clipId: string;
+  edge: "start" | "end";
+  pointerId: number;
+  startX: number;
+  trimStart: number;
+  trimEnd: number;
 };
 
 function formatTime(seconds: number) {
@@ -66,12 +76,14 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [isExporting, setIsExporting] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<"mov" | "mp4" | null>(null);
   const [exportStage, setExportStage] = useState("");
+  const [loadingAssetId, setLoadingAssetId] = useState("");
   const [error, setError] = useState("");
   const previewRef = useRef<HTMLVideoElement>(null);
   const playbackWanted = useRef(false);
   const advancing = useRef(false);
   const pendingSeek = useRef<{ id: string; time: number } | null>(null);
   const clipButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const trimDrag = useRef<ClipTrimDrag | null>(null);
 
   const activeSequence = sequences.find((sequence) => sequence.id === activeSequenceId) ?? sequences[0];
   const clips = activeSequence?.clips ?? [];
@@ -167,16 +179,44 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const addAsset = async (asset: VideoAsset) => {
     const targetSequenceId = activeSequenceId;
     setError("");
+    setLoadingAssetId(asset.id);
     const probe = document.createElement("video");
     probe.preload = "metadata";
+    let normalizedUrl: string | null = null;
     try {
-      await loadMedia(probe, asset.src);
+      let clipAsset: VideoAsset = { id: asset.id, name: asset.name, src: asset.src };
+      try {
+        await loadMedia(probe, asset.src);
+      } catch (originalError) {
+        if (!asset.file) throw originalError;
+        const formData = new FormData();
+        formData.append("clip", asset.file, asset.file.name);
+        const response = await fetch("/api/video/normalize", { method: "POST", body: formData });
+        if (!response.ok) {
+          let message = `Could not prepare "${asset.name}" for preview (${response.status}).`;
+          try {
+            const payload: unknown = await response.json();
+            if (typeof payload === "object" && payload !== null
+              && "error" in payload && typeof payload.error === "string") {
+              message = payload.error;
+            }
+          } catch {
+            // Keep the status-based message if the server response isn't JSON.
+          }
+          throw new Error(message);
+        }
+        const normalizedVideo = await response.blob();
+        if (normalizedVideo.size === 0) throw new Error(`Could not prepare "${asset.name}" for preview.`);
+        normalizedUrl = URL.createObjectURL(normalizedVideo);
+        clipAsset = { id: asset.id, name: asset.name, src: normalizedUrl };
+        await loadMedia(probe, normalizedUrl);
+      }
       const duration = probe.duration;
       if (!Number.isFinite(duration) || duration <= 0) {
         throw new Error("This video does not have a supported duration.");
       }
       const clip: TimelineClip = {
-        ...asset,
+        ...clipAsset,
         id: `${asset.id}-${crypto.randomUUID()}`,
         duration,
         trimStart: 0,
@@ -192,30 +232,90 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
           playheadTime,
         };
       }));
+      if (normalizedUrl) {
+        setUploadedAssets((current) => current.map((item) => item.id === asset.id ? clipAsset : item));
+        URL.revokeObjectURL(asset.src);
+        normalizedUrl = null;
+      }
       playbackWanted.current = false;
       setIsPlaying(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not add this video.");
     } finally {
+      if (normalizedUrl) URL.revokeObjectURL(normalizedUrl);
+      setLoadingAssetId("");
       probe.removeAttribute("src");
       probe.load();
     }
   };
 
   const updateClip = (id: string, changes: Partial<Pick<TimelineClip, "trimStart" | "trimEnd">>) => {
-    setClips((current) => current.map((clip) => {
-      if (clip.id !== id) return clip;
-      const trimStart = changes.trimStart ?? clip.trimStart;
-      const trimEnd = changes.trimEnd ?? clip.trimEnd;
-      return {
-        ...clip,
-        trimStart: Math.min(Math.max(0, trimStart), Math.max(0, clip.duration - 0.1)),
-        trimEnd: Math.min(clip.duration, Math.max(trimStart + 0.1, trimEnd)),
-      };
-    }));
-    if (selectedClip?.id === id && previewRef.current) {
-      previewRef.current.currentTime = changes.trimStart ?? previewRef.current.currentTime;
+    const clip = clips.find((item) => item.id === id);
+    if (!clip) return;
+    const trimStart = Math.min(Math.max(0, changes.trimStart ?? clip.trimStart), clip.trimEnd - 0.1);
+    const trimEnd = Math.min(clip.duration, Math.max(trimStart + 0.1, changes.trimEnd ?? clip.trimEnd));
+    const durationChange = (trimEnd - trimStart) - (clip.trimEnd - clip.trimStart);
+    const clipIndex = clips.findIndex((item) => item.id === id);
+    const selectedIndex = clips.findIndex((item) => item.id === selectedClip?.id);
+
+    setClips((current) => current.map((item) => item.id === id ? { ...item, trimStart, trimEnd } : item));
+
+    if (selectedClip?.id === id) {
+      const currentTime = previewRef.current?.currentTime ?? clip.trimStart;
+      const nextTime = Math.min(Math.max(currentTime, trimStart), trimEnd);
+      if (previewRef.current) previewRef.current.currentTime = nextTime;
+      setPlayheadTime(getClipOffset(id) + nextTime - trimStart);
+    } else if (clipIndex < selectedIndex) {
+      setPlayheadTime((current) => Math.max(0, current + durationChange));
     }
+  };
+
+  const startTrimDrag = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    clip: TimelineClip,
+    edge: ClipTrimDrag["edge"],
+  ) => {
+    if (isExporting) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    trimDrag.current = {
+      clipId: clip.id,
+      edge,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      trimStart: clip.trimStart,
+      trimEnd: clip.trimEnd,
+    };
+    playbackWanted.current = false;
+    previewRef.current?.pause();
+    setIsPlaying(false);
+    selectClip(clip.id);
+  };
+
+  const moveTrimDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = trimDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const delta = (event.clientX - drag.startX) / 72;
+    if (drag.edge === "start") {
+      updateClip(drag.clipId, { trimStart: drag.trimStart + delta });
+    } else {
+      updateClip(drag.clipId, { trimEnd: drag.trimEnd + delta });
+    }
+  };
+
+  const stopTrimDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (trimDrag.current?.pointerId !== event.pointerId) return;
+    trimDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const nudgeTrim = (clip: TimelineClip, edge: ClipTrimDrag["edge"], direction: -1 | 1) => {
+    updateClip(clip.id, edge === "start"
+      ? { trimStart: clip.trimStart + direction * 0.1 }
+      : { trimEnd: clip.trimEnd + direction * 0.1 });
   };
 
   const setClipOrder = (reordered: TimelineClip[]) => {
@@ -300,6 +400,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       id: `upload-${crypto.randomUUID()}`,
       name: file.name,
       src: URL.createObjectURL(file),
+      file,
     }));
     setUploadedAssets((current) => [...current, ...nextAssets]);
   };
@@ -483,7 +584,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
           </div>
           {assets.length === 0 && <p className="ff-editor-empty">Run a video node in your workflow to add generated clips here.</p>}
           {assets.map((asset) => (
-            <button className="ff-editor-asset" key={asset.id} onClick={() => void addAsset(asset)} disabled={isExporting}>
+            <button className="ff-editor-asset" key={asset.id} onClick={() => void addAsset(asset)} disabled={isExporting || Boolean(loadingAssetId)}>
               <span aria-hidden="true">▶</span>
               <span>{asset.name}</span>
               <strong>+</strong>
@@ -508,9 +609,9 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             </label>
           </div>
           {uploadedAssets.map((asset) => (
-            <button className="ff-editor-asset" key={asset.id} onClick={() => void addAsset(asset)} disabled={isExporting}>
+            <button className="ff-editor-asset" key={asset.id} onClick={() => void addAsset(asset)} disabled={isExporting || Boolean(loadingAssetId)}>
               <span aria-hidden="true">▣</span>
-              <span>{asset.name}</span>
+              <span>{loadingAssetId === asset.id ? "Preparing video…" : asset.name}</span>
               <strong>+</strong>
             </button>
           ))}
@@ -624,7 +725,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             </div>
           </div>
           <p className="ff-editor-instructions">
-            Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
+            Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
           </p>
           {isExporting && (
             <div className="ff-editor-export-status" role="status" aria-live="polite">
@@ -695,6 +796,43 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                         if (draggedId) moveClipTo(draggedId, index);
                       }}
                     >
+                      <div className="ff-editor-clip-trim-bar" aria-label={`${clip.name} trim handles`}>
+                        <button
+                          type="button"
+                          className="ff-editor-trim-handle ff-editor-trim-handle-start"
+                          aria-label={`Trim start of ${clip.name}`}
+                          title="Drag to trim the start"
+                          disabled={isExporting}
+                          onPointerDown={(event) => startTrimDrag(event, clip, "start")}
+                          onPointerMove={moveTrimDrag}
+                          onPointerUp={stopTrimDrag}
+                          onPointerCancel={stopTrimDrag}
+                          onKeyDown={(event) => {
+                            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                              event.preventDefault();
+                              nudgeTrim(clip, "start", event.key === "ArrowLeft" ? -1 : 1);
+                            }
+                          }}
+                        />
+                        <span className="ff-editor-trim-bar-fill" />
+                        <button
+                          type="button"
+                          className="ff-editor-trim-handle ff-editor-trim-handle-end"
+                          aria-label={`Trim end of ${clip.name}`}
+                          title="Drag to trim the end"
+                          disabled={isExporting}
+                          onPointerDown={(event) => startTrimDrag(event, clip, "end")}
+                          onPointerMove={moveTrimDrag}
+                          onPointerUp={stopTrimDrag}
+                          onPointerCancel={stopTrimDrag}
+                          onKeyDown={(event) => {
+                            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                              event.preventDefault();
+                              nudgeTrim(clip, "end", event.key === "ArrowLeft" ? -1 : 1);
+                            }
+                          }}
+                        />
+                      </div>
                       <button
                         type="button"
                         className="ff-editor-clip-select"
