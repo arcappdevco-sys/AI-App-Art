@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { registerEditorUploadBridge } from "@/lib/editor-upload-bridge";
-import { getKeyColorChroma, RGB_LUMA_WEIGHTS } from "@/lib/chroma-key";
+import { applyMatteClip, getKeyColorChroma, refineMatte, RGB_LUMA_WEIGHTS } from "@/lib/chroma-key";
 import {
   deleteEditorMedia,
   loadEditorMedia,
@@ -74,13 +74,29 @@ type ClipTrimDrag = {
 
 type EditorTool = "select" | "razor" | "transition";
 type KeyerViewChannel = "rgb" | "red" | "green" | "blue" | "alpha";
+type CompositeBackgroundMode = "checkerboard" | "color" | "image";
 const EDITOR_HISTORY_LIMIT = 50;
+const COMPOSITE_BACKGROUND_PRESETS = [
+  { name: "Midnight", color: "#0c1112" },
+  { name: "Ocean", color: "#0b141b" },
+  { name: "Violet", color: "#14111b" },
+  { name: "Light", color: "#e9eef4" },
+  { name: "Blue", color: "#4f70e5" },
+  { name: "Violet accent", color: "#8d5ed1" },
+  { name: "Coral", color: "#d96554" },
+  { name: "Amber", color: "#e0ad3f" },
+  { name: "Slate", color: "#647a91" },
+] as const;
 const DEFAULT_KEYER: StoredEditorKeyer = {
   enabled: false,
   color: "#00ff00",
   similarity: 0.28,
   softness: 0.2,
   spillSuppression: 0,
+  clipBlack: 0,
+  clipWhite: 1,
+  edgeChoke: 0,
+  edgeFeather: 0,
 };
 
 function isKeyerViewChannel(value: string): value is KeyerViewChannel {
@@ -279,8 +295,13 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewPan, setPreviewPan] = useState<PreviewPanPosition>({ clipId: "", x: 0, y: 0 });
   const [isPreviewPanning, setIsPreviewPanning] = useState(false);
+  const [isMatteEditActive, setIsMatteEditActive] = useState(false);
   const [keyerViewChannel, setKeyerViewChannel] = useState<KeyerViewChannel>("rgb");
   const [keyerColorPickerClipId, setKeyerColorPickerClipId] = useState("");
+  const [compositeBackgroundMode, setCompositeBackgroundMode] = useState<CompositeBackgroundMode>("checkerboard");
+  const [compositeBackgroundColor, setCompositeBackgroundColor] = useState("#ffffff");
+  const [compositeBackgroundImageUrl, setCompositeBackgroundImageUrl] = useState("");
+  const [compositeBackgroundImageName, setCompositeBackgroundImageName] = useState("");
   const [isExporting, setIsExporting] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<"mov" | "mp4" | "png" | null>(null);
   const [exportStage, setExportStage] = useState("");
@@ -292,6 +313,8 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const previewRef = useRef<HTMLVideoElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const keyerCanvasRef = useRef<HTMLCanvasElement>(null);
+  const compositeBackgroundInputRef = useRef<HTMLInputElement>(null);
+  const compositeBackgroundLoadId = useRef(0);
   const transitionPreviewRef = useRef<HTMLVideoElement>(null);
   const audioElements = useRef(new Map<string, HTMLAudioElement>());
   const playbackWanted = useRef(false);
@@ -316,6 +339,14 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const renameStart = useRef<{ snapshot: EditorHistorySnapshot; sequenceId: string; name: string } | null>(null);
   const audioEditStart = useRef<EditorHistorySnapshot | null>(null);
   const keyerEditStart = useRef<EditorHistorySnapshot | null>(null);
+  const matteEditViewChannel = useRef<KeyerViewChannel | null>(null);
+  useEffect(() => {
+    if (!compositeBackgroundImageUrl) return;
+    return () => URL.revokeObjectURL(compositeBackgroundImageUrl);
+  }, [compositeBackgroundImageUrl]);
+  useEffect(() => () => {
+    compositeBackgroundLoadId.current += 1;
+  }, []);
   const unsavedMediaName = uploadedAssets.find((asset) => !asset.mediaId)?.name
     ?? sequences.flatMap((sequence) => [...sequence.clips, ...sequence.audioClips]).find((clip) => !clip.mediaId)?.name;
   const persistenceValidationError = unsavedMediaName ? `Media for "${unsavedMediaName}" is not saved yet.` : "";
@@ -688,6 +719,18 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const selectedClipId = selectedClip?.id ?? "";
   const hasSelectedClip = Boolean(selectedClip);
   const isPickingKeyerColor = Boolean(selectedClip && keyerColorPickerClipId === selectedClip.id);
+  const showKeyerPreview = selectedKeyer.enabled || isMatteEditActive;
+  let compositePreviewStyle: CSSProperties | undefined;
+  if (showKeyerPreview && compositeBackgroundMode === "color") {
+    compositePreviewStyle = { backgroundColor: compositeBackgroundColor, backgroundImage: "none" };
+  } else if (showKeyerPreview && compositeBackgroundMode === "image" && compositeBackgroundImageUrl) {
+    compositePreviewStyle = {
+      backgroundColor: "#050707",
+      backgroundImage: `url("${compositeBackgroundImageUrl}")`,
+      backgroundPosition: "center",
+      backgroundSize: "cover",
+    };
+  }
   const activePreviewPan = selectedClip?.id === previewPan.clipId ? previewPan : { clipId: selectedClip?.id ?? "", x: 0, y: 0 };
   const getPreviewPanBounds = useCallback((zoom = 1) => {
     const container = previewContainerRef.current;
@@ -827,7 +870,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   useEffect(() => {
     const video = previewRef.current;
     const canvas = keyerCanvasRef.current;
-    if (!selectedKeyer.enabled || !video || !canvas) return;
+    if (!showKeyerPreview || !video || !canvas) return;
 
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) {
@@ -848,6 +891,17 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     const threshold = Math.min(1, Math.max(0, selectedKeyer.similarity));
     const softness = Math.max(0.005, selectedKeyer.softness);
     const spillSuppression = Math.min(1, Math.max(0, selectedKeyer.spillSuppression));
+    const clipBlack = selectedKeyer.clipBlack;
+    const clipWhite = selectedKeyer.clipWhite;
+    const edgeChoke = selectedKeyer.edgeChoke;
+    const edgeFeather = selectedKeyer.edgeFeather;
+    let matteFrame: {
+      width: number;
+      height: number;
+      matte: Uint8Array;
+      scratch: Uint8Array;
+      queue: Int32Array;
+    } | null = null;
     let frameRequest = 0;
     let frameFailed = false;
 
@@ -863,22 +917,47 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
           canvas.width = width;
           canvas.height = height;
         }
+        if (!matteFrame || matteFrame.width !== width || matteFrame.height !== height) {
+          matteFrame = {
+            width,
+            height,
+            matte: new Uint8Array(width * height),
+            scratch: new Uint8Array(width * height),
+            queue: new Int32Array(Math.max(width, height)),
+          };
+        }
         context.drawImage(video, 0, 0, width, height);
         const image = context.getImageData(0, 0, width, height);
         const pixels = image.data;
         const softnessRange = 1 / softness;
+        let pixelIndex = 0;
+        for (let index = 0; index < pixels.length; index += 4) {
+          const redDelta = pixels[index] - keyColor[0];
+          const greenDelta = pixels[index + 1] - keyColor[1];
+          const blueDelta = pixels[index + 2] - keyColor[2];
+          const distance = Math.sqrt(redDelta * redDelta + greenDelta * greenDelta + blueDelta * blueDelta) / 441.673;
+          const amount = Math.min(1, Math.max(0, (distance - threshold) * softnessRange));
+          const smoothAmount = amount * amount * (3 - 2 * amount);
+          matteFrame.matte[pixelIndex] = Math.round(pixels[index + 3] * smoothAmount);
+          pixelIndex += 1;
+        }
+        refineMatte(
+          matteFrame.matte,
+          matteFrame.scratch,
+          matteFrame.queue,
+          width,
+          height,
+          edgeChoke * width / 1280,
+          edgeFeather * width / 1280,
+        );
+        pixelIndex = 0;
         for (let index = 0; index < pixels.length; index += 4) {
           const red = pixels[index];
           const green = pixels[index + 1];
           const blue = pixels[index + 2];
-          const redDelta = red - keyColor[0];
-          const greenDelta = green - keyColor[1];
-          const blueDelta = blue - keyColor[2];
-          const distance = Math.sqrt(redDelta * redDelta + greenDelta * greenDelta + blueDelta * blueDelta) / 441.673;
-          const amount = Math.min(1, Math.max(0, (distance - threshold) * softnessRange));
-          const smoothAmount = amount * amount * (3 - 2 * amount);
-          const outputAlpha = Math.round(pixels[index + 3] * smoothAmount);
-          if (spillSuppression > 0 && keyChroma.magnitudeSquared >= 0.001 && outputAlpha > 0 && outputAlpha < 255) {
+          const rawOutputAlpha = matteFrame.matte[pixelIndex];
+          const outputAlpha = Math.round(applyMatteClip(rawOutputAlpha / 255, clipBlack, clipWhite) * 255);
+          if (spillSuppression > 0 && keyChroma.magnitudeSquared >= 0.001 && rawOutputAlpha > 0 && rawOutputAlpha < 255) {
             const luminance = red * RGB_LUMA_WEIGHTS[0] + green * RGB_LUMA_WEIGHTS[1] + blue * RGB_LUMA_WEIGHTS[2];
             const projection = Math.max(0, (
               (red - luminance) * keyChroma.vector[0]
@@ -892,7 +971,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               if (component > 0) maxCorrection = Math.min(maxCorrection, channels[channel] / component);
               else if (component < 0) maxCorrection = Math.min(maxCorrection, (255 - channels[channel]) / -component);
             }
-            const matte = outputAlpha / 255;
+            const matte = rawOutputAlpha / 255;
             const edgeWeight = 4 * matte * (1 - matte);
             const correction = Math.min(projection * spillSuppression * edgeWeight, maxCorrection);
             pixels[index] = red - keyChroma.vector[0] * correction;
@@ -914,6 +993,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             }
             pixels[index + 3] = outputAlpha;
           }
+          pixelIndex += 1;
         }
         context.putImageData(image, 0, 0);
       } catch {
@@ -953,10 +1033,14 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   }, [
     selectedClip?.id,
     selectedKeyer.color,
-    selectedKeyer.enabled,
+    showKeyerPreview,
     selectedKeyer.similarity,
     selectedKeyer.softness,
     selectedKeyer.spillSuppression,
+    selectedKeyer.clipBlack,
+    selectedKeyer.clipWhite,
+    selectedKeyer.edgeChoke,
+    selectedKeyer.edgeFeather,
     keyerViewChannel,
   ]);
 
@@ -1008,6 +1092,23 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     if (snapshot && JSON.stringify(snapshot.sequences) !== JSON.stringify(editorSnapshotRef.current.sequences)) {
       recordHistory(snapshot);
     }
+  };
+
+  const beginMatteEdit = () => {
+    beginKeyerEdit();
+    setIsMatteEditActive(true);
+    if (matteEditViewChannel.current === null) {
+      matteEditViewChannel.current = keyerViewChannel;
+      setKeyerViewChannel("alpha");
+    }
+  };
+
+  const finishMatteEdit = () => {
+    finishKeyerEdit();
+    setIsMatteEditActive(false);
+    const previousChannel = matteEditViewChannel.current;
+    matteEditViewChannel.current = null;
+    if (previousChannel !== null) setKeyerViewChannel(previousChannel);
   };
 
   const createSequence = () => {
@@ -1310,6 +1411,53 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     if (!selectedClip) return;
     const keyer = { ...selectedKeyer, ...changes };
     setClips((current) => current.map((clip) => clip.id === selectedClip.id ? { ...clip, keyer } : clip));
+  };
+
+  const handleCompositeBackgroundImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Choose an image file for the composite preview background.");
+      return;
+    }
+
+    let imageUrl: string;
+    try {
+      imageUrl = URL.createObjectURL(file);
+    } catch (backgroundError) {
+      setError(backgroundError instanceof Error
+        ? backgroundError.message
+        : "Could not load the composite preview background.");
+      return;
+    }
+
+    const loadId = ++compositeBackgroundLoadId.current;
+    const image = new Image();
+    image.onload = () => {
+      if (loadId !== compositeBackgroundLoadId.current) {
+        URL.revokeObjectURL(imageUrl);
+        return;
+      }
+      setCompositeBackgroundImageUrl(imageUrl);
+      setCompositeBackgroundImageName(file.name);
+      setCompositeBackgroundMode("image");
+      setError("");
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(imageUrl);
+      if (loadId === compositeBackgroundLoadId.current) {
+        setError(`Could not load "${file.name}" as a composite preview background. Choose another image.`);
+      }
+    };
+    image.src = imageUrl;
+  };
+
+  const clearCompositeBackgroundImage = () => {
+    compositeBackgroundLoadId.current += 1;
+    setCompositeBackgroundImageUrl("");
+    setCompositeBackgroundImageName("");
+    setCompositeBackgroundMode((current) => current === "image" ? "checkerboard" : current);
   };
 
   const splitClipAt = (clipId: string, clientX: number, element: HTMLElement) => {
@@ -2101,8 +2249,9 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
 
       <div className="ff-editor-workspace">
         <div
-          className={`ff-editor-preview${selectedKeyer.enabled ? " ff-editor-key-preview" : ""}${isPreviewPanning ? " ff-editor-preview-panning" : ""}`}
+          className={`ff-editor-preview${showKeyerPreview ? " ff-editor-key-preview" : ""}${isPreviewPanning ? " ff-editor-preview-panning" : ""}`}
           ref={previewContainerRef}
+          style={compositePreviewStyle}
           onPointerDown={handlePreviewPointerDown}
           onPointerMove={handlePreviewPointerMove}
           onPointerUp={finishPreviewPan}
@@ -2112,7 +2261,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
             <video
               key={selectedClip.id}
               ref={previewRef}
-              className={selectedKeyer.enabled ? "ff-editor-preview-keyed-source" : undefined}
+              className={showKeyerPreview ? "ff-editor-preview-keyed-source" : undefined}
               style={{ transform: previewTransform }}
               src={selectedClip.src}
               playsInline
@@ -2160,7 +2309,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
               <p>Add a generated video or upload a clip to begin.</p>
             </div>
           )}
-          {selectedClip && selectedKeyer.enabled && (
+          {selectedClip && showKeyerPreview && (
             <canvas
               ref={keyerCanvasRef}
               className="ff-editor-keyer-canvas"
@@ -2455,6 +2604,90 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                   </select>
                 </label>
               </div>
+              <div className="ff-editor-keyer-background">
+                <div className="ff-editor-keyer-background-heading">
+                  <strong>Composite preview background</strong>
+                  <span>Preview only · not included in exports</span>
+                </div>
+                <div className="ff-editor-keyer-background-controls">
+                  <button
+                    type="button"
+                    className="ff-editor-keyer-pick"
+                    aria-pressed={compositeBackgroundMode === "checkerboard"}
+                    onClick={() => setCompositeBackgroundMode("checkerboard")}
+                  >
+                    Checkerboard
+                  </button>
+                  <label className="ff-editor-keyer-background-color">
+                    Custom
+                    <input
+                      type="color"
+                      aria-label="Custom composite preview background color"
+                      value={compositeBackgroundColor}
+                      onChange={(event) => {
+                        setCompositeBackgroundColor(event.target.value);
+                        setCompositeBackgroundMode("color");
+                      }}
+                    />
+                  </label>
+                  <input
+                    ref={compositeBackgroundInputRef}
+                    className="ff-editor-keyer-background-file"
+                    type="file"
+                    accept="image/*"
+                    aria-label="Choose a composite preview background image"
+                    onChange={handleCompositeBackgroundImageChange}
+                  />
+                  <button
+                    type="button"
+                    className="ff-editor-keyer-pick"
+                    onClick={() => compositeBackgroundInputRef.current?.click()}
+                  >
+                    Choose image
+                  </button>
+                  {compositeBackgroundImageUrl && compositeBackgroundMode !== "image" && (
+                    <button
+                      type="button"
+                      className="ff-editor-keyer-pick"
+                      onClick={() => setCompositeBackgroundMode("image")}
+                    >
+                      Use uploaded image
+                    </button>
+                  )}
+                  {compositeBackgroundImageUrl && (
+                    <button
+                      type="button"
+                      className="ff-editor-keyer-background-clear"
+                      onClick={clearCompositeBackgroundImage}
+                    >
+                      Clear image
+                    </button>
+                  )}
+                  {compositeBackgroundImageName && (
+                    <span className="ff-editor-keyer-background-filename" title={compositeBackgroundImageName}>
+                      {compositeBackgroundImageName}
+                    </span>
+                  )}
+                </div>
+                <div className="ff-editor-keyer-background-swatches" role="group" aria-label="App color backgrounds">
+                  {COMPOSITE_BACKGROUND_PRESETS.map(({ name, color }) => (
+                    <button
+                      key={name}
+                      type="button"
+                      className="ff-editor-keyer-background-swatch"
+                      aria-label={`Use ${name} background`}
+                      aria-pressed={compositeBackgroundMode === "color" && compositeBackgroundColor === color}
+                      title={`${name} · ${color}`}
+                      onClick={() => {
+                        setCompositeBackgroundColor(color);
+                        setCompositeBackgroundMode("color");
+                      }}
+                    >
+                      <span style={{ backgroundColor: color }} />
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="ff-editor-keyer-fields">
                 <label className="ff-editor-keyer-color">
                   Screen color
@@ -2539,6 +2772,100 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
                     onChange={(event) => updateSelectedClipKeyer({ spillSuppression: Number(event.target.value) })}
                   />
                   <output>{Math.round(selectedKeyer.spillSuppression * 100)}%</output>
+                </label>
+                <label className="ff-editor-keyer-range" title="Push low alpha values toward transparent">
+                  Clip Black
+                  <input
+                    type="range"
+                    aria-label="Chroma key clip black"
+                    min="0"
+                    max="0.99"
+                    step="0.01"
+                    value={selectedKeyer.clipBlack}
+                    disabled={isExporting}
+                    onPointerDown={beginMatteEdit}
+                    onPointerUp={finishMatteEdit}
+                    onKeyDown={beginMatteEdit}
+                    onKeyUp={finishMatteEdit}
+                    onBlur={finishMatteEdit}
+                    onChange={(event) => {
+                      const clipBlack = Number(event.target.value);
+                      updateSelectedClipKeyer({
+                        clipBlack,
+                        clipWhite: Math.max(selectedKeyer.clipWhite, clipBlack + 0.01),
+                      });
+                    }}
+                  />
+                  <output>{Math.round(selectedKeyer.clipBlack * 100)}%</output>
+                </label>
+                <label className="ff-editor-keyer-range" title="Push high alpha values toward opaque">
+                  Clip White
+                  <input
+                    type="range"
+                    aria-label="Chroma key clip white"
+                    min="0.01"
+                    max="1"
+                    step="0.01"
+                    value={selectedKeyer.clipWhite}
+                    disabled={isExporting}
+                    onPointerDown={beginMatteEdit}
+                    onPointerUp={finishMatteEdit}
+                    onKeyDown={beginMatteEdit}
+                    onKeyUp={finishMatteEdit}
+                    onBlur={finishMatteEdit}
+                    onChange={(event) => {
+                      const clipWhite = Number(event.target.value);
+                      updateSelectedClipKeyer({
+                        clipBlack: Math.min(selectedKeyer.clipBlack, clipWhite - 0.01),
+                        clipWhite,
+                      });
+                    }}
+                  />
+                  <output>{Math.round(selectedKeyer.clipWhite * 100)}%</output>
+                </label>
+                <label
+                  className="ff-editor-keyer-range"
+                  title="Positive values choke the matte inward; negative values expand it outward"
+                >
+                  Choke / Expand
+                  <input
+                    type="range"
+                    aria-label="Chroma key choke or expand"
+                    min="-8"
+                    max="8"
+                    step="1"
+                    value={selectedKeyer.edgeChoke}
+                    disabled={isExporting}
+                    onPointerDown={beginMatteEdit}
+                    onPointerUp={finishMatteEdit}
+                    onKeyDown={beginMatteEdit}
+                    onKeyUp={finishMatteEdit}
+                    onBlur={finishMatteEdit}
+                    onChange={(event) => updateSelectedClipKeyer({ edgeChoke: Number(event.target.value) })}
+                  />
+                  <output>{selectedKeyer.edgeChoke > 0 ? "+" : ""}{selectedKeyer.edgeChoke} px</output>
+                </label>
+                <label
+                  className="ff-editor-keyer-range"
+                  title="Softens the alpha edge without blurring the subject image"
+                >
+                  Edge feather
+                  <input
+                    type="range"
+                    aria-label="Chroma key edge feather"
+                    min="0"
+                    max="8"
+                    step="1"
+                    value={selectedKeyer.edgeFeather}
+                    disabled={isExporting}
+                    onPointerDown={beginMatteEdit}
+                    onPointerUp={finishMatteEdit}
+                    onKeyDown={beginMatteEdit}
+                    onKeyUp={finishMatteEdit}
+                    onBlur={finishMatteEdit}
+                    onChange={(event) => updateSelectedClipKeyer({ edgeFeather: Number(event.target.value) })}
+                  />
+                  <output>{selectedKeyer.edgeFeather} px</output>
                 </label>
               </div>
             </section>

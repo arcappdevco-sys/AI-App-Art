@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Zip, ZipPassThrough } from "fflate";
 import { NextResponse } from "next/server";
-import { createMatteAwareSpillFilter } from "@/lib/chroma-key";
+import {
+  createMatteAwareSpillFilter,
+  createMatteClipFilter,
+  createMatteRefinementFilters,
+} from "@/lib/chroma-key";
 
 export const maxDuration = 900;
 
@@ -42,6 +46,10 @@ type ClipKeyer = {
   similarity: number;
   softness: number;
   spillSuppression: number;
+  clipBlack: number;
+  clipWhite: number;
+  edgeChoke: number;
+  edgeFeather: number;
 };
 
 type ProbeResult = {
@@ -215,19 +223,34 @@ function parseKeyerTimeline(value: FormDataEntryValue | null, clipCount: number)
   }
   return parsed.map((item, index) => {
     if (typeof item !== "object" || item === null) throw new Error(`Clip ${index + 1} has invalid keyer settings.`);
-    const { enabled, color, similarity, softness, spillSuppression } = item as Record<string, unknown>;
+    const {
+      enabled,
+      color,
+      similarity,
+      softness,
+      spillSuppression,
+      clipBlack = 0,
+      clipWhite = 1,
+      edgeChoke = 0,
+      edgeFeather = 0,
+    } = item as Record<string, unknown>;
     if (typeof enabled !== "boolean" || typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)
       || typeof similarity !== "number" || !Number.isFinite(similarity) || similarity < 0 || similarity > 0.8
       || typeof softness !== "number" || !Number.isFinite(softness) || softness < 0.01 || softness > 0.6
       || typeof spillSuppression !== "number" || !Number.isFinite(spillSuppression)
-      || spillSuppression < 0 || spillSuppression > 1) {
+      || spillSuppression < 0 || spillSuppression > 1
+      || typeof clipBlack !== "number" || !Number.isFinite(clipBlack) || clipBlack < 0 || clipBlack >= 1
+      || typeof clipWhite !== "number" || !Number.isFinite(clipWhite) || clipWhite > 1
+      || clipWhite <= clipBlack
+      || typeof edgeChoke !== "number" || !Number.isInteger(edgeChoke) || edgeChoke < -8 || edgeChoke > 8
+      || typeof edgeFeather !== "number" || !Number.isInteger(edgeFeather) || edgeFeather < 0 || edgeFeather > 8) {
       throw new Error(`Clip ${index + 1} has invalid keyer settings.`);
     }
-    return { enabled, color, similarity, softness, spillSuppression };
+    return { enabled, color, similarity, softness, spillSuppression, clipBlack, clipWhite, edgeChoke, edgeFeather };
   });
 }
 
-function createKeyerFilter(keyer: ClipKeyer) {
+function createKeyerFilters(keyer: ClipKeyer, index: number) {
   const color = keyer.color.slice(1);
   const keyColor = [
     Number.parseInt(color.slice(0, 2), 16),
@@ -235,8 +258,34 @@ function createKeyerFilter(keyer: ClipKeyer) {
     Number.parseInt(color.slice(4, 6), 16),
   ] as const;
   const spillFilter = createMatteAwareSpillFilter(keyColor, keyer.spillSuppression);
+  const matteClipFilter = createMatteClipFilter(keyer.clipBlack, keyer.clipWhite);
+  const refinementFilters = createMatteRefinementFilters(keyer.edgeChoke, keyer.edgeFeather);
   const keyFilter = `colorkey=color=0x${color}:similarity=${keyer.similarity.toFixed(3)}:blend=${keyer.softness.toFixed(3)}`;
-  return spillFilter ? `${keyFilter},${spillFilter}` : keyFilter;
+  const labels = {
+    base: `base${index}`,
+    keyed: `keyed${index}`,
+    rgb: `keyedrgb${index}`,
+    alphaInput: `keyedalpha${index}`,
+    matte: `keyedmatte${index}`,
+    refined: `keyedrefined${index}`,
+  };
+  const filters = [`[${labels.base}]${keyFilter}[${labels.keyed}]`];
+  let outputLabel = labels.keyed;
+
+  if (refinementFilters.length > 0) {
+    filters.push(`[${labels.keyed}]split[${labels.rgb}][${labels.alphaInput}]`);
+    filters.push(`[${labels.alphaInput}]alphaextract,format=gray,${refinementFilters.join(",")}[${labels.matte}]`);
+    filters.push(`[${labels.rgb}][${labels.matte}]alphamerge[${labels.refined}]`);
+    outputLabel = labels.refined;
+  }
+
+  const outputFilters = [spillFilter, matteClipFilter].filter((filter): filter is string => filter !== null);
+  if (outputFilters.length > 0) {
+    filters.push(`[${outputLabel}]${outputFilters.join(",")}[v${index}]`);
+  } else {
+    filters.push(`[${outputLabel}]null[v${index}]`);
+  }
+  return filters;
 }
 
 function createPngZipStream(framePaths: string[], directory: string) {
@@ -404,10 +453,14 @@ export async function POST(request: Request) {
       const args = ["-hide_banner", "-nostdin", "-loglevel", "error", "-y"];
       for (const path of inputPaths) args.push("-i", path);
       for (const [index, trim] of timeline.entries()) {
-        const keyerFilter = keyers[index].enabled ? `,${createKeyerFilter(keyers[index])}` : "";
         filterParts.push(
-          `[${index}:v:0]trim=start=${trim.start.toFixed(3)}:end=${trim.end.toFixed(3)},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=30,settb=AVTB${keyerFilter}[v${index}]`,
+          `[${index}:v:0]trim=start=${trim.start.toFixed(3)}:end=${trim.end.toFixed(3)},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=30,settb=AVTB[base${index}]`,
         );
+        if (keyers[index].enabled) {
+          filterParts.push(...createKeyerFilters(keyers[index], index));
+        } else {
+          filterParts.push(`[base${index}]null[v${index}]`);
+        }
       }
 
       const transitionsByBoundary = new Map(transitions.map((transition) => [transition.afterClipIndex, transition]));

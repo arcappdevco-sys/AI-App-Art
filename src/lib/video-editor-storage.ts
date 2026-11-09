@@ -17,6 +17,10 @@ export type StoredEditorKeyer = {
   similarity: number;
   softness: number;
   spillSuppression: number;
+  clipBlack: number;
+  clipWhite: number;
+  edgeChoke: number;
+  edgeFeather: number;
 };
 
 export type StoredEditorAudioClip = {

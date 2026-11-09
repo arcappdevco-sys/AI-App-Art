@@ -1857,6 +1857,107 @@ body {
   opacity: 0.6;
 }
 
+.ff-editor-keyer-background {
+  display: grid;
+  gap: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.ff-editor-keyer-background-heading,
+.ff-editor-keyer-background-controls,
+.ff-editor-keyer-background-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ff-editor-keyer-background-heading {
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.ff-editor-keyer-background-heading span,
+.ff-editor-keyer-background-filename {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ff-editor-keyer-background-color {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.ff-editor-keyer-background-color input {
+  width: 28px;
+  height: 23px;
+  padding: 1px;
+  border: 1px solid var(--line-control);
+  border-radius: 4px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.ff-editor-keyer-background-file {
+  display: none;
+}
+
+.ff-editor-keyer-background-clear {
+  min-height: 25px;
+  padding: 0 7px;
+  border: 1px solid var(--line-control);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+}
+
+.ff-editor-keyer-background-clear:hover {
+  border-color: var(--accent);
+}
+
+.ff-editor-keyer-background-filename {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-editor-keyer-background-swatch {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  padding: 2px;
+  border: 1px solid var(--line-control);
+  border-radius: 4px;
+  background: var(--control-bg);
+  cursor: pointer;
+}
+
+.ff-editor-keyer-background-swatch[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.ff-editor-keyer-background-swatch span {
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.ff-editor-keyer-background-swatch:focus-visible,
+.ff-editor-keyer-background-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .ff-editor-keyer-toggle {
   margin-left: auto;
 }
