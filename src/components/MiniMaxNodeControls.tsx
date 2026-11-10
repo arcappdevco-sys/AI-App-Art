@@ -31,6 +31,7 @@ import {
 type Props = {
   nodeId: string;
   nodeData: Record<string, unknown>;
+  workflowRunning: boolean;
 };
 
 type FlowNode = ReturnType<typeof useNodes>[number];
@@ -150,7 +151,7 @@ function MiniMaxInputPort({
   );
 }
 
-export default function MiniMaxNodeControls({ nodeId, nodeData }: Props) {
+export default function MiniMaxNodeControls({ nodeId, nodeData, workflowRunning }: Props) {
   const nodes = useNodes();
   const edges = useEdges();
   const { addEdges, addNodes, deleteElements, getEdges, getNode, getNodes, updateNodeData } = useReactFlow();
@@ -770,7 +771,7 @@ export default function MiniMaxNodeControls({ nodeId, nodeData }: Props) {
       {generationError && <div className="ff-minimax-warning">{generationError}</div>}
 
       <div className="ff-minimax-status" role="status" aria-live="polite">
-        <strong>{uploadStatus || (statusLine === "Idle" && params.last_output_url ? "Completed" : statusLine)}</strong>
+        <strong>{active ? uploadStatus || statusLine : nodeData.status === "running" || nodeData.status === "queued" ? "Workflow running" : nodeData.status === "error" ? "Failed" : params.last_output_url ? "Completed" : statusLine}</strong>
         {statusDetail && <span>{statusDetail}</span>}
         {elapsedSeconds > 0 && active && <span>{elapsedSeconds}s elapsed</span>}
       </div>
@@ -790,7 +791,7 @@ export default function MiniMaxNodeControls({ nodeId, nodeData }: Props) {
           <button
             type="button"
             className="ff-minimax-action nodrag"
-            disabled={request.errors.length > 0}
+            disabled={workflowRunning || request.errors.length > 0}
             onClick={handleGenerate}
           >
             Generate
@@ -802,14 +803,14 @@ export default function MiniMaxNodeControls({ nodeId, nodeData }: Props) {
       )}
 
       {savedPredictionCanResume && (
-        <button type="button" className="ff-minimax-action nodrag" onClick={() => void pollPrediction(params.prediction_id)}>
+        <button type="button" className="ff-minimax-action nodrag" disabled={workflowRunning} onClick={() => void pollPrediction(params.prediction_id)}>
           Resume checking
         </button>
       )}
       {pollError && params.prediction_id && (
         <div className="ff-minimax-poll-error">
           {pollError && <span>{pollError}</span>}
-          <button type="button" className="ff-minimax-action nodrag" onClick={() => void pollPrediction(params.prediction_id)}>
+          <button type="button" className="ff-minimax-action nodrag" disabled={workflowRunning} onClick={() => void pollPrediction(params.prediction_id)}>
             Retry polling
           </button>
         </div>
@@ -820,7 +821,7 @@ export default function MiniMaxNodeControls({ nodeId, nodeData }: Props) {
           <span>This will spend about ${estimatedMinimum.toFixed(2)} or more. Continue?</span>
           <div>
             <button type="button" onClick={() => setConfirmationOpen(false)}>Back</button>
-            <button type="button" onClick={() => {
+            <button type="button" disabled={workflowRunning} onClick={() => {
               setConfirmationOpen(false);
               void submitGeneration();
             }}>Continue</button>

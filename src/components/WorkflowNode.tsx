@@ -21,6 +21,9 @@ import { FLUX3_VIDEO_NODE_TYPE } from "@/lib/flux3-video";
 import WanNodeControls from "@/components/WanNodeControls";
 import { MINIMAX_NODE_TYPE } from "@/lib/minimax";
 import MiniMaxNodeControls from "@/components/MiniMaxNodeControls";
+import { isAtlasVideoNode, outputPreviewType, previewMediaType } from "@/lib/media-preview";
+import { usePlayableVideo } from "@/lib/use-playable-video";
+import type { PortType } from "@/lib/types";
 import {
   PROMPT_ASSISTANT_IMAGE_INPUTS,
   PROMPT_ASSISTANT_MODELS,
@@ -32,13 +35,6 @@ export const WorkflowRunContext = createContext<{
   isRunning: boolean;
   openEditor: () => void;
 } | null>(null);
-
-function mediaType(value: unknown): "video" | "image" | null {
-  if (typeof value !== "string" || !value) return null;
-  if (/\.(mp4|webm|mov)(\?|$)/i.test(value)) return "video";
-  if (/^data:image\//.test(value) || /\.(png|jpe?g|webp|gif)(\?|$)/i.test(value)) return "image";
-  return null;
-}
 
 function mediaFileType(blob: Blob, sourceUrl: string) {
   const extensions: Record<string, { type: string; extension: string }> = {
@@ -228,17 +224,43 @@ function PreviewSendAction({ sourceUrl, nodeLabel }: { sourceUrl: string; nodeLa
   );
 }
 
-function Media({ value, previewLabel }: { value: unknown; previewLabel?: string }) {
+function VideoPreview({ url, atlas }: { url: string; atlas: boolean }) {
+  const [failed, setFailed] = useState(false);
+  const playable = usePlayableVideo(atlas && /^https?:\/\//i.test(url) ? url : undefined);
+  const source = atlas && /^https?:\/\//i.test(url) ? playable.src : url;
+
+  if (playable.error) {
+    return <div className="ff-media-send-error ff-log" role="alert">Could not load video preview: {playable.error}. Use Download to open the original.</div>;
+  }
+  if (!source) return <div className="ff-log" role="status">Loading video preview...</div>;
+  return (
+    <>
+      <video className="ff-media nodrag" src={source} controls loop muted onError={() => setFailed(true)} />
+      {failed && <div className="ff-media-send-error ff-log" role="alert">The browser could not play this video. Use Download to open the original.</div>}
+    </>
+  );
+}
+
+function Media({ value, type: declaredType, atlasVideo, previewLabel }: {
+  value: unknown;
+  type?: PortType;
+  atlasVideo: boolean;
+  previewLabel?: string;
+}) {
+  const [imageError, setImageError] = useState(false);
   if (typeof value !== "string" || !value) return null;
-  const type = mediaType(value);
+  const type = previewMediaType(value, declaredType);
   if (!type) return null;
 
   return (
     <>
       {type === "video" ? (
-        <video className="ff-media nodrag" src={value} controls loop muted />
+        <VideoPreview key={value} url={value} atlas={atlasVideo} />
       ) : (
-        <img className="ff-media" src={value} alt="" />
+        <>
+          <img className="ff-media" src={value} alt="" onError={() => setImageError(true)} onLoad={() => setImageError(false)} />
+          {imageError && <div className="ff-media-send-error ff-log" role="alert">Could not load image preview. Use Download to open the original.</div>}
+        </>
       )}
       <div className="ff-media-actions">
         <a className="ff-download" href={value} target="_blank" rel="noreferrer">Download</a>
@@ -273,6 +295,15 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const isMiniMax = d.type === MINIMAX_NODE_TYPE;
   const isFlux3 = d.type === FLUX3_NODE_TYPE;
   const isFlux3Video = d.type === FLUX3_VIDEO_NODE_TYPE;
+  const previewEdge = isPreviewNode
+    ? renderedEdges.find((edge) => edge.target === id && edge.targetHandle === "media")
+    : undefined;
+  const previewSource = previewEdge ? getNode(previewEdge.source) : undefined;
+  const previewSourceType = typeof previewSource?.data.type === "string" ? previewSource.data.type : "";
+  const previewInputType = previewEdge?.sourceHandle
+    ? registry[previewSourceType]?.outputs[previewEdge.sourceHandle]
+    : undefined;
+  const atlasVideo = isAtlasVideoNode(isPreviewNode ? previewSourceType : d.type);
   const isOmniImage = d.type === "input/image" && (
     d.omniAutoCreatedFor
     || renderedEdges.some((edge) => edge.source === id
@@ -929,6 +960,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       return;
     }
     if (isOmni && key === "task") {
+      if (value === OMNI_TASKS["Extend video"] && Number(d.params.duration) > 10) setParam("duration", "10");
       void syncOmniInputs(value);
       return;
     }
@@ -979,7 +1011,8 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     if (isOmni && key === "model") {
       const original = value === OMNI_MODELS["Gemini Omni Flash (original)"];
       const resolution = String(d.params.resolution);
-      if (original && resolution !== "720p" && resolution !== "360p") setParam("resolution", "720p");
+      if (original && resolution !== "720p") setParam("resolution", "720p");
+      if (value !== OMNI_MODELS["Gemini Omni 1.2 Flash"] && Number(d.params.duration) > 10) setParam("duration", "10");
       if (original && d.params.task === OMNI_TASKS["Extend video"]) {
         void syncOmniInputs(OMNI_TASKS["Text to video"], value);
       } else {
@@ -1098,6 +1131,8 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   );
   const omniTask = String(d.params?.task ?? OMNI_TASKS["Text to video"]);
   const omniOriginal = d.params?.model === OMNI_MODELS["Gemini Omni Flash (original)"];
+  const omni11 = d.params?.model === OMNI_MODELS["Gemini Omni 1.1 Flash"];
+  const omni12 = d.params?.model === OMNI_MODELS["Gemini Omni 1.2 Flash"];
   const omniMaxReferences = omniOriginal ? 5 : 10;
   const omniPromptEdge = renderedEdges.find((edge) => edge.target === id && edge.targetHandle === "prompt");
   const omniPromptNode = omniPromptEdge ? getNode(omniPromptEdge.source) : undefined;
@@ -1129,7 +1164,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         : priorDuration;
     }
     const duration = Number(sourceParams.duration);
-    return Number.isInteger(duration) && duration >= 3 && duration <= 10 ? duration : null;
+    return Number.isInteger(duration) && duration >= 3 && duration <= 15 ? duration : null;
   };
   const omniSourceDuration = omniSourceEdge ? omniVideoDuration(omniSourceEdge.source) : null;
   const omniChainTotal = omniTask === OMNI_TASKS["Extend video"] && omniSourceDuration !== null
@@ -1420,10 +1455,10 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       {d.type === "video/google-omni" && (
         <div className="ff-node-notice">Atlas Cloud API connected for Gemini Omni Flash text, image, reference, and video-edit tasks.</div>
       )}
-      {isWan && <WanNodeControls nodeId={id} nodeData={d} />}
-      {isMiniMax && <MiniMaxNodeControls nodeId={id} nodeData={d} />}
-      {isFlux3 && <Flux3NodeControls nodeId={id} nodeData={d} />}
-      {isFlux3Video && <Flux3VideoNodeControls nodeId={id} nodeData={d} />}
+      {isWan && <WanNodeControls nodeId={id} nodeData={d} workflowRunning={Boolean(runControl?.isRunning)} />}
+      {isMiniMax && <MiniMaxNodeControls nodeId={id} nodeData={d} workflowRunning={Boolean(runControl?.isRunning)} />}
+      {isFlux3 && <Flux3NodeControls nodeId={id} nodeData={d} workflowRunning={Boolean(runControl?.isRunning)} />}
+      {isFlux3Video && <Flux3VideoNodeControls nodeId={id} nodeData={d} workflowRunning={Boolean(runControl?.isRunning)} />}
       {seedanceImageToVideo && (
         <div className="ff-node-hint">
           Connect any image output directly to First frame or Last frame; Run executes upstream nodes first.
@@ -1455,7 +1490,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
             </div>
             {isOmni && name === "prompt" && (
               <>
-                <div className="ff-node-hint">Refer to references as &lt;IMAGE_REF_0&gt;, &lt;IMAGE_REF_1&gt;, &lt;VIDEO_REF_0&gt; (0-based, in connection order).</div>
+                <div className="ff-node-hint">{omni12
+                  ? "Describe how to use each reference in natural language; reference tags are deprecated for Omni 1.2."
+                  : "Refer to references as <IMAGE_REF_0>, <IMAGE_REF_1>, <VIDEO_REF_0> (0-based, in connection order)."}</div>
                 <div className={`ff-omni-note${omniPrompt.length > 20000 ? " ff-omni-warning" : ""}`}>
                   Prompt maximum: 20,000 characters ({omniPrompt.length}/20,000).
                 </div>
@@ -1739,7 +1776,11 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         <div className="ff-node-warning">{omniTask === OMNI_TASKS["Edit video"] ? "Edit video" : "Extend video"} requires a source video.</div>
       )}
       {isOmni && omniTask === OMNI_TASKS["Ingredients to video"] && (
-        <div className="ff-omni-note">Reference videos: up to 3, MP4 only, 3 seconds or shorter, and must be public URLs.</div>
+        <div className="ff-omni-note">Reference videos: up to 3, MP4 only, 3 seconds or shorter, and must be public URLs.
+          {omni12 && " For durations over 10 seconds, only one reference video is supported."}</div>
+      )}
+      {isOmni && omni12 && omniTask === OMNI_TASKS["Image to video"] && (
+        <div className="ff-omni-note">Using a last frame limits duration to 10 seconds.</div>
       )}
       {isOmni && [
         OMNI_TASKS["Image to video"],
@@ -1752,18 +1793,18 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       {isOmni && (omniTask === OMNI_TASKS["Edit video"] || omniTask === OMNI_TASKS["Extend video"]) && (
         <>
           <div className="ff-omni-note">
-            Source video: MP4, public URL. Extend sources must be 10 seconds or shorter; total chain must not exceed 40 seconds.
+            Source video: MP4, public URL.
+            {omni11 && " Omni 1.1 sources must be 10 seconds or shorter; extension chains must not exceed 40 seconds."}
+            {omni12 && omniTask === OMNI_TASKS["Edit video"] && " Omni 1.2 edit sources must be 3 to 15 seconds long."}
+            {omni12 && omniTask === OMNI_TASKS["Extend video"] && " Omni 1.2 uses the last 10 seconds as context."}
           </div>
-          {omniTask === OMNI_TASKS["Extend video"] && (
-            <div className="ff-omni-note">To go beyond 10 seconds, connect the output of one Extend or Omni node into another.</div>
-          )}
-          {omniTask === OMNI_TASKS["Extend video"] && omniChainTotal !== null && (
+          {omni11 && omniTask === OMNI_TASKS["Extend video"] && omniChainTotal !== null && (
             <div className={`ff-omni-note${omniChainTotal > 40 ? " ff-omni-warning" : ""}`}>
               Chain total: {omniChainTotal} s of 40 s
             </div>
           )}
-          {omniTask === OMNI_TASKS["Extend video"] && omniSourceDuration !== null && omniSourceDuration > 10 && (
-            <div className="ff-node-warning">Extend video sources must be 10 seconds or shorter.</div>
+          {omni11 && omniSourceDuration !== null && omniSourceDuration > 10 && (
+            <div className="ff-node-warning">Omni 1.1 source videos must be 10 seconds or shorter.</div>
           )}
         </>
       )}
@@ -1798,6 +1839,8 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         if (seedanceImageToVideo && param.key === "bitrate_mode") return false;
         if (isOmni && param.key === "aspect_ratio"
           && [OMNI_TASKS["Edit video"], OMNI_TASKS["Extend video"]].includes(omniTask as never)) return false;
+        if (isOmni && !omniOriginal && omniTask === OMNI_TASKS["Edit video"]
+          && ["duration", "resolution"].includes(param.key)) return false;
         if (isKling && param.key === "aspect_ratio" && !klingAspectVisible) return false;
         if (isKling && param.key === "resolution" && klingIsV3) return false;
         if (isKling && param.key === "sound" && !klingIsV3) return false;
@@ -1823,7 +1866,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
               const options = p.optionsByParam
                 ? p.optionsByParam.values[d.params[p.optionsByParam.param]] ?? p.options ?? []
                 : p.options ?? [];
-              const actualOptions = isKling && p.key === "aspect_ratio"
+              const actualOptions = isOmni && p.key === "duration"
+                ? options.filter((option) => Number(option) <= (omni12 && omniTask !== OMNI_TASKS["Extend video"] ? 15 : 10))
+                : isKling && p.key === "aspect_ratio"
                 ? klingAspectOptions
                 : seedanceImageToVideo && p.key === "resolution"
                   ? options.filter((option) => ["480p", "720p", "1080p"].includes(option))
@@ -1996,10 +2041,17 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         </div>
       ))}
 
-      {Object.values(isFlux3Video || isMiniMax ? {} : d.outputs ?? {}).map((v, i) => (
-        <Media key={i} value={v} previewLabel={isPreviewNode ? d.title || def.label || "workflow" : undefined} />
+      {Object.entries(isFlux3Video || isMiniMax ? {} : d.outputs ?? {}).map(([name, value]) => (
+        <Media
+          key={name}
+          value={value}
+          type={outputPreviewType(name, def.outputs, previewInputType)}
+          atlasVideo={atlasVideo}
+          previewLabel={isPreviewNode ? d.title || def.label || "workflow" : undefined}
+        />
       ))}
-      {isPreviewNode && !Object.values(d.outputs ?? {}).some((value) => mediaType(value)) && (
+      {isPreviewNode && !Object.entries(d.outputs ?? {}).some(([name, value]) =>
+        previewMediaType(value, outputPreviewType(name, def.outputs, previewInputType))) && (
         <div className="ff-media-actions">
           <button
             type="button"

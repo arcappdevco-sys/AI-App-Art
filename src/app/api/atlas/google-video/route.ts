@@ -17,6 +17,18 @@ const MODEL_FIELDS: Record<string, string[]> = {
   "google/gemini-omni-flash/image-to-video": ["prompt", "image", "last_image", "duration", "resolution", "aspect_ratio", "thinking_level", "seed"],
   "google/gemini-omni-flash/reference-to-video": ["prompt", "images", "duration", "resolution", "aspect_ratio", "thinking_level", "seed"],
   "google/gemini-omni-flash/video-edit": ["prompt", "video", "images", "duration", "resolution", "thinking_level", "seed"],
+  ...Object.fromEntries(["1.1", "1.2"].flatMap((version) => {
+    const prefix = `google/gemini-omni-${version}-flash`;
+    const common = ["prompt", "thinking_level", "seed"];
+    const generation = [...common, "duration", "resolution", "aspect_ratio"];
+    return [
+      [`${prefix}/text-to-video`, generation],
+      [`${prefix}/image-to-video`, [...generation, "image", "last_image"]],
+      [`${prefix}/reference-to-video`, [...generation, "reference_images", "reference_videos"]],
+      [`${prefix}/video-edit`, [...common, "video", "reference_images"]],
+      [`${prefix}/video-extend`, [...common, "video", "reference_images", "duration", "resolution"]],
+    ];
+  })),
 };
 
 function atlasError(payload: unknown, fallback: string) {
@@ -65,18 +77,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Image-to-video requires a valid first-frame image." }, { status: 400 });
     }
   }
-  if (model.endsWith("/reference-to-video")
-    && (!Array.isArray(body.images) || body.images.length < 1 || body.images.length > 3
+  const modernOmni = /^google\/gemini-omni-1\.[12]-flash\//.test(model);
+  const omni12 = model.startsWith("google/gemini-omni-1.2-flash/");
+  const maxLegacyReferences = model.startsWith("google/gemini-omni-flash/") ? 5 : 3;
+  if (model.endsWith("/reference-to-video") && !modernOmni
+    && (!Array.isArray(body.images) || body.images.length < 1 || body.images.length > maxLegacyReferences
       || body.images.some((image) => typeof image !== "string" || image.length > MAX_IMAGE_LENGTH))) {
-    return NextResponse.json({ error: "Reference-to-video requires one to three valid reference images." }, { status: 400 });
+    return NextResponse.json({ error: `Reference-to-video requires one to ${maxLegacyReferences} valid reference images.` }, { status: 400 });
+  }
+  if (modernOmni && model.endsWith("/reference-to-video")
+    && !(Array.isArray(body.reference_images) && body.reference_images.length > 0)
+    && !(Array.isArray(body.reference_videos) && body.reference_videos.length > 0)) {
+    return NextResponse.json({ error: "Connect at least one reference image or video." }, { status: 400 });
   }
   if (model.endsWith("/start-end-frame-to-video")
     && (typeof body.last_image !== "string" || !body.last_image || body.last_image.length > MAX_IMAGE_LENGTH)) {
     return NextResponse.json({ error: "Start-end-frame-to-video requires a valid last-frame image." }, { status: 400 });
   }
-  if (model.endsWith("/video-edit")
+  if ((model.endsWith("/video-edit") || model.endsWith("/video-extend"))
     && (typeof body.video !== "string" || !body.video || body.video.length > MAX_VIDEO_LENGTH)) {
-    return NextResponse.json({ error: "Video Edit requires a valid source video." }, { status: 400 });
+    return NextResponse.json({ error: "Video edit or extend requires a valid source video." }, { status: 400 });
   }
   for (const key of ["image", "last_image"] as const) {
     if (body[key] !== undefined && (typeof body[key] !== "string" || body[key].length > MAX_IMAGE_LENGTH)) {
@@ -87,12 +107,30 @@ export async function POST(request: Request) {
     || body.images.some((image) => typeof image !== "string" || image.length > MAX_IMAGE_LENGTH))) {
     return NextResponse.json({ error: "Reference images must be valid image URLs or data URIs." }, { status: 400 });
   }
+  if (body.reference_images !== undefined && (!Array.isArray(body.reference_images)
+    || body.reference_images.length < 1 || body.reference_images.length > 10
+    || body.reference_images.some((image) => typeof image !== "string" || !image || image.length > MAX_IMAGE_LENGTH))) {
+    return NextResponse.json({ error: "Provide up to 10 valid reference images." }, { status: 400 });
+  }
+  if (body.reference_videos !== undefined && (!Array.isArray(body.reference_videos)
+    || body.reference_videos.length < 1 || body.reference_videos.length > 3
+    || body.reference_videos.some((video) => typeof video !== "string" || !video || video.length > MAX_VIDEO_LENGTH))) {
+    return NextResponse.json({ error: "Provide up to 3 valid reference videos." }, { status: 400 });
+  }
   if (body.video !== undefined && (typeof body.video !== "string" || body.video.length > MAX_VIDEO_LENGTH)) {
     return NextResponse.json({ error: "Video must be a valid URL or data URI." }, { status: 400 });
   }
+  const maxDuration = omni12 && !model.endsWith("/video-extend") ? 15 : 10;
   if (body.duration !== undefined && (typeof body.duration !== "number" || !Number.isInteger(body.duration)
-    || body.duration < 3 || body.duration > 10)) {
-    return NextResponse.json({ error: "Duration must be a whole number from 3 to 10 seconds." }, { status: 400 });
+    || body.duration < 3 || body.duration > maxDuration)) {
+    return NextResponse.json({ error: `Duration must be a whole number from 3 to ${maxDuration} seconds.` }, { status: 400 });
+  }
+  if (omni12 && Number(body.duration) > 10 && model.endsWith("/image-to-video") && body.last_image) {
+    return NextResponse.json({ error: "A last frame requires a duration of 10 seconds or less." }, { status: 400 });
+  }
+  if (omni12 && Number(body.duration) > 10 && model.endsWith("/reference-to-video")
+    && Array.isArray(body.reference_videos) && body.reference_videos.length > 1) {
+    return NextResponse.json({ error: "Durations over 10 seconds support at most one reference video." }, { status: 400 });
   }
   if (model.startsWith("google/veo3.1") && body.duration !== undefined
     && ![4, 6, 8].includes(Number(body.duration))) {

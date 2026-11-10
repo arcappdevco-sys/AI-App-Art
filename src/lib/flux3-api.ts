@@ -12,22 +12,23 @@ async function flux3Error(response: Response, fallback: string) {
   return `${fallback} (${response.status}).`;
 }
 
-export async function uploadFlux3Media(file: File) {
+export async function uploadFlux3Media(file: File, signal?: AbortSignal) {
   const form = new FormData();
   form.append("action", "flux3_upload");
   form.append("file", file, file.name);
-  const response = await fetch(ROUTE, { method: "POST", body: form });
+  const response = await fetch(ROUTE, { method: "POST", body: form, signal });
   if (!response.ok) throw new Error(await flux3Error(response, "Atlas media upload failed"));
   const result = await response.json() as { url?: unknown };
   if (typeof result.url !== "string" || !result.url) throw new Error("Atlas upload did not return a public media URL.");
   return result.url;
 }
 
-export async function submitFlux3Prediction(body: Record<string, unknown>) {
+export async function submitFlux3Prediction(body: Record<string, unknown>, signal?: AbortSignal) {
   const response = await fetch(ROUTE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "flux3_generate", body }),
+    signal,
   });
   if (!response.ok) throw new Error(await flux3Error(response, "Atlas could not start the generation"));
   const result = await response.json() as { predictionId?: unknown; status?: unknown };
@@ -42,22 +43,23 @@ export async function submitFlux3Prediction(body: Record<string, unknown>) {
 
 export type Flux3Prediction = { status: string; outputs?: unknown; error?: unknown };
 
-export async function uploadFlux3VideoMedia(file: File) {
+export async function uploadFlux3VideoMedia(file: File, signal?: AbortSignal) {
   const form = new FormData();
   form.append("action", "flux3_video_upload");
   form.append("file", file, file.name);
-  const response = await fetch(ROUTE, { method: "POST", body: form });
+  const response = await fetch(ROUTE, { method: "POST", body: form, signal });
   if (!response.ok) throw new Error(await flux3Error(response, "Atlas media upload failed"));
   const result = await response.json() as { url?: unknown };
   if (typeof result.url !== "string" || !result.url) throw new Error("Atlas upload did not return a public media URL.");
   return result.url;
 }
 
-export async function submitFlux3VideoPrediction(body: Record<string, unknown>) {
+export async function submitFlux3VideoPrediction(body: Record<string, unknown>, signal?: AbortSignal) {
   const response = await fetch(ROUTE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "flux3_video_generate", body }),
+    signal,
   });
   if (!response.ok) throw new Error(await flux3Error(response, "Atlas could not start the generation"));
   const result = await response.json() as { predictionId?: unknown; status?: unknown };

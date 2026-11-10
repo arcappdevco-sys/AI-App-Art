@@ -29,6 +29,7 @@ import { wanDataUrlToFile } from "@/lib/wan-api";
 type Props = {
   nodeId: string;
   nodeData: Record<string, unknown>;
+  workflowRunning: boolean;
 };
 
 type FlowNode = ReturnType<typeof useNodes>[number];
@@ -125,7 +126,7 @@ function Flux3InputPort({ id, label, type }: { id: string; label: string; type: 
   );
 }
 
-export default function Flux3NodeControls({ nodeId, nodeData }: Props) {
+export default function Flux3NodeControls({ nodeId, nodeData, workflowRunning }: Props) {
   const nodes = useNodes();
   const edges = useEdges();
   const { addEdges, addNodes, deleteElements, getEdges, getNode, getNodes, updateNodeData } = useReactFlow();
@@ -166,19 +167,17 @@ export default function Flux3NodeControls({ nodeId, nodeData }: Props) {
   };
 
   const lastStatusRef = useRef("");
-  const nodeStatusRef = useRef("idle");
 
   const setFlux3State = (
     line: string,
     detail = "",
     status: "idle" | "running" | "done" | "error" = "idle",
   ) => {
-    if (!mounted.current || !getNode(nodeId)) return;
+    const node = getNode(nodeId);
+    if (!mounted.current || !node) return;
     setStatusLine(line);
     setStatusDetail(detail);
-    // Only write node data when the status actually changes, so polling doesn't re-render the whole node.
-    if (nodeStatusRef.current !== status) {
-      nodeStatusRef.current = status;
+    if (node.data.status !== status) {
       updateNodeData(nodeId, { status });
     }
   };
@@ -612,7 +611,7 @@ export default function Flux3NodeControls({ nodeId, nodeData }: Props) {
       {generationError && <div className="ff-flux3-warning">{generationError}</div>}
 
       <div className="ff-flux3-status" role="status" aria-live="polite">
-        <strong>{uploadStatus || statusLine}</strong>
+        <strong>{active ? uploadStatus || statusLine : nodeData.status === "running" || nodeData.status === "queued" ? "Workflow running" : nodeData.status === "error" ? "Failed" : urls.length ? "Completed" : statusLine}</strong>
         {statusDetail && <span>{statusDetail}</span>}
       </div>
 
@@ -634,7 +633,7 @@ export default function Flux3NodeControls({ nodeId, nodeData }: Props) {
         <button
           type="button"
           className="ff-flux3-action nodrag"
-          disabled={active || request.errors.length > 0}
+          disabled={active || workflowRunning || request.errors.length > 0}
           title={request.errors[0]}
           onClick={handleGenerate}
         >
@@ -649,14 +648,14 @@ export default function Flux3NodeControls({ nodeId, nodeData }: Props) {
       )}
 
       {savedPredictionCanResume && (
-        <button type="button" className="ff-flux3-action nodrag" onClick={() => void pollPrediction(params.prediction_id)}>
+        <button type="button" className="ff-flux3-action nodrag" disabled={workflowRunning} onClick={() => void pollPrediction(params.prediction_id)}>
           Resume checking
         </button>
       )}
       {pollError && params.prediction_id && (
         <div className="ff-flux3-poll-error">
           <span>{pollError}</span>
-          <button type="button" className="ff-flux3-action nodrag" onClick={() => void pollPrediction(params.prediction_id)}>
+          <button type="button" className="ff-flux3-action nodrag" disabled={workflowRunning} onClick={() => void pollPrediction(params.prediction_id)}>
             Retry polling
           </button>
         </div>
@@ -672,7 +671,7 @@ export default function Flux3NodeControls({ nodeId, nodeData }: Props) {
           <span>This will spend about ${rate.toFixed(2)} or more. Continue?</span>
           <div>
             <button type="button" onClick={() => setConfirmationOpen(false)}>Back</button>
-            <button type="button" onClick={() => {
+            <button type="button" disabled={workflowRunning} onClick={() => {
               setConfirmationOpen(false);
               void submitGeneration();
             }}>Continue</button>

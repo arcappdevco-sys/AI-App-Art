@@ -32,6 +32,7 @@ import { usePlayableVideo } from "@/lib/use-playable-video";
 type Props = {
   nodeId: string;
   nodeData: Record<string, unknown>;
+  workflowRunning: boolean;
 };
 
 type FlowNode = ReturnType<typeof useNodes>[number];
@@ -155,7 +156,7 @@ function validHandles(task: string, keyframeCount: number) {
   return handles;
 }
 
-export default function Flux3VideoNodeControls({ nodeId, nodeData }: Props) {
+export default function Flux3VideoNodeControls({ nodeId, nodeData, workflowRunning }: Props) {
   const nodes = useNodes();
   const edges = useEdges();
   const { deleteElements, getEdges, getNode, updateNodeData } = useReactFlow();
@@ -197,19 +198,17 @@ export default function Flux3VideoNodeControls({ nodeId, nodeData }: Props) {
   };
 
   const lastStatusRef = useRef("");
-  const nodeStatusRef = useRef("idle");
 
   const setVideoState = (
     line: string,
     detail = "",
     status: "idle" | "running" | "done" | "error" = "idle",
   ) => {
-    if (!mounted.current || !getNode(nodeId)) return;
+    const node = getNode(nodeId);
+    if (!mounted.current || !node) return;
     setStatusLine(line);
     setStatusDetail(detail);
-    // Only write node data when the status actually changes, so polling doesn't re-render the whole node.
-    if (nodeStatusRef.current !== status) {
-      nodeStatusRef.current = status;
+    if (node.data.status !== status) {
       updateNodeData(nodeId, { status });
     }
   };
@@ -665,7 +664,7 @@ export default function Flux3VideoNodeControls({ nodeId, nodeData }: Props) {
         <div className="ff-flux3-confirm">
           <div>This will spend about {estimate !== null ? `$${estimate.toFixed(2)}` : `$${rate.toFixed(2)} per source second`} on Atlas.</div>
           <div>
-            <button type="button" className="nodrag" onClick={() => { setConfirmationOpen(false); void submitGeneration(); }}>
+            <button type="button" className="nodrag" disabled={workflowRunning} onClick={() => { setConfirmationOpen(false); void submitGeneration(); }}>
               Confirm and generate
             </button>
             <button type="button" className="nodrag" onClick={() => setConfirmationOpen(false)}>Cancel</button>
@@ -674,7 +673,7 @@ export default function Flux3VideoNodeControls({ nodeId, nodeData }: Props) {
       )}
 
       <div className="ff-flux3-actions">
-        <button type="button" className="ff-flux3-action nodrag" disabled={active} onClick={handleGenerate}>
+        <button type="button" className="ff-flux3-action nodrag" disabled={active || workflowRunning} onClick={handleGenerate}>
           Generate
         </button>
         <button
@@ -696,6 +695,7 @@ export default function Flux3VideoNodeControls({ nodeId, nodeData }: Props) {
           <button
             type="button"
             className="ff-flux3-action ff-flux3-secondary nodrag"
+            disabled={workflowRunning}
             onClick={() => void pollPrediction(params.prediction_id)}
           >
             Resume checking
@@ -705,6 +705,7 @@ export default function Flux3VideoNodeControls({ nodeId, nodeData }: Props) {
           <button
             type="button"
             className="ff-flux3-action ff-flux3-secondary nodrag"
+            disabled={workflowRunning}
             onClick={() => void pollPrediction(params.prediction_id)}
           >
             Retry polling
@@ -740,7 +741,7 @@ export default function Flux3VideoNodeControls({ nodeId, nodeData }: Props) {
       )}
 
       <div className="ff-flux3-status">
-        <strong>{statusLine === "Idle" && urls.length ? "Completed" : statusLine}</strong>
+        <strong>{active ? statusLine : nodeData.status === "running" || nodeData.status === "queued" ? "Workflow running" : nodeData.status === "error" ? "Failed" : urls.length ? "Completed" : statusLine}</strong>
         {statusDetail && <small> {statusDetail}</small>}
       </div>
     </section>

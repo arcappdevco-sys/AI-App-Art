@@ -607,17 +607,48 @@ export default function Page() {
     setValidationIssues(issues);
     setShowValidation(issues.length > 0);
     if (issues.some((issue) => issue.severity === "error")) return;
+    if (nodes.some((node) => (node.data as { status?: string }).status === "running")) {
+      alert("Wait for the current node generation to finish or stop waiting before running the workflow.");
+      return;
+    }
+    const inScope = new Set<string>();
+    const addUpstream = (id: string) => {
+      if (inScope.has(id)) return;
+      inScope.add(id);
+      graph.edges.filter((edge) => edge.target === id).forEach((edge) => addUpstream(edge.source));
+    };
+    (targetIds ?? graph.nodes.map((node) => node.id)).forEach(addUpstream);
+    const generators = graph.nodes.filter((node) => {
+      const def = registry[node.type];
+      return inScope.has(node.id) && def && !["Input", "Output", "Assistant"].includes(def.category);
+    });
+    if (generators.length && !window.confirm(
+      `This run may submit ${generators.length} AI generation node${generators.length === 1 ? "" : "s"} (${generators.map((node) => registry[node.type].label).join(", ")}). Provider charges may apply. Stopping only stops waiting; submitted jobs may still be billed. Continue?`,
+    )) return;
     runInProgress.current = true;
     setIsRunning(true);
     abort.current = new AbortController();
     try {
       await runGraph(graph, {
         cache: cache.current,
+        fresh: !targetIds,
         ...(targetIds ? { targetIds } : {}),
         signal: abort.current.signal,
         onStatus: (id, status: NodeStatus, info) =>
           patch(id, info === undefined ? { status } : { status, log: info }),
         onOutput: (id, outputs) => patch(id, { outputs }),
+        onParams: (id, params) => setNodes((current) => current.map((node) => {
+          if (node.id !== id) return node;
+          const currentParams = isRecord(node.data.params) ? node.data.params : {};
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              params: { ...currentParams, ...params },
+              ...(params.prediction_id ? { outputs: {} } : {}),
+            },
+          };
+        })),
       });
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : String(e));
@@ -774,7 +805,7 @@ export default function Page() {
                 aria-label="Select workflow"
                 value={activeWorkflowId}
                 onChange={(event) => switchWorkflow(event.target.value)}
-                disabled={workflows.length === 0}
+                disabled={isRunning || workflows.length === 0}
               >
                 {workflows.map((workflow) => (
                   <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
@@ -803,14 +834,14 @@ export default function Page() {
         <div className="ff-toolbar-actions">
           {activeView === "workflow" ? (
             <>
-          <button className="ff-toolbar-button" onClick={createWorkflow} disabled={!storageReady}>New</button>
-          <button className="ff-toolbar-button" onClick={deleteWorkflow} disabled={!storageReady || workflows.length <= 1}>Delete</button>
-          <button className="ff-toolbar-button" onClick={clearCanvas} disabled={!storageReady}>Clear</button>
+          <button className="ff-toolbar-button" onClick={createWorkflow} disabled={!storageReady || isRunning}>New</button>
+          <button className="ff-toolbar-button" onClick={deleteWorkflow} disabled={!storageReady || isRunning || workflows.length <= 1}>Delete</button>
+          <button className="ff-toolbar-button" onClick={clearCanvas} disabled={!storageReady || isRunning}>Clear</button>
           <button className="ff-toolbar-button" onClick={() => saveWorkflowLocally(true)} disabled={!storageReady}>Save</button>
           <button className="ff-toolbar-button" onClick={exportJSON} disabled={!storageReady}>Export</button>
           <label className="ff-toolbar-button ff-open">
             Import
-            <input type="file" accept=".json,application/json" hidden disabled={!storageReady} onChange={(event) => {
+            <input type="file" accept=".json,application/json" hidden disabled={!storageReady || isRunning} onChange={(event) => {
               void importWorkflow(event.target.files?.[0]);
               event.target.value = "";
             }} />

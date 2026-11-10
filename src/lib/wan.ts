@@ -489,7 +489,7 @@ export function buildWanRequest(node: WanNodeLike, resolvedInputs: WanResolvedIn
     warnings.push("Enhanced tiers upscale the render and cost more (exact pricing unverified on Atlas).");
   }
   const validationBody = structuredClone(body);
-  const placeholderUrl = "https://wan-local-placeholder.invalid/media";
+  const placeholderUrl = "https://example.com/media";
   const replaceLocalUrl = (value: unknown) => value === "[local file uploaded during generation]" ? placeholderUrl : value;
   for (const key of ["image", "last_image", "file"]) {
     if (key in validationBody) validationBody[key] = replaceLocalUrl(validationBody[key]);

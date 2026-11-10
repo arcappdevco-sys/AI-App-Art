@@ -1,4 +1,5 @@
 export const OMNI_MODELS = {
+  "Gemini Omni 1.2 Flash": "google/gemini-omni-1.2-flash",
   "Gemini Omni 1.1 Flash": "google/gemini-omni-1.1-flash",
   "Gemini Omni Flash (original)": "google/gemini-omni-flash",
 } as const;
@@ -12,6 +13,13 @@ export const OMNI_TASKS = {
 } as const;
 
 export const OMNI_RATES: Record<string, Record<string, number>> = {
+  [OMNI_MODELS["Gemini Omni 1.2 Flash"]]: {
+    "text-to-video": 0.023,
+    "image-to-video": 0.023,
+    "reference-to-video": 0.023,
+    "video-edit": 0.023,
+    "video-extend": 0.023,
+  },
   [OMNI_MODELS["Gemini Omni 1.1 Flash"]]: {
     "text-to-video": 0.037,
     "image-to-video": 0.039,
@@ -27,7 +35,6 @@ export const OMNI_RATES: Record<string, Record<string, number>> = {
   },
 };
 
-// Resolution tier may change the rate; these values are placeholders to verify.
 export const OMNI_DEFAULTS: Record<string, unknown> = {
   model: OMNI_MODELS["Gemini Omni Flash (original)"],
   task: OMNI_TASKS["Text to video"],
@@ -45,8 +52,8 @@ const omniTaskValues = Object.values(OMNI_TASKS);
 export function normalizeOmniParams(params: Record<string, unknown> = {}) {
   const savedModel = String(params.model ?? "");
   const modelAliases: Record<string, string> = {
-    "Gemini Omni 1.1 Flash": OMNI_MODELS["Gemini Omni Flash (original)"],
-    "google/gemini-omni-1.1-flash": OMNI_MODELS["Gemini Omni Flash (original)"],
+    "Gemini Omni 1.1 Flash": OMNI_MODELS["Gemini Omni 1.1 Flash"],
+    "Gemini Omni 1.2 Flash": OMNI_MODELS["Gemini Omni 1.2 Flash"],
     "Gemini Omni Flash": OMNI_MODELS["Gemini Omni Flash (original)"],
     "Gemini Omni Flash (original)": OMNI_MODELS["Gemini Omni Flash (original)"],
   };
@@ -72,7 +79,10 @@ export function normalizeOmniParams(params: Record<string, unknown> = {}) {
   }
   normalized.model = model;
   normalized.task = task;
-  normalized.duration = ["3", "4", "5", "6", "7", "8", "9", "10"].includes(String(params.duration))
+  const maxDuration = model === OMNI_MODELS["Gemini Omni 1.2 Flash"]
+    && task !== OMNI_TASKS["Extend video"] ? 15 : 10;
+  const savedDuration = Number(params.duration);
+  normalized.duration = Number.isInteger(savedDuration) && savedDuration >= 3 && savedDuration <= maxDuration
     ? String(params.duration)
     : OMNI_DEFAULTS.duration;
   normalized.aspect_ratio = ["16:9", "9:16"].includes(String(params.aspect_ratio))
@@ -120,9 +130,8 @@ function omniValidatePublicMp4(value: unknown, label: string) {
       || (ipv4[0] === 198 && (ipv4[1] === 18 || ipv4[1] === 19))
       || ipv4[0] >= 224);
   const isPrivateIpv6 = host === "[::]" || host === "[::1]" || host.startsWith("[fc") || host.startsWith("[fd")
-    || /^\\[fe[89ab]/i.test(host);
+    || /^\[fe[89ab]/i.test(host);
   if (!["http:", "https:"].includes(url.protocol)
-    || !/\.mp4$/i.test(url.pathname)
     || host === "localhost"
     || host.endsWith(".localhost")
     || host.endsWith(".local")
@@ -156,10 +165,7 @@ function omniValidateImages(images: unknown[], maxCount: number) {
 
 export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnectedInputs) {
   const savedModel = String(node.params.model ?? OMNI_DEFAULTS.model);
-  const rawModel = savedModel === OMNI_MODELS["Gemini Omni 1.1 Flash"]
-    || savedModel === "Gemini Omni 1.1 Flash"
-    ? OMNI_MODELS["Gemini Omni Flash (original)"]
-    : savedModel;
+  const rawModel = Object.entries(OMNI_MODELS).find(([label]) => label === savedModel)?.[1] ?? savedModel;
   const rawTask = String(node.params.task ?? OMNI_DEFAULTS.task);
   if (!Object.values(OMNI_MODELS).includes(rawModel as (typeof OMNI_MODELS)[keyof typeof OMNI_MODELS])) {
     throw new Error("Choose a valid Gemini Omni model.");
@@ -172,8 +178,10 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
     throw new Error("Gemini Omni Flash (original) does not support Extend video.");
   }
   const rawDuration = Number(node.params.duration ?? OMNI_DEFAULTS.duration);
-  if (!Number.isInteger(rawDuration) || rawDuration < 3 || rawDuration > 10) {
-    throw new Error("Duration must be a whole number from 3 to 10 seconds.");
+  const maxDuration = rawModel === OMNI_MODELS["Gemini Omni 1.2 Flash"]
+    && rawTask !== OMNI_TASKS["Extend video"] ? 15 : 10;
+  if (!Number.isInteger(rawDuration) || rawDuration < 3 || rawDuration > maxDuration) {
+    throw new Error(`Duration must be a whole number from 3 to ${maxDuration} seconds.`);
   }
   const rawResolution = String(node.params.resolution ?? OMNI_DEFAULTS.resolution);
   const supportedResolutions = rawModel === OMNI_MODELS["Gemini Omni Flash (original)"]
@@ -209,8 +217,8 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
   }
   if (!prompt.trim()) throw new Error("Connect a prompt.");
   if (prompt.length > 20000) throw new Error("Prompt must be 20,000 characters or fewer.");
-  if (!Number.isInteger(duration) || duration < 3 || duration > 10) {
-    throw new Error("Duration must be a whole number from 3 to 10 seconds.");
+  if (!Number.isInteger(duration) || duration < 3 || duration > maxDuration) {
+    throw new Error(`Duration must be a whole number from 3 to ${maxDuration} seconds.`);
   }
   if (!Number.isInteger(variations) || variations < 1 || variations > 4) {
     throw new Error("Variations must be between 1 and 4.");
@@ -239,6 +247,10 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
     seed: seedValue,
     variations,
   };
+  if (!original && task === OMNI_TASKS["Edit video"]) {
+    delete body.duration;
+    delete body.resolution;
+  }
   if (task !== OMNI_TASKS["Edit video"] && task !== OMNI_TASKS["Extend video"]) {
     body.aspect_ratio = params.aspect_ratio;
   }
@@ -248,6 +260,9 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
     omniValidateImages([connectedInputs.image], 1);
     body.image = connectedInputs.image;
     if (connectedInputs.last_image && !original) {
+      if (model === OMNI_MODELS["Gemini Omni 1.2 Flash"] && duration > 10) {
+        throw new Error("A last frame requires a duration of 10 seconds or less.");
+      }
       omniValidateImages([connectedInputs.last_image], 1);
       body.last_image = connectedInputs.last_image;
     }
@@ -265,6 +280,9 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
     }
     omniValidateImages(referenceImages, original ? 5 : 10);
     if (referenceVideos.length > 3) throw new Error("Up to 3 reference videos are supported.");
+    if (model === OMNI_MODELS["Gemini Omni 1.2 Flash"] && duration > 10 && referenceVideos.length > 1) {
+      throw new Error("Durations over 10 seconds support at most one reference video.");
+    }
     if (original && referenceVideos.length > 0) {
       throw new Error("Gemini Omni Flash (original) does not support reference videos.");
     }
@@ -282,8 +300,12 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
   if (task === OMNI_TASKS["Edit video"] || task === OMNI_TASKS["Extend video"]) {
     omniValidatePublicMp4(connectedInputs.video, "Source video");
     const sourceDuration = Number(connectedInputs.source_duration_seconds);
-    if (task === OMNI_TASKS["Extend video"] && sourceDuration > 10) {
-      throw new Error("Extend video sources must be 10 seconds or shorter.");
+    if (model === OMNI_MODELS["Gemini Omni 1.1 Flash"] && sourceDuration > 10) {
+      throw new Error("Gemini Omni 1.1 source videos must be 10 seconds or shorter.");
+    }
+    if (model === OMNI_MODELS["Gemini Omni 1.2 Flash"] && task === OMNI_TASKS["Edit video"]
+      && sourceDuration > 0 && (sourceDuration < 3 || sourceDuration > 15)) {
+      throw new Error("Gemini Omni 1.2 edit sources must be 3 to 15 seconds long.");
     }
     body.video = connectedInputs.video;
     if (referenceImages.length > 0) {
@@ -291,7 +313,7 @@ export function buildOmniRequest(node: OmniNodeLike, connectedInputs: OmniConnec
       body[original ? "images" : "reference_images"] = referenceImages;
     }
   }
-  if (task === OMNI_TASKS["Extend video"]) {
+  if (model === OMNI_MODELS["Gemini Omni 1.1 Flash"] && task === OMNI_TASKS["Extend video"]) {
     const chainDuration = Number(connectedInputs.chain_duration_seconds);
     if (Number.isFinite(chainDuration) && chainDuration > 0 && chainDuration + duration > 40) {
       throw new Error("The extended video chain must not exceed 40 seconds.");

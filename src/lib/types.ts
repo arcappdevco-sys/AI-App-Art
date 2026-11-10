@@ -20,6 +20,7 @@ export interface ExecCtx {
   params: Record<string, any>;
   log: (message: string) => void;
   signal?: AbortSignal;
+  updateParams?: (patch: Record<string, unknown>) => void;
 }
 
 export interface NodeDef {

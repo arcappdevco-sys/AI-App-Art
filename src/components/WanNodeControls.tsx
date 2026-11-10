@@ -14,8 +14,8 @@ import {
   type WanReferenceInput,
   type WanResolvedInputs,
   type WanStoredFile,
-  validateWanImageMetadata,
 } from "@/lib/wan";
+import { inspectWanImage } from "@/lib/wan-image";
 import {
   getWanPrediction,
   submitWanPrediction,
@@ -28,6 +28,7 @@ import { deleteWanDocument, loadWanDocument, saveWanDocument } from "@/lib/wan-s
 type WanNodeControlsProps = {
   nodeId: string;
   nodeData: Record<string, unknown>;
+  workflowRunning: boolean;
 };
 
 type WanEdge = ReturnType<typeof useEdges>[number];
@@ -117,40 +118,6 @@ function wanImageDataKey(value: unknown) {
   return "";
 }
 
-async function inspectWanImage(file: File) {
-  const basicMetadata = { type: file.type, size: file.size, width: 240, height: 240, hasAlpha: false };
-  const basicErrors = validateWanImageMetadata(basicMetadata);
-  if (basicErrors.some((error) => error.includes("20 MB") || error.includes("JPEG, PNG"))) {
-    return { ...basicMetadata, width: 0, height: 0, errors: basicErrors };
-  }
-  const bitmap = await createImageBitmap(file);
-  try {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let hasAlpha = false;
-    if (file.type === "image/png" && bytes.length > 25) {
-      hasAlpha = bytes[25] === 4 || bytes[25] === 6;
-      for (let offset = 8; !hasAlpha && offset + 12 <= bytes.length;) {
-        const length = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
-        const chunk = String.fromCharCode(...bytes.slice(offset + 4, offset + 8));
-        if (chunk === "tRNS") hasAlpha = true;
-        if (length > bytes.length - offset - 12) break;
-        offset += length + 12;
-      }
-    }
-    if (file.type === "image/bmp" && bytes.length >= 30) {
-      hasAlpha = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(28, true) === 32;
-    }
-    if (file.type === "image/webp" && bytes.length >= 21
-      && String.fromCharCode(...bytes.slice(12, 16)) === "VP8X") {
-      hasAlpha = (bytes[20] & 0x10) !== 0;
-    }
-    const metadata = { type: file.type, size: file.size, width: bitmap.width, height: bitmap.height, hasAlpha };
-    return { ...metadata, errors: validateWanImageMetadata(metadata) };
-  } finally {
-    bitmap.close();
-  }
-}
-
 function isHttpMedia(value: unknown): value is string {
   return typeof value === "string" && /^https?:\/\//i.test(value);
 }
@@ -204,7 +171,7 @@ function WanMediaUpload(props: {
   );
 }
 
-export default function WanNodeControls({ nodeId, nodeData }: WanNodeControlsProps) {
+export default function WanNodeControls({ nodeId, nodeData, workflowRunning }: WanNodeControlsProps) {
   const nodes = useNodes();
   const edges = useEdges();
   const {
@@ -1031,14 +998,12 @@ export default function WanNodeControls({ nodeId, nodeData }: WanNodeControlsPro
       {pollError && (
         <div className="ff-wan-poll-error">
           <span>{pollError}</span>
-          <button className="nodrag" type="button" disabled={active} onClick={resumeChecking}>Retry polling</button>
+          <button className="nodrag" type="button" disabled={active || workflowRunning} onClick={resumeChecking}>Retry polling</button>
         </div>
       )}
 
       <div className="ff-wan-status" role="status" aria-live="polite">
-        <strong>{statusLine === "Idle" && params.last_status && !params.last_output_url
-          ? params.last_status
-          : params.last_output_url && statusLine === "Idle" ? "Completed" : statusLine}</strong>
+        <strong>{active ? statusLine : nodeData.status === "running" || nodeData.status === "queued" ? "Workflow running" : nodeData.status === "error" ? "Failed" : params.last_output_url ? "Completed" : params.last_status || statusLine}</strong>
         {statusDetail && <span>{statusDetail}</span>}
         {uploadStatus && <span>{uploadStatus}</span>}
       </div>
@@ -1049,7 +1014,7 @@ export default function WanNodeControls({ nodeId, nodeData }: WanNodeControlsPro
           <button
             type="button"
             className="ff-wan-action nodrag"
-            disabled={active || requestErrors.length > 0}
+            disabled={active || workflowRunning || requestErrors.length > 0}
             title={requestErrors[0] ?? (active ? "Generation is in progress." : "")}
             onClick={handleGenerate}
           >
@@ -1063,13 +1028,13 @@ export default function WanNodeControls({ nodeId, nodeData }: WanNodeControlsPro
       {confirmationOpen && (
         <div className="ff-wan-confirm">
           <span>This will spend about ${estimatedMinimum?.toFixed(3)} or more. Continue?</span>
-          <button type="button" className="nodrag" onClick={() => void submitGeneration()}>Continue</button>
+          <button type="button" className="nodrag" disabled={workflowRunning} onClick={() => void submitGeneration()}>Continue</button>
           <button type="button" className="nodrag" onClick={() => setConfirmationOpen(false)}>Go back</button>
         </div>
       )}
       {params.prediction_id && !params.last_output_url && !active && !pollError
         && !["failed", "completed", "succeeded"].includes(params.last_status.toLowerCase()) && (
-        <button type="button" className="ff-wan-action ff-wan-secondary nodrag" onClick={resumeChecking}>
+        <button type="button" className="ff-wan-action ff-wan-secondary nodrag" disabled={workflowRunning} onClick={resumeChecking}>
           Resume checking
         </button>
       )}

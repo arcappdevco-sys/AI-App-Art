@@ -21,7 +21,11 @@ The FLUX 3 Image node (text to image and image edit) uses the same server route 
 
 The FLUX 3 Video node covers text to video, image to video, first and last frame, keyframes, extend video and edit video. It submits to Atlas `generateVideo` (the documented path; Atlas's schema files list `generateImage` for some of these models, so this is unverified) and uses the same route, polling and **Check Atlas key** button.
 
-The app also connects Kling, Seedance 2.5 text/image-to-video, Veo 3.1 (standard, Fast, and Lite supported tasks), and Gemini Omni Flash (original) text/image/reference/video-edit tasks to Atlas Cloud. Gemini Omni 1.1 and Gemini Omni video-extend are not listed in Atlas Cloud's current video API catalog, so they are not offered as runnable choices.
+The app also connects Kling, Seedance 2.5 text/image-to-video, Veo 3.1 (standard, Fast, and Lite supported tasks), and Gemini Omni to Atlas Cloud. Omni Flash (original) supports text, image, reference and video edit tasks; Omni 1.1 Flash and 1.2 Flash also support video extend. Omni 1.2 supports up to 15 seconds for text, image and reference generation, subject to task-specific input limits. Atlas video inputs for editing, extension and video references must be public MP4 URLs. Each variation is a separate paid generation.
+
+Atlas video previews in model and connected Preview nodes load through the app's media download route, since some Atlas files are served as attachments. The original URL remains available through **Download**; if preview loading fails, the node shows an error.
+
+**Run workflow** checks the entire canvas and asks for confirmation before submitting AI generation requests. Each run generates fresh results, including on separate branches; dependent nodes wait for their inputs. Provider charges may apply. **Stop** stops waiting, but already submitted jobs can continue and may still be billed. For Wan, MiniMax and FLUX nodes, use **Resume checking** to recover a submitted Atlas result.
 
 ## Private invite-only deployment
 

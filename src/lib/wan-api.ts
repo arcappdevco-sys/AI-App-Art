@@ -15,12 +15,12 @@ async function wanResponseError(response: Response, fallback: string) {
     : `${fallback} (${response.status}).`;
 }
 
-export async function uploadWanMedia(file: File, kind: WanUploadKind) {
+export async function uploadWanMedia(file: File, kind: WanUploadKind, signal?: AbortSignal) {
   const form = new FormData();
   form.append("action", "upload");
   form.append("kind", kind);
   form.append("file", file, file.name);
-  const response = await fetch("/api/atlas/wan", { method: "POST", body: form });
+  const response = await fetch("/api/atlas/wan", { method: "POST", body: form, signal });
   if (!response.ok) throw new Error(await wanResponseError(response, "Atlas media upload failed"));
   const result = await response.json() as { url?: unknown };
   if (typeof result.url !== "string" || !result.url) {
@@ -29,11 +29,12 @@ export async function uploadWanMedia(file: File, kind: WanUploadKind) {
   return result.url;
 }
 
-export async function submitWanPrediction(body: Record<string, unknown>) {
+export async function submitWanPrediction(body: Record<string, unknown>, signal?: AbortSignal) {
   const response = await fetch("/api/atlas/wan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "generate", body }),
+    signal,
   });
   if (!response.ok) throw new Error(await wanResponseError(response, "Atlas could not start the generation"));
   const result = await response.json() as { predictionId?: unknown; status?: unknown };
@@ -67,11 +68,11 @@ export async function getWanPrediction(predictionId: string, signal?: AbortSigna
   };
 }
 
-export async function uploadMiniMaxMedia(file: File) {
+export async function uploadMiniMaxMedia(file: File, signal?: AbortSignal) {
   const form = new FormData();
   form.append("action", "minimax_upload");
   form.append("file", file, file.name);
-  const response = await fetch("/api/atlas/wan", { method: "POST", body: form });
+  const response = await fetch("/api/atlas/wan", { method: "POST", body: form, signal });
   if (!response.ok) throw new Error(await wanResponseError(response, "Atlas media upload failed"));
   const result = await response.json() as { url?: unknown };
   if (typeof result.url !== "string" || !result.url) {
@@ -80,11 +81,12 @@ export async function uploadMiniMaxMedia(file: File) {
   return result.url;
 }
 
-export async function submitMiniMaxPrediction(body: Record<string, unknown>) {
+export async function submitMiniMaxPrediction(body: Record<string, unknown>, signal?: AbortSignal) {
   const response = await fetch("/api/atlas/wan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "minimax_generate", body }),
+    signal,
   });
   if (!response.ok) throw new Error(await wanResponseError(response, "Atlas could not start the generation"));
   const result = await response.json() as { predictionId?: unknown; status?: unknown };

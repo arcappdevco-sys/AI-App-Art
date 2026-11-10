@@ -3,12 +3,10 @@ import { KLING_MODELS, KLING_TASKS } from "./kling";
 import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "./omni";
 import { SEEDANCE_MODELS } from "./seedance";
 import { VEO_MODELS } from "./veo";
-import { hasCycle } from "./executor";
+import { hasCycle, isEmptyOptionalOmniImage } from "./executor";
 import type { Graph, GraphNode } from "./types";
-import { WAN_NODE_TYPE } from "./wan";
 import { MINIMAX_NODE_TYPE } from "./minimax";
 import { FLUX3_NODE_TYPE } from "./flux3";
-import { FLUX3_VIDEO_NODE_TYPE } from "./flux3-video";
 
 export type WorkflowValidationIssue = {
   severity: "error" | "warning";
@@ -54,11 +52,10 @@ function taskInputError(node: GraphNode, handles: Set<string>): string | undefin
     }
   }
   if (node.type === "video/google-omni") {
-    const savedModel = String(node.params.model ?? "");
     const model = normalizeOmniParams(node.params).model;
-    if (model !== OMNI_MODELS["Gemini Omni Flash (original)"]
-      || (savedModel !== model && savedModel !== OMNI_MODELS["Gemini Omni 1.1 Flash"]
-        && savedModel !== "Gemini Omni 1.1 Flash")) {
+    const savedModel = String(node.params.model ?? "");
+    if (!Object.values(OMNI_MODELS).some((value) => value === savedModel)
+      && !Object.keys(OMNI_MODELS).includes(savedModel) && savedModel !== "Gemini Omni Flash") {
       return "Choose a supported Gemini Omni model.";
     }
     if (!Object.values(OMNI_TASKS).includes(task as (typeof OMNI_TASKS)[keyof typeof OMNI_TASKS])) {
@@ -75,7 +72,7 @@ function taskInputError(node: GraphNode, handles: Set<string>): string | undefin
     if ([OMNI_TASKS["Edit video"], OMNI_TASKS["Extend video"]].includes(task as never) && !handles.has("video")) {
       return `Connect a source video for ${task === OMNI_TASKS["Edit video"] ? "Edit video" : "Extend video"}.`;
     }
-    if (task === OMNI_TASKS["Extend video"]) {
+    if (task === OMNI_TASKS["Extend video"] && model === OMNI_MODELS["Gemini Omni Flash (original)"]) {
       return "Gemini Omni Flash (original) does not support Extend video.";
     }
   }
@@ -110,7 +107,8 @@ function taskInputError(node: GraphNode, handles: Set<string>): string | undefin
 function requiresPrompt(node: GraphNode) {
   if ([MINIMAX_NODE_TYPE, "video/veo", "video/google-omni", "video/kling"].includes(node.type)) return true;
   return node.type === "video/seedance" && node.params.task === "text-to-video"
-    || ["fal/nano-banana", "google/gemini-image", "openai/gpt-image"].includes(node.type);
+    || [FLUX3_NODE_TYPE, "video/wan-3.0", "fal/nano-banana", "google/gemini-image", "openai/gpt-image"].includes(node.type)
+    || node.type === "video/flux-3" && ["text-to-video", "edit-video"].includes(String(node.params.task));
 }
 
 function promptSourceIsEmpty(source: GraphNode): boolean {
@@ -194,27 +192,16 @@ export function validateWorkflow(graph: Graph, targetIds?: string[]): WorkflowVa
     if (definition.integration === "pending") {
       addIssue("error", node, "This model is not connected to a generation API yet.");
     }
-    if (node.type === WAN_NODE_TYPE && !/^https?:\/\/\S+$/i.test(String(node.params.last_output_url ?? ""))) {
-      addIssue("error", node, "Generate Wan 3.0 from its controls before running connected Preview nodes.");
-    }
-    if (node.type === MINIMAX_NODE_TYPE && !/^https?:\/\/\S+$/i.test(String(node.params.last_output_url ?? ""))) {
-      addIssue("error", node, "Generate MiniMax H3 from its controls before running connected Preview nodes.");
-    }
-    if (node.type === FLUX3_NODE_TYPE
-      && !(Array.isArray(node.params.last_output_urls) && node.params.last_output_urls.some((url: unknown) => /^https?:\/\/\S+$/i.test(String(url))))) {
-      addIssue("error", node, "Generate FLUX 3 Image from its controls before running connected Preview nodes.");
-    }
-    if (node.type === FLUX3_VIDEO_NODE_TYPE
-      && !(Array.isArray(node.params.last_output_urls) && node.params.last_output_urls.some((url: unknown) => /^https?:\/\/\S+$/i.test(String(url))))) {
-      addIssue("error", node, "Generate FLUX 3 Video from its controls before running connected Preview nodes.");
-    }
 
     const nodeEdges = incoming.get(id) ?? [];
-    const handles = new Set(nodeEdges.map((edge) => edge.targetHandle));
+    const handles = new Set(nodeEdges
+      .filter((edge) => !isEmptyOptionalOmniImage(graph, edge.source))
+      .map((edge) => edge.targetHandle));
     const taskError = taskInputError(node, handles);
     if (taskError) addIssue("error", node, taskError);
 
-    if (node.type === "input/image" && !String(node.params.url ?? "").trim()) {
+    if (node.type === "input/image" && !String(node.params.url ?? "").trim()
+      && (targetIds?.includes(node.id) || !isEmptyOptionalOmniImage(graph, node.id))) {
       addIssue("error", node, "Choose an image or enter an image URL.");
     }
     if (node.type === "assistant/prompt" && !String(node.params.refined_prompt ?? "").trim()) {

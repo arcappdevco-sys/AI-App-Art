@@ -1,15 +1,17 @@
 import { registry } from "./registry";
 import type { Graph, NodeStatus } from "./types";
 
-type Outputs = Record<string, any>;
+type Outputs = Record<string, unknown>;
 
 export interface RunOpts {
   /** Persist this Map between runs: unchanged nodes are skipped (saves fal credits). */
   cache: Map<string, { key: string; outputs: Outputs }>;
+  fresh?: boolean;
   targetIds?: string[];
   signal?: AbortSignal;
   onStatus: (id: string, status: NodeStatus, info?: string) => void;
   onOutput: (id: string, outputs: Outputs) => void;
+  onParams?: (id: string, patch: Record<string, unknown>) => void;
 }
 
 export function hasCycle(graph: Graph): boolean {
@@ -29,8 +31,19 @@ export function hasCycle(graph: Graph): boolean {
   return seen !== graph.nodes.length;
 }
 
+export function isEmptyOptionalOmniImage(graph: Graph, nodeId: string): boolean {
+  const node = graph.nodes.find((candidate) => candidate.id === nodeId);
+  if (node?.type !== "input/image" || String(node.params.url ?? "").trim()) return false;
+  const outgoing = graph.edges.filter((edge) => edge.source === nodeId);
+  return outgoing.length > 0 && outgoing.every((edge) => {
+    const target = graph.nodes.find((candidate) => candidate.id === edge.target);
+    return target?.type === "video/google-omni" && ["last_image", "reference_images"].includes(edge.targetHandle);
+  });
+}
+
 export async function runGraph(graph: Graph, o: RunOpts) {
-  const targets = o.targetIds ?? graph.nodes.map((node) => node.id);
+  const targets = (o.targetIds ?? graph.nodes.map((node) => node.id))
+    .filter((id) => o.targetIds?.includes(id) || !isEmptyOptionalOmniImage(graph, id));
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   const incoming = new Map<string, string[]>();
   graph.edges.forEach((edge) => incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source]));
@@ -50,7 +63,8 @@ export async function runGraph(graph: Graph, o: RunOpts) {
   if (hasCycle(scopedGraph)) throw new Error("This graph has a loop. Remove the cycle and run again.");
 
   const memo = new Map<string, Promise<Outputs>>();
-  scopedGraph.nodes.forEach((n) => o.onStatus(n.id, "queued", ""));
+  scopedGraph.nodes.forEach((n) => o.onStatus(n.id,
+    isEmptyOptionalOmniImage(graph, n.id) && !o.targetIds?.includes(n.id) ? "idle" : "queued", ""));
 
   // Each node awaits its upstream nodes, so independent branches run in parallel.
   const visit = (id: string): Promise<Outputs> => {
@@ -63,14 +77,26 @@ export async function runGraph(graph: Graph, o: RunOpts) {
       const inputs: Outputs = {};
       try {
         for (const e of scopedGraph.edges.filter((e) => e.target === id)) {
+          const source = byId.get(e.source);
+          if (node.type === "video/google-omni"
+            && ["last_image", "reference_images"].includes(e.targetHandle)
+            && source?.type === "input/image" && !String(source.params.url ?? "").trim()) {
+            continue;
+          }
           const up = await visit(e.source);
-          if (["video/seedance", "video/google-omni", "video/kling"].includes(node.type)
+          if (["video/seedance", "video/google-omni", "video/kling", "image/flux-3"].includes(node.type)
             && e.targetHandle === "reference_images") {
-            const references = (inputs.reference_images ??= []);
+            const references = Array.isArray(inputs.reference_images) ? inputs.reference_images : [];
+            inputs.reference_images = references;
             references.push(up[e.sourceHandle]);
           } else if (node.type === "video/kling" && e.targetHandle === "middle_images") {
-            const middleFrames = (inputs.middle_images ??= []);
+            const middleFrames = Array.isArray(inputs.middle_images) ? inputs.middle_images : [];
+            inputs.middle_images = middleFrames;
             middleFrames.push(up[e.sourceHandle]);
+          } else if (node.type === "video/minimax-h3" && e.targetHandle === "references") {
+            const references = Array.isArray(inputs.references) ? inputs.references : [];
+            inputs.references = references;
+            references.push(up[e.sourceHandle]);
           } else {
             inputs[e.targetHandle] = up[e.sourceHandle];
           }
@@ -82,7 +108,7 @@ export async function runGraph(graph: Graph, o: RunOpts) {
 
       const key = JSON.stringify([node.type, node.params, inputs]);
       const hit = o.cache.get(id);
-      if (hit?.key === key) {
+      if (!o.fresh && hit?.key === key) {
         o.onOutput(id, hit.outputs);
         o.onStatus(id, "done", "cached");
         return hit.outputs;
@@ -96,13 +122,14 @@ export async function runGraph(graph: Graph, o: RunOpts) {
           params: node.params,
           signal: o.signal,
           log: (m) => o.onStatus(id, "running", m),
+          updateParams: (patch) => o.onParams?.(id, patch),
         });
         o.cache.set(id, { key, outputs });
         o.onOutput(id, outputs);
         o.onStatus(id, "done", "");
         return outputs;
-      } catch (err: any) {
-        o.onStatus(id, "error", err?.message ?? String(err));
+      } catch (err: unknown) {
+        o.onStatus(id, "error", err instanceof Error ? err.message : String(err));
         throw err;
       }
     })();

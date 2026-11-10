@@ -10,6 +10,7 @@ import { WAN_DEFAULTS, WAN_NODE_TYPE } from "./wan";
 import { MINIMAX_DEFAULTS, MINIMAX_NODE_TYPE } from "./minimax";
 import { FLUX3_DEFAULTS, FLUX3_NODE_TYPE } from "./flux3";
 import { FLUX3_VIDEO_DEFAULTS, FLUX3_VIDEO_NODE_TYPE } from "./flux3-video";
+import { executeWorkflowAtlas } from "./workflow-atlas";
 
 fal.config({ proxyUrl: "/api/fal/proxy" });
 
@@ -789,7 +790,7 @@ const googleOmniVideo: NodeDef = {
       key: "model",
       label: "Model",
       kind: "select",
-      options: [OMNI_MODELS["Gemini Omni Flash (original)"]],
+      options: Object.values(OMNI_MODELS),
       optionLabels: Object.fromEntries(Object.entries(OMNI_MODELS).map(([label, value]) => [value, label])),
       default: OMNI_DEFAULTS.model,
     },
@@ -812,7 +813,7 @@ const googleOmniVideo: NodeDef = {
       key: "duration",
       label: "Duration",
       kind: "select",
-      options: ["3", "4", "5", "6", "7", "8", "9", "10"],
+      options: Array.from({ length: 13 }, (_, index) => String(index + 3)),
       default: OMNI_DEFAULTS.duration as string,
     },
     {
@@ -915,11 +916,7 @@ const wanVideo: NodeDef = {
     kind: "text" as const,
     default: value,
   })),
-  execute: async ({ params }) => {
-    const outputUrl = typeof params.last_output_url === "string" ? params.last_output_url : "";
-    if (/^https?:\/\/\S+$/i.test(outputUrl)) return { video: outputUrl };
-    throw new Error("Generate Wan 3.0 from its node controls; it cannot be run as part of workflow Run.");
-  },
+  execute: (ctx) => executeWorkflowAtlas("wan", ctx),
 };
 
 const miniMaxVideo: NodeDef = {
@@ -955,11 +952,7 @@ const miniMaxVideo: NodeDef = {
     kind: "text" as const,
     default: value,
   })),
-  execute: async ({ params }) => {
-    const outputUrl = typeof params.last_output_url === "string" ? params.last_output_url : "";
-    if (/^https?:\/\/\S+$/i.test(outputUrl)) return { video: outputUrl };
-    throw new Error("Generate MiniMax H3 from its node controls before running connected Preview nodes.");
-  },
+  execute: (ctx) => executeWorkflowAtlas("minimax", ctx),
 };
 
 const flux3Image: NodeDef = {
@@ -976,12 +969,7 @@ const flux3Image: NodeDef = {
     kind: "text" as const,
     default: value,
   })),
-  execute: async ({ params }) => {
-    const urls = Array.isArray(params.last_output_urls) ? params.last_output_urls : [];
-    const first = urls.find((url: unknown) => typeof url === "string" && /^https?:\/\/\S+$/i.test(url));
-    if (first) return { image: first };
-    throw new Error("Generate FLUX 3 Image from its node controls before running connected Preview nodes.");
-  },
+  execute: (ctx) => executeWorkflowAtlas("flux-image", ctx),
 };
 
 const flux3Video: NodeDef = {
@@ -1016,12 +1004,7 @@ const flux3Video: NodeDef = {
     kind: "text" as const,
     default: value,
   })),
-  execute: async ({ params }) => {
-    const urls = Array.isArray(params.last_output_urls) ? params.last_output_urls : [];
-    const first = urls.find((url: unknown) => typeof url === "string" && /^https?:\/\/\S+$/i.test(url));
-    if (first) return { video: first };
-    throw new Error("Generate FLUX 3 Video from its node controls before running connected Preview nodes.");
-  },
+  execute: (ctx) => executeWorkflowAtlas("flux-video", ctx),
 };
 
 export const registry: Record<string, NodeDef> = Object.fromEntries(
