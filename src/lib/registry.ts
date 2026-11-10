@@ -204,6 +204,16 @@ const image: NodeDef = {
   },
 };
 
+const videoInput: NodeDef = {
+  type: "input/video", label: "Video", category: "Input",
+  inputs: {}, outputs: { video: "video" },
+  params: [{ key: "url", label: "Video (upload or paste URL)", kind: "file", default: "" }],
+  execute: async ({ params }) => {
+    if (!params.url) throw new Error("Choose a video or paste a URL.");
+    return { video: params.url, duration_seconds: params.duration_seconds };
+  },
+};
+
 const promptAssistant: NodeDef = {
   type: "assistant/prompt",
   label: "Prompt Assistant",
@@ -614,9 +624,10 @@ const klingVideo: NodeDef = {
       optionsByParam: {
         param: "model",
         values: {
-          [KLING_MODELS["Kling 4.0"]]: Object.values(KLING_TASKS),
+          [KLING_MODELS["Kling 4.0"]]: Object.values(KLING_TASKS).filter((task) => task !== KLING_TASKS["Motion control"]),
           [KLING_MODELS["Kling V3.0 Pro"]]: [KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]],
           [KLING_MODELS["Kling V3.0 Std"]]: [KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]],
+          [KLING_MODELS["Kling 2.6 Pro Motion Control"]]: [KLING_TASKS["Motion control"]],
         },
       },
       default: KLING_DEFAULTS.task as string,
@@ -655,6 +666,8 @@ const klingVideo: NodeDef = {
       default: KLING_DEFAULTS.resolution as string,
     },
     { key: "sound", label: "Generate sound", kind: "toggle", default: KLING_DEFAULTS.sound },
+    { key: "character_orientation", label: "Character orientation", kind: "select", options: ["image", "video"], optionLabels: { image: "Follow image (3–10s)", video: "Follow motion video (3–30s)" }, default: "image" },
+    { key: "keep_original_audio", label: "Keep motion video audio", kind: "toggle", default: true },
   ],
   execute: async ({ inputs, params, log, signal }) => {
     const request = buildKlingRequest({ params }, inputs);
@@ -1009,7 +1022,7 @@ const flux3Video: NodeDef = {
 
 export const registry: Record<string, NodeDef> = Object.fromEntries(
   [
-    prompt, number, image, promptAssistant, falModel, nanoBanana, geminiImage, gptImage,
+    prompt, number, image, videoInput, promptAssistant, falModel, nanoBanana, geminiImage, gptImage,
     seedanceVideo, klingVideo, veoVideo, googleOmniVideo, wanVideo, miniMaxVideo, flux3Image, flux3Video, preview,
   ].map((d) => [d.type, d])
 );

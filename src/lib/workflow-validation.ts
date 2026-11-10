@@ -83,7 +83,14 @@ function taskInputError(node: GraphNode, handles: Set<string>): string | undefin
     if (!Object.values(KLING_TASKS).includes(task as (typeof KLING_TASKS)[keyof typeof KLING_TASKS])) {
       return "Choose a supported Kling task.";
     }
-    const isV3 = node.params.model !== KLING_MODELS["Kling 4.0"];
+    const motion = node.params.model === KLING_MODELS["Kling 2.6 Pro Motion Control"];
+    if (motion && task !== KLING_TASKS["Motion control"]
+      || !motion && task === KLING_TASKS["Motion control"]) {
+      return "Choose the Motion control task with Kling 2.6 Pro Motion Control.";
+    }
+    if (motion && !handles.has("image")) return "Connect a character image.";
+    if (motion && !handles.has("video")) return "Connect a motion reference video.";
+    const isV3 = !motion && node.params.model !== KLING_MODELS["Kling 4.0"];
     if (isV3 && ![KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]].includes(task as never)) {
       return "Kling V3.0 supports Text to video and Image to video only.";
     }
@@ -105,6 +112,7 @@ function taskInputError(node: GraphNode, handles: Set<string>): string | undefin
 }
 
 function requiresPrompt(node: GraphNode) {
+  if (node.type === "video/kling" && node.params.model === KLING_MODELS["Kling 2.6 Pro Motion Control"]) return false;
   if ([MINIMAX_NODE_TYPE, "video/veo", "video/google-omni", "video/kling"].includes(node.type)) return true;
   return node.type === "video/seedance" && node.params.task === "text-to-video"
     || [FLUX3_NODE_TYPE, "video/wan-3.0", "fal/nano-banana", "google/gemini-image", "openai/gpt-image"].includes(node.type)
@@ -203,6 +211,9 @@ export function validateWorkflow(graph: Graph, targetIds?: string[]): WorkflowVa
     if (node.type === "input/image" && !String(node.params.url ?? "").trim()
       && (targetIds?.includes(node.id) || !isEmptyOptionalOmniImage(graph, node.id))) {
       addIssue("error", node, "Choose an image or enter an image URL.");
+    }
+    if (node.type === "input/video" && !String(node.params.url ?? "").trim()) {
+      addIssue("error", node, "Choose a video or enter a video URL.");
     }
     if (node.type === "assistant/prompt" && !String(node.params.refined_prompt ?? "").trim()) {
       addIssue("error", node, "Send a message to the Prompt Assistant to create prompt text.");

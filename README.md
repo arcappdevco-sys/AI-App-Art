@@ -1,6 +1,31 @@
 # fal flow
 
 fal flow is a visual editor for building image and video generation workflows.
+The **Compositor** tab provides a separate, locally saved node graph for images and video. Add Media nodes, connect processing nodes to the Viewer, and select nodes to edit their properties. Merge layers, transform them, apply rectangular masks, color correction and chroma keying. A Tracker analyzes one selected feature from frame zero at five samples per second. To choose the feature, show the tracker's input in the Viewer, pause at frame zero, select the Tracker, and click the feature. Run tracking and connect its motion output to a Transform or Mask.
+
+The Viewer displays only its connected input. For example, connect Media → Color correction → Viewer to see color changes. Selecting an image node outside the Viewer path offers **Show in Viewer**, which replaces the Viewer's current input; the node still needs its own required inputs connected.
+
+In the Viewer, scroll the mouse wheel to zoom around the pointer and hold the middle mouse button while dragging to pan. **Fit viewer** restores the original view. These controls affect only the preview, not exported media or tracker coordinates.
+
+The compositor's **Templates** list offers pre-connected Color correction, Keyer, Masking, and Tracking graphs. Loading one replaces the current compositor project, including its media and tracking data, after confirmation; Undo can restore the previous project during the current session. Select a node marked **Media input** to upload an image or video. Color correction and Masking each have one Media input; Keyer has Background and Foreground inputs; Tracking has Background video and Overlay image inputs. For Tracking, upload a background video and overlay image first, select the Tracker, pause at frame zero and click a feature in the Viewer, then run tracking. Select Merge and click **Show in Viewer** to see the tracked overlay; use Transform to adjust its placement. The Viewer initially shows the unmodified background so you can select the tracking feature before a track exists.
+
+The add-node list also includes the templates' named inputs: **Background**, **Foreground**, **Background video**, and **Overlay image**. These are Media nodes with descriptive names, so they have the same source choices and image output as Media. Add them individually and connect them to the desired inputs; they do not automatically create connections.
+
+Use the compositor's **Undo** and **Redo** buttons, or Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (Ctrl/Cmd+Y also redoes). Shortcuts work while adjusting numeric node controls; regular text fields retain their normal text undo. History covers graph edits, node settings, media, tracking and timeline In/Out points, including template replacement. It holds up to 50 actions and clears on reload; restored project changes are saved locally. Viewer navigation, display settings and playback are not history actions.
+
+On the Viewer timeline, move the playhead and use **Set In (I)** and **Set Out (O)**, or adjust the In and Out sliders. The highlighted range loops during playback and determines the portion exported to WebM; PNG still exports the current playhead frame. **Clear In/Out** restores the full video range. Marks are saved locally and can be undone; loading a template clears them. If the connected video becomes shorter, the active range is clamped to its duration; if the clamped marks no longer form a range, the full video is used until the marks become valid again or are changed.
+
+For the Keyer template, put the footage to be keyed in Foreground. The Background Media node can use an uploaded image/video, a solid color, or **Transparent (checkerboard)**. Image/video and solid-color backgrounds are part of the composite and export. Transparent mode produces an empty background: the Viewer shows a checkerboard, and PNG exports preserve transparency instead of including the pattern. WebM export does not preserve alpha. Switching source modes keeps the uploaded file. The Keyer offers screen color, similarity/tolerance, edge softness, spill suppression, black/white clipping, choke/expand and feather. **Pick from Viewer** samples the Keyer's input at the clicked coordinates, not the merged output; show its input in the Viewer when positioning the sample. Positive choke shrinks the matte and negative values expand it.
+
+The Viewer's channel selector and checkerboard/custom transparency background are for inspection only and do not affect PNG or WebM exports. Alpha view shows the final Viewer output's matte; connect the Keyer directly to the Viewer to inspect its matte before merging. Viewer display settings are temporary, while node settings and media are saved with the project.
+
+Color correction provides brightness, contrast, saturation, exposure (stops), gamma, temperature, tint, highlights, shadows and individual RGB gain. Curves apply a master curve followed by separate red, green and blue curves. Choose a channel, click to add up to 10 interior points, and drag or edit their input/output values; endpoints stay at input 0 and 255. Curves use linear interpolation and can be reset per channel. All color operations are applied to 8-bit display-referred pixels, not a color-managed HDR or linear-light pipeline.
+
+To disconnect nodes, select the connection line and press Delete or Backspace, or click **Delete connection** in the sidebar. This removes the connection, not the nodes.
+
+Select one or more compositor nodes and press **D** to disable them; press D again to re-enable them. The inspector also has a disable/enable button. Disabled effect nodes pass their image input through unchanged, a disabled Merge passes its background, and a disabled Tracker stops applying motion without deleting its track. Disabled Media and Viewer nodes behave as disconnected and report a render error. Disabling an upstream node invalidates affected tracking results. Disabled states are saved, affect preview and export, and can be undone or redone.
+
+The tracker uses simple translation patch matching; fast movement, low contrast, occlusion and changing appearance can cause it to lose the feature. The preview stretches media to 640 × 360. PNG export uses the current frame; silent WebM export runs in real time at 10 fps and requires browser MediaRecorder support. Video tracking and the exported range are limited to 60 seconds, and individual files to 200 MB. Video audio, MP4 export, non-rectangular masks and high-resolution export are not supported. Media and the project are stored in this browser's IndexedDB, separately from the video editor.
 
 ## Run locally
 
@@ -23,7 +48,11 @@ The FLUX 3 Video node covers text to video, image to video, first and last frame
 
 The app also connects Kling, Seedance 2.5 text/image-to-video, Veo 3.1 (standard, Fast, and Lite supported tasks), and Gemini Omni to Atlas Cloud. Omni Flash (original) supports text, image, reference and video edit tasks; Omni 1.1 Flash and 1.2 Flash also support video extend. Omni 1.2 supports up to 15 seconds for text, image and reference generation, subject to task-specific input limits. Atlas video inputs for editing, extension and video references must be public MP4 URLs. Each variation is a separate paid generation.
 
+For Kling motion transfer, select **Kling 2.6 Pro Motion Control** in the Kling node, provide the character image and motion reference video, and choose whether orientation follows the image (3–10 seconds) or video (3–30 seconds). The prompt is optional. Upload MP4/MOV up to 100 MB or paste a public video URL; Atlas validates URL-based media limits. Motion control is billed by the provider.
+
 Atlas video previews in model and connected Preview nodes load through the app's media download route, since some Atlas files are served as attachments. The original URL remains available through **Download**; if preview loading fails, the node shows an error.
+
+Adding a video model creates a connected Prompt and Preview automatically. The Preview displays the connected video output when it becomes available, including when a model is run directly. Existing workflows are not changed. Running the Preview itself can run its upstream model and may incur charges; adding or viewing it does not generate media.
 
 **Run workflow** checks the entire canvas and asks for confirmation before submitting AI generation requests. Each run generates fresh results, including on separate branches; dependent nodes wait for their inputs. Provider charges may apply. **Stop** stops waiting, but already submitted jobs can continue and may still be billed. For Wan, MiniMax and FLUX nodes, use **Resume checking** to recover a submitted Atlas result.
 

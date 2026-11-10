@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 
 const ATLAS_API = "https://api.atlascloud.ai/api/v1/model";
 const MODEL_FIELDS: Record<string, { maxDuration: number; fields: string[]; promptRequired: boolean }> = {
+  "kwaivgi/kling-v2.6-pro/motion-control": {
+    maxDuration: 30,
+    fields: ["prompt", "image", "video", "character_orientation", "keep_original_audio"],
+    promptRequired: false,
+  },
   "kwaivgi/kling-v4.0/text-to-video": {
     maxDuration: 30,
     fields: ["prompt", "duration", "aspect_ratio", "resolution"],
@@ -91,24 +96,31 @@ export async function POST(request: Request) {
 
   const isImageToVideo = model.endsWith("/image-to-video");
   const isVideoEdit = model.endsWith("/video-edit");
+  const isMotion = model.endsWith("/motion-control");
   if (modelConfig.promptRequired && (typeof body.prompt !== "string" || !body.prompt.trim())) {
     return NextResponse.json({ error: "This Kling task requires a prompt." }, { status: 400 });
   }
   if (body.prompt !== undefined) {
-    const promptLimit = model.includes("/kling-v3.0-") ? 2500 : /[^\u0000-\u007f]/.test(String(body.prompt)) ? 11000 : 26000;
+    const promptLimit = isMotion || model.includes("/kling-v3.0-") ? 2500 : /[^\u0000-\u007f]/.test(String(body.prompt)) ? 11000 : 26000;
     if (typeof body.prompt !== "string" || body.prompt.length > promptLimit) {
       return NextResponse.json({ error: `Prompt must not exceed ${promptLimit.toLocaleString()} characters.` }, { status: 400 });
     }
   }
-  if (isImageToVideo && (typeof body.image !== "string" || !body.image || body.image.length > MAX_IMAGE_LENGTH)) {
+  if ((isImageToVideo || isMotion) && (typeof body.image !== "string" || !body.image || body.image.length > (isMotion ? 70 * 1024 * 1024 : MAX_IMAGE_LENGTH))) {
     return NextResponse.json({ error: "Image-to-Video requires a valid first-frame image." }, { status: 400 });
   }
-  if (isVideoEdit && (typeof body.video !== "string" || !body.video || body.video.length > MAX_VIDEO_LENGTH)) {
+  if ((isVideoEdit || isMotion) && (typeof body.video !== "string" || !body.video || body.video.length > MAX_VIDEO_LENGTH)) {
     return NextResponse.json({ error: "Video Edit requires a valid source video." }, { status: 400 });
   }
-  if (typeof body.duration !== "number" || !Number.isInteger(body.duration)
-    || body.duration < 3 || body.duration > modelConfig.maxDuration) {
+  if (!isMotion && (typeof body.duration !== "number" || !Number.isInteger(body.duration)
+    || body.duration < 3 || body.duration > modelConfig.maxDuration)) {
     return NextResponse.json({ error: `Duration must be a whole number from 3 to ${modelConfig.maxDuration} seconds.` }, { status: 400 });
+  }
+  if (isMotion && !["image", "video"].includes(String(body.character_orientation))) {
+    return NextResponse.json({ error: "Choose a valid character orientation." }, { status: 400 });
+  }
+  if (isMotion && body.keep_original_audio !== undefined && typeof body.keep_original_audio !== "boolean") {
+    return NextResponse.json({ error: "Keep original audio must be a boolean." }, { status: 400 });
   }
   if (body.resolution !== undefined && (typeof body.resolution !== "string" || !resolutions.has(body.resolution))) {
     return NextResponse.json({ error: "Choose a supported Kling 4.0 resolution." }, { status: 400 });
@@ -132,7 +144,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Kling supports up to 8 valid middle keyframes." }, { status: 400 });
   }
   for (const key of ["image", "end_image", "last_image"] as const) {
-    if (body[key] !== undefined && (typeof body[key] !== "string" || body[key].length > MAX_IMAGE_LENGTH)) {
+    if (body[key] !== undefined && (typeof body[key] !== "string" || body[key].length > (isMotion && key === "image" ? 70 * 1024 * 1024 : MAX_IMAGE_LENGTH))) {
       return NextResponse.json({ error: `${key} must be a valid image URL or data URI.` }, { status: 400 });
     }
   }

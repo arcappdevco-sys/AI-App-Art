@@ -99,6 +99,9 @@ export async function runGraph(graph: Graph, o: RunOpts) {
             references.push(up[e.sourceHandle]);
           } else {
             inputs[e.targetHandle] = up[e.sourceHandle];
+            if (node.type === "video/kling" && node.params.task === "motion-control" && e.targetHandle === "video") {
+              inputs.motion_duration_seconds = up.duration_seconds;
+            }
           }
         }
       } catch (err) {

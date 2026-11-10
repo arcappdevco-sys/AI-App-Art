@@ -1,6 +1,6 @@
 "use client";
 import { createContext, Fragment, useContext, useState, useSyncExternalStore } from "react";
-import { Handle, Position, useEdges, useReactFlow, type NodeProps } from "@xyflow/react";
+import { Handle, Position, useEdges, useNodesData, useReactFlow, type NodeProps } from "@xyflow/react";
 import { registry, PORT_COLORS } from "@/lib/registry";
 import {
   addFileToEditorUploads,
@@ -22,6 +22,7 @@ import WanNodeControls from "@/components/WanNodeControls";
 import { MINIMAX_NODE_TYPE } from "@/lib/minimax";
 import MiniMaxNodeControls from "@/components/MiniMaxNodeControls";
 import { isAtlasVideoNode, outputPreviewType, previewMediaType } from "@/lib/media-preview";
+import { uploadWanMedia } from "@/lib/wan-api";
 import { usePlayableVideo } from "@/lib/use-playable-video";
 import type { PortType } from "@/lib/types";
 import {
@@ -298,12 +299,21 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const previewEdge = isPreviewNode
     ? renderedEdges.find((edge) => edge.target === id && edge.targetHandle === "media")
     : undefined;
-  const previewSource = previewEdge ? getNode(previewEdge.source) : undefined;
+  const previewSource = useNodesData(previewEdge?.source ?? "");
   const previewSourceType = typeof previewSource?.data.type === "string" ? previewSource.data.type : "";
   const previewInputType = previewEdge?.sourceHandle
     ? registry[previewSourceType]?.outputs[previewEdge.sourceHandle]
     : undefined;
   const atlasVideo = isAtlasVideoNode(isPreviewNode ? previewSourceType : d.type);
+  const sourceOutputs = previewSource?.data.outputs;
+  const previewVideo = isPreviewNode && atlasVideo && previewEdge?.sourceHandle
+    ? typeof sourceOutputs === "object" && sourceOutputs !== null
+      ? (sourceOutputs as Record<string, unknown>)[previewEdge.sourceHandle]
+      : undefined
+    : undefined;
+  const displayedOutputs: Record<string, unknown> = isPreviewNode && atlasVideo
+    ? { media: previewVideo }
+    : d.outputs ?? {};
   const isOmniImage = d.type === "input/image" && (
     d.omniAutoCreatedFor
     || renderedEdges.some((edge) => edge.source === id
@@ -638,11 +648,12 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   };
 
   const syncKlingInputs = async (requestedTask: string, requestedModel = String(d.params.model)) => {
-    const isV3 = requestedModel !== KLING_MODELS["Kling 4.0"];
-    const allowedTasks = isV3
+    const motion = requestedModel === KLING_MODELS["Kling 2.6 Pro Motion Control"];
+    const isV3 = !motion && requestedModel !== KLING_MODELS["Kling 4.0"];
+    const allowedTasks = motion ? [KLING_TASKS["Motion control"]] : isV3
       ? [KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]]
-      : Object.values(KLING_TASKS);
-    const task = (allowedTasks as string[]).includes(requestedTask) ? requestedTask : KLING_TASKS["Text to video"];
+      : Object.values(KLING_TASKS).filter((value) => value !== KLING_TASKS["Motion control"]);
+    const task = (allowedTasks as string[]).includes(requestedTask) ? requestedTask : motion ? KLING_TASKS["Motion control"] : KLING_TASKS["Text to video"];
     const currentNodes = getNodes();
     const existing = currentNodes.filter((candidate) =>
       (candidate.data as { klingAutoCreatedFor?: string }).klingAutoCreatedFor === id
@@ -659,7 +670,10 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       .filter((role) => /^reference_image_\d+$/.test(role))
       .sort((a, b) => Number(a.split("_")[2]) - Number(b.split("_")[2]));
     const wantedRoles = new Set<string>();
-    if (task === KLING_TASKS["Image to video"]) {
+    if (motion) {
+      wantedRoles.add("first_frame");
+      wantedRoles.add("motion_video");
+    } else if (task === KLING_TASKS["Image to video"]) {
       wantedRoles.add("first_frame");
       wantedRoles.add("last_frame");
       if (!isV3) existingMiddle.forEach((role) => wantedRoles.add(role));
@@ -676,13 +690,17 @@ export default function WorkflowNode({ id, data }: NodeProps) {
 
     const handleFor = (role: string) => {
       if (role === "first_frame") return "image";
+      if (role === "motion_video") return "video";
       if (role === "last_frame") return isV3 ? "end_image" : "last_image";
       if (/^middle_\d+$/.test(role)) return "middle_images";
       if (/^ingredient_\d+$/.test(role) || /^reference_image_\d+$/.test(role)) return "reference_images";
       return "";
     };
     const validHandles = new Set<string>(["prompt"]);
-    if (task === KLING_TASKS["Image to video"]) {
+    if (motion) {
+      validHandles.add("image");
+      validHandles.add("video");
+    } else if (task === KLING_TASKS["Image to video"]) {
       validHandles.add("image");
       validHandles.add(isV3 ? "end_image" : "last_image");
       if (!isV3 && existingMiddle.length) validHandles.add("middle_images");
@@ -729,29 +747,32 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     const labels: Record<string, string> = {
       first_frame: "First frame",
       last_frame: "Last frame",
+      motion_video: "Motion reference video",
     };
     const position = getNode(id)?.position ?? { x: 400, y: 200 };
     const additions = desiredRoles.filter((role) => !present.has(role)).map((role) => {
       const index = Number(role.split("_").at(-1)) || 1;
-      const label = role.startsWith("middle_") ? `Middle keyframe ${index}`
+      const label = motion && role === "first_frame" ? "Character image"
+        : role.startsWith("middle_") ? `Middle keyframe ${index}`
         : role.startsWith("ingredient_") ? `Ingredient ${index}`
           : role.startsWith("reference_image_") ? `Reference image ${index}`
             : labels[role];
       const targetHandle = handleFor(role) || (role === "last_frame" && isV3 ? "end_image" : "");
-      const inputId = `input/image-${crypto.randomUUID()}`;
+      const isMotionVideo = role === "motion_video";
+      const inputId = `${isMotionVideo ? "input/video" : "input/image"}-${crypto.randomUUID()}`;
       return {
         node: {
           id: inputId,
           type: "workflow",
-          position: { x: position.x - 360, y: position.y + (index - 2) * 145 },
+          position: { x: position.x - 360, y: position.y + (isMotionVideo ? 145 : (index - 2) * 145) },
           data: {
-            type: "input/image",
+            type: isMotionVideo ? "input/video" : "input/image",
             params: { url: "" },
             status: "idle",
             outputs: {},
             log: "",
             title: label,
-            paramLabels: { url: `${label} image (upload or paste URL)` },
+            paramLabels: { url: `${label} (upload or paste URL)` },
             klingAutoCreatedFor: id,
             klingRole: role,
           },
@@ -759,7 +780,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         edge: {
           id: `${inputId}-${id}-${role}`,
           source: inputId,
-          sourceHandle: "image",
+          sourceHandle: isMotionVideo ? "video" : "image",
           target: id,
           targetHandle,
         },
@@ -784,7 +805,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         rewired.push({
           id: `${candidate.id}-${id}-${role}`,
           source: candidate.id,
-          sourceHandle: "image",
+          sourceHandle: role === "motion_video" ? "video" : "image",
           target: id,
           targetHandle: desiredHandle,
         });
@@ -974,8 +995,10 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     }
     if (isKling && key === "model") {
       const currentTask = String(d.params.task);
-      const nextIsV3 = value !== KLING_MODELS["Kling 4.0"];
-      const task = nextIsV3 && ![KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]].includes(currentTask as never)
+      const motion = value === KLING_MODELS["Kling 2.6 Pro Motion Control"];
+      const nextIsV3 = !motion && value !== KLING_MODELS["Kling 4.0"];
+      const task = motion ? KLING_TASKS["Motion control"]
+        : currentTask === KLING_TASKS["Motion control"] || nextIsV3 && ![KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]].includes(currentTask as never)
         ? KLING_TASKS["Text to video"]
         : currentTask;
       const currentDuration = String(d.params.duration);
@@ -1059,11 +1082,41 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     if (!file) return;
     updateNodeData(id, { log: "Uploading…" });
     try {
+      if (d.type === "input/video") {
+        if (!["video/mp4", "video/quicktime"].includes(file.type)) throw new Error("Motion videos must be MP4 or MOV.");
+        if (file.size > 100 * 1024 * 1024) throw new Error("Motion videos must be 100 MB or smaller.");
+        const objectUrl = URL.createObjectURL(file);
+        let duration: number;
+        try {
+          duration = await new Promise<number>((resolve, reject) => {
+            const video = document.createElement("video");
+            video.preload = "metadata";
+            video.onloadedmetadata = () => {
+              if (!Number.isFinite(video.duration) || video.duration < 3 || video.duration > 30
+                || video.videoWidth < 340 || video.videoHeight < 340 || video.videoWidth > 3850 || video.videoHeight > 3850) {
+                reject(new Error("Motion video must be 3–30 seconds and 340–3850 pixels per side."));
+              } else resolve(video.duration);
+            };
+            video.onerror = () => reject(new Error("Could not read video metadata."));
+            video.src = objectUrl;
+          });
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
+        const url = await uploadWanMedia(file, "video");
+        setParam(key, url);
+        setParam("duration_seconds", duration);
+        updateNodeData(id, { status: "idle", log: "" });
+        return;
+      }
       if (isKlingImage) {
         if (!["image/jpeg", "image/png"].includes(file.type)) {
           throw new Error("Images must be JPG, JPEG, or PNG.");
         }
-        if (file.size > 30 * 1024 * 1024) throw new Error("Images must be 30 MB or smaller.");
+        const motionImage = renderedEdges.some((edge) => edge.source === id
+          && (getNode(edge.target)?.data as { params?: { model?: string } } | undefined)?.params?.model === KLING_MODELS["Kling 2.6 Pro Motion Control"]);
+        const maxImageMb = motionImage ? 50 : 30;
+        if (file.size > maxImageMb * 1024 * 1024) throw new Error(`Images must be ${maxImageMb} MB or smaller.`);
         const bitmap = await createImageBitmap(file);
         const ratio = bitmap.width / bitmap.height;
         if (bitmap.width < 300 || bitmap.height < 300 || ratio < 0.4 || ratio > 2.5) {
@@ -1239,7 +1292,8 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   };
   const klingTask = String(d.params?.task ?? KLING_TASKS["Text to video"]);
   const klingModel = String(d.params?.model ?? KLING_MODELS["Kling 4.0"]);
-  const klingIsV3 = klingModel !== KLING_MODELS["Kling 4.0"];
+  const klingIsMotion = klingModel === KLING_MODELS["Kling 2.6 Pro Motion Control"];
+  const klingIsV3 = !klingIsMotion && klingModel !== KLING_MODELS["Kling 4.0"];
   const klingIsImageTask = klingTask === KLING_TASKS["Image to video"];
   const klingIsIngredients = klingTask === KLING_TASKS["Ingredients to video"];
   const klingIsEdit = klingTask === KLING_TASKS["Edit video"];
@@ -1283,6 +1337,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const klingImageTotal = klingKeyframeEdges.length + klingReferenceImageEdges.length;
   const klingInputVisible = (name: string) => {
     if (name === "prompt") return true;
+    if (klingIsMotion) return name === "image" || name === "video";
     if (klingIsImageTask) {
       if (name === "image" || name === "middle_images" && !klingIsV3) return true;
       return klingIsV3 ? name === "end_image" : name === "last_image";
@@ -1504,8 +1559,8 @@ export default function WorkflowNode({ id, data }: NodeProps) {
             {isKling && name === "prompt" && (
               <>
                 {klingReferenceTagHint && <div className="ff-node-hint">{klingReferenceTagHint}</div>}
-                <div className={`ff-kling-note${klingPrompt.length > (/[^\u0000-\u007f]/.test(klingPrompt) ? 11000 : 26000) ? " ff-kling-warning" : ""}`}>
-                  Prompt maximum: 26,000 characters (11,000 for non-English text). Image-to-video prompts are optional.
+                <div className={`ff-kling-note${klingPrompt.length > (klingIsMotion ? 2500 : /[^\u0000-\u007f]/.test(klingPrompt) ? 11000 : 26000) ? " ff-kling-warning" : ""}`}>
+                  {klingIsMotion ? "Optional prompt, up to 2,500 characters." : "Prompt maximum: 26,000 characters (11,000 for non-English text). Image-to-video prompts are optional."}
                   {klingIsIngredients && <div>If your prompt mentions none of the references, all of them are used automatically.</div>}
                   {!klingIsImageTask && <div>You can describe what to avoid in the prompt.</div>}
                 </div>
@@ -1525,11 +1580,17 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       {isKling && klingIsEdit && !klingConnectedHandles.has("video") && (
         <div className="ff-node-warning">Edit video requires a connected source video.</div>
       )}
+      {isKling && klingIsMotion && (!klingConnectedHandles.has("image") || !klingConnectedHandles.has("video")) && (
+        <div className="ff-node-warning">Connect a character image and a motion reference video.</div>
+      )}
+      {isKling && klingIsMotion && (
+        <div className="ff-kling-note">Use a clear character image and a single-person MP4 or MOV motion video. Follow image: 3–10 seconds; follow video: 3–30 seconds. Uploads are limited to 100 MB. Atlas validates URL-based video metadata.</div>
+      )}
       {isKling && klingIsIngredients && klingReferenceImageEdges.length === 0
         && klingReferenceVideoEdges.length === 0 && klingSubjects.length === 0 && (
         <div className="ff-node-warning">Ingredients to video requires at least one reference image, reference video, or subject.</div>
       )}
-      {isKling && klingTask !== KLING_TASKS["Text to video"] && (
+      {isKling && !klingIsMotion && klingTask !== KLING_TASKS["Text to video"] && (
         <div className="ff-kling-note">Keyframe images: JPG, JPEG, or PNG; 30 MB maximum; at least 300 px per side; aspect ratio 2:5 to 5:2.</div>
       )}
       {isKling && (klingIsIngredients || klingIsEdit) && (
@@ -1726,7 +1787,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           Add reference image ({klingReferenceImageEdges.length}/10)
         </button>
       )}
-      {isKling && !klingIsV3 && <div className="ff-kling-note">Audio is generated natively. There is no audio control.</div>}
+      {isKling && !klingIsV3 && !klingIsMotion && <div className="ff-kling-note">Audio is generated natively. There is no audio control.</div>}
       {isKling && klingIsV3 && <div className="ff-kling-note">Resolution is fixed by the selected V3.0 tier.</div>}
       {isKling && klingIsV3 && klingIsImageTask && (
         <div className="ff-kling-note">The last frame is passed as end_image for V3.0.</div>
@@ -1844,6 +1905,8 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         if (isKling && param.key === "aspect_ratio" && !klingAspectVisible) return false;
         if (isKling && param.key === "resolution" && klingIsV3) return false;
         if (isKling && param.key === "sound" && !klingIsV3) return false;
+        if (isKling && klingIsMotion && ["duration", "aspect_ratio", "resolution", "sound"].includes(param.key)) return false;
+        if (isKling && !klingIsMotion && ["character_orientation", "keep_original_audio"].includes(param.key)) return false;
         return true;
       }).map((p) => (
         <label className={`ff-param${p.kind === "toggle" ? " ff-param-toggle" : ""}`} key={p.key}>
@@ -1924,9 +1987,12 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           ) : p.kind === "file" ? (
             <>
               <input className="nodrag" type="text" placeholder="https://…" value={d.params[p.key] ?? ""}
-                onChange={(e) => setParam(p.key, e.target.value)} />
+                onChange={(e) => {
+                  setParam(p.key, e.target.value);
+                  if (d.type === "input/video") setParam("duration_seconds", undefined);
+                }} />
               <input className="nodrag" type="file"
-                accept={isKlingImage ? "image/jpeg,image/png" : isOmniImage ? "image/png,image/jpeg,image/webp" : "image/*"}
+                accept={d.type === "input/video" ? "video/mp4,video/quicktime" : isKlingImage ? "image/jpeg,image/png" : isOmniImage ? "image/png,image/jpeg,image/webp" : "image/*"}
                 onChange={(e) => upload(p.key, e.target.files?.[0])} />
             </>
           ) : (
@@ -2025,7 +2091,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       )}
       {isKling && (
         <div className="ff-node-cost">
-          Estimated cost: {klingCost}
+          Estimated cost: {klingIsMotion ? "varies with generated duration (~$0.095/s; confirm with Atlas)" : klingCost}
           {klingVideoCount > 0 || klingSubjects.some((subject) => subject.type === "video" && subject.reference_video)
             ? <div>Input video seconds are billed too.</div>
             : null}
@@ -2041,7 +2107,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         </div>
       ))}
 
-      {Object.entries(isFlux3Video || isMiniMax ? {} : d.outputs ?? {}).map(([name, value]) => (
+      {Object.entries(isFlux3Video || isMiniMax ? {} : displayedOutputs).map(([name, value]) => (
         <Media
           key={name}
           value={value}
@@ -2050,7 +2116,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           previewLabel={isPreviewNode ? d.title || def.label || "workflow" : undefined}
         />
       ))}
-      {isPreviewNode && !Object.entries(d.outputs ?? {}).some(([name, value]) =>
+      {isPreviewNode && !Object.entries(displayedOutputs).some(([name, value]) =>
         previewMediaType(value, outputPreviewType(name, def.outputs, previewInputType))) && (
         <div className="ff-media-actions">
           <button

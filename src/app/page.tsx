@@ -17,10 +17,12 @@ import { deleteWanDocument } from "@/lib/wan-storage";
 import { MINIMAX_NODE_TYPE, normalizeMiniMaxParams } from "@/lib/minimax";
 import { FLUX3_NODE_TYPE, normalizeFlux3Params } from "@/lib/flux3";
 import { FLUX3_VIDEO_NODE_TYPE } from "@/lib/flux3-video";
+import { createWorkflowNodes, videoModelTypes } from "@/lib/workflow-node-factory";
 import { validateWorkflow, type WorkflowValidationIssue } from "@/lib/workflow-validation";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
+import Compositor from "@/components/Compositor";
 
 const nodeTypes = { workflow: WorkflowNode };
 const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
@@ -55,9 +57,8 @@ const imageModelGroups = [
     types: ["openai/gpt-image"],
   },
 ] as const;
-const videoModelTypes = [WAN_NODE_TYPE, MINIMAX_NODE_TYPE, FLUX3_VIDEO_NODE_TYPE, "video/seedance", "video/kling", "video/veo", "video/google-omni"] as const;
 const utilityGroups = [
-  { title: "Inputs", types: ["input/prompt", "input/image", "input/number"] },
+  { title: "Inputs", types: ["input/prompt", "input/image", "input/video", "input/number"] },
   { title: "Outputs", types: ["output/preview"] },
   { title: "Advanced", types: ["fal/model"] },
 ] as const;
@@ -212,7 +213,7 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
 }
 
 export default function Page() {
-  const [activeView, setActiveView] = useState<"workflow" | "editor">("workflow");
+  const [activeView, setActiveView] = useState<"workflow" | "editor" | "compositor">("workflow");
   const [uiTheme, setUiTheme] = useState<UiTheme>("midnight");
   const [uiButtonColor, setUiButtonColor] = useState<UiButtonColor>("blue");
   const [themeError, setThemeError] = useState("");
@@ -408,41 +409,10 @@ export default function Page() {
   const addNode = (type: string) => {
     const def = registry[type];
     if (!def) return;
-    const params = Object.fromEntries(def.params.map((p) => [p.key, p.default ?? ""]));
     const position = { x: 100 + nodes.length * 30, y: 100 + nodes.length * 30 };
-    const nodeId = `${type}-${crypto.randomUUID()}`;
-    const node = {
-      id: nodeId,
-      type: "workflow",
-      position: def.autoPrompt ? { x: position.x + 360, y: position.y } : position,
-      data: { type, params, status: "idle", outputs: {}, log: "" },
-    };
-
-    if (!def.autoPrompt) {
-      setNodes((ns) => [...ns, node]);
-      return;
-    }
-
-    const promptDef = registry["input/prompt"];
-    const promptParams = Object.fromEntries(promptDef.params.map((p) => [p.key, p.default ?? ""]));
-    const promptId = `input/prompt-${crypto.randomUUID()}`;
-    const promptNode = {
-      id: promptId,
-      type: "workflow",
-      position,
-      data: { type: promptDef.type, params: promptParams, status: "idle", outputs: {}, log: "" },
-    };
-    setNodes((ns) => [...ns, promptNode, node]);
-    setEdges((es) => [
-      ...es,
-      {
-        id: `${promptId}-${nodeId}`,
-        source: promptId,
-        sourceHandle: "text",
-        target: nodeId,
-        targetHandle: "prompt",
-      },
-    ]);
+    const additions = createWorkflowNodes(type, registry, position);
+    setNodes((ns) => [...ns, ...additions.nodes]);
+    if (additions.edges.length) setEdges((es) => [...es, ...additions.edges]);
   };
 
   const isValidConnection = useCallback(
@@ -484,7 +454,9 @@ export default function Page() {
         const isImageTask = task === KLING_TASKS["Image to video"];
         const isIngredients = task === KLING_TASKS["Ingredients to video"];
         const isEdit = task === KLING_TASKS["Edit video"];
+        const isMotion = task === KLING_TASKS["Motion control"] && model === KLING_MODELS["Kling 2.6 Pro Motion Control"];
         const available = handle === "prompt"
+          || (isMotion && ["image", "video"].includes(handle))
           || (isImageTask && ["image", "middle_images", v3 ? "end_image" : "last_image"].includes(handle))
           || (isIngredients && ["image", "middle_images", "last_image", "reference_images"].includes(handle)
             || isIngredients && /^reference_video_[1-5]$/.test(handle))
@@ -796,6 +768,7 @@ export default function Page() {
           <nav className="ff-mode-tabs" aria-label="App workspace">
             <button type="button" aria-pressed={activeView === "workflow"} onClick={() => setActiveView("workflow")}>Workflow</button>
             <button type="button" aria-pressed={activeView === "editor"} onClick={() => setActiveView("editor")}>Video editor</button>
+            <button type="button" aria-pressed={activeView === "compositor"} onClick={() => setActiveView("compositor")}>Compositor</button>
           </nav>
           {activeView === "workflow" ? (
             <>
@@ -827,8 +800,10 @@ export default function Page() {
                 {storageStatus}
               </span>
             </>
-            ) : (
+            ) : activeView === "editor" ? (
               <span className="ff-editor-mode-status">Timeline editor · H.264 MOV / MP4 export</span>
+            ) : (
+              <span className="ff-editor-mode-status">Compositor workspace</span>
             )}
         </div>
         <div className="ff-toolbar-actions">
@@ -856,9 +831,9 @@ export default function Page() {
             {isRunning ? "Running workflow…" : "Run workflow"} <span aria-hidden="true">↗</span>
           </button>
             </>
-          ) : (
+          ) : activeView === "editor" ? (
             <span className="ff-toolbar-note">H.264 MOV and MP4 export rendered on the server</span>
-          )}
+          ) : null}
           <label className="ff-theme-control">
             <span>Theme</span>
             <select
@@ -1113,6 +1088,7 @@ export default function Page() {
       </main>
       </div>
       <VideoEditor assets={videoAssets} hidden={activeView !== "editor"} />
+      <Compositor hidden={activeView !== "compositor"} />
     </div>
   );
 }

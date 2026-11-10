@@ -2,6 +2,7 @@ export const KLING_MODELS = {
   "Kling 4.0": "kwaivgi/kling-v4.0",
   "Kling V3.0 Pro": "kwaivgi/kling-v3.0-pro",
   "Kling V3.0 Std": "kwaivgi/kling-v3.0-std",
+  "Kling 2.6 Pro Motion Control": "kwaivgi/kling-v2.6-pro",
 } as const;
 
 export const KLING_TASKS = {
@@ -9,12 +10,14 @@ export const KLING_TASKS = {
   "Image to video": "image-to-video",
   "Ingredients to video": "reference-to-video",
   "Edit video": "video-edit",
+  "Motion control": "motion-control",
 } as const;
 
 export const KLING_RATES: Record<string, number> = {
   [KLING_MODELS["Kling 4.0"]]: 0.11,
   [KLING_MODELS["Kling V3.0 Pro"]]: 0.095,
   [KLING_MODELS["Kling V3.0 Std"]]: 0.071,
+  [KLING_MODELS["Kling 2.6 Pro Motion Control"]]: 0.095,
 };
 
 export const KLING_DEFAULTS: Record<string, unknown> = {
@@ -26,6 +29,8 @@ export const KLING_DEFAULTS: Record<string, unknown> = {
   sound: false,
   elements: [],
   voice_ids: [],
+  character_orientation: "image",
+  keep_original_audio: true,
 };
 
 const klingModelValues = Object.values(KLING_MODELS);
@@ -42,6 +47,7 @@ export function normalizeKlingParams(params: Record<string, unknown> = {}) {
     "Kling 4.0": KLING_MODELS["Kling 4.0"],
     "Kling V3.0 Pro": KLING_MODELS["Kling V3.0 Pro"],
     "Kling V3.0 Std": KLING_MODELS["Kling V3.0 Std"],
+    "Kling 2.6 Pro Motion Control": KLING_MODELS["Kling 2.6 Pro Motion Control"],
   };
   const candidateModel = aliases[String(params.model ?? "")] ?? String(params.model ?? "");
   const model = klingModelValues.includes(candidateModel as (typeof klingModelValues)[number])
@@ -51,12 +57,14 @@ export function normalizeKlingParams(params: Record<string, unknown> = {}) {
     Object.entries(KLING_TASKS).map(([label, task]) => [label, task])
   );
   const candidateTask = taskAliases[String(params.task ?? "")] ?? String(params.task ?? "");
-  const allowedTasks = model === KLING_MODELS["Kling 4.0"]
-    ? klingTaskValues
+  const allowedTasks: string[] = model === KLING_MODELS["Kling 2.6 Pro Motion Control"]
+    ? [KLING_TASKS["Motion control"]]
+    : model === KLING_MODELS["Kling 4.0"]
+    ? klingTaskValues.filter((task) => task !== KLING_TASKS["Motion control"])
     : [KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]];
-  const task = allowedTasks.includes(candidateTask as (typeof klingTaskValues)[number])
+  const task = allowedTasks.includes(candidateTask)
     ? candidateTask
-    : KLING_DEFAULTS.task as string;
+    : model === KLING_MODELS["Kling 2.6 Pro Motion Control"] ? KLING_TASKS["Motion control"] : KLING_DEFAULTS.task as string;
 
   const normalized: Record<string, unknown> = { ...KLING_DEFAULTS };
   for (const key of klingKnownFields) {
@@ -83,6 +91,8 @@ export function normalizeKlingParams(params: Record<string, unknown> = {}) {
     ? params.resolution
     : KLING_DEFAULTS.resolution;
   normalized.sound = params.sound === true;
+  normalized.character_orientation = params.character_orientation === "video" ? "video" : "image";
+  normalized.keep_original_audio = typeof params.keep_original_audio === "boolean" ? params.keep_original_audio : true;
   normalized.elements = Array.isArray(params.elements) ? params.elements.slice(0, 7) : [];
   normalized.voice_ids = Array.isArray(params.voice_ids)
     ? params.voice_ids.filter((voice): voice is string => typeof voice === "string").slice(0, 3)
@@ -96,7 +106,7 @@ type KlingConnectedInputs = Record<string, unknown>;
 const klingAsArray = (value: unknown) =>
   value == null ? [] : Array.isArray(value) ? value.filter(Boolean) : [value];
 
-function klingValidateMediaUrl(value: unknown, label: string, extensions: string[]) {
+function klingValidateMediaUrl(value: unknown, label: string, extensions: string[], maxImageMb = 30, requireExtension = true) {
   if (typeof value !== "string" || !value) throw new Error(`${label} is required.`);
   const dataMime = value.match(/^data:([^;,]+)/i)?.[1]?.toLowerCase();
   if (dataMime) {
@@ -109,7 +119,7 @@ function klingValidateMediaUrl(value: unknown, label: string, extensions: string
     });
     if (!supported) throw new Error(`${label} must use ${extensions.join(", ").toUpperCase()}.`);
     const base64 = value.match(/^data:[^,]*;base64,(.*)$/)?.[1];
-    if (base64 && Math.floor(base64.length * 3 / 4) > (extensions.includes("mp4") || extensions.includes("mov") ? 300 : 30) * 1024 * 1024) {
+    if (base64 && Math.floor(base64.length * 3 / 4) > (extensions.includes("mp4") || extensions.includes("mov") ? 300 : maxImageMb) * 1024 * 1024) {
       throw new Error(`${label} exceeds the supported file size.`);
     }
     return;
@@ -131,7 +141,7 @@ function klingValidateMediaUrl(value: unknown, label: string, extensions: string
       || (octets[0] === 192 && octets[1] === 168)
       || octets[0] >= 224);
   if (!["http:", "https:"].includes(url.protocol)
-    || !validExtension
+    || (requireExtension && !validExtension)
     || host === "localhost"
     || host.endsWith(".localhost")
     || host.endsWith(".local")
@@ -144,8 +154,8 @@ function klingValidateMediaUrl(value: unknown, label: string, extensions: string
   }
 }
 
-function klingValidateImage(value: unknown, label: string) {
-  klingValidateMediaUrl(value, label, ["jpg", "jpeg", "png"]);
+function klingValidateImage(value: unknown, label: string, maxImageMb = 30, requireExtension = true) {
+  klingValidateMediaUrl(value, label, ["jpg", "jpeg", "png"], maxImageMb, requireExtension);
   if (typeof value !== "string" || !value.startsWith("data:")) return;
   const encoded = value.match(/^data:[^,]*;base64,(.*)$/)?.[1];
   if (!encoded) return;
@@ -228,6 +238,33 @@ export function buildKlingRequest(node: KlingNodeLike, connectedInputs: KlingCon
   }
   if (!klingTaskValues.includes(rawTask as (typeof klingTaskValues)[number])) {
     throw new Error("Choose a valid Kling task.");
+  }
+  const motion = rawModel === KLING_MODELS["Kling 2.6 Pro Motion Control"];
+  if (motion !== (rawTask === KLING_TASKS["Motion control"])) {
+    throw new Error("Motion control requires Kling 2.6 Pro Motion Control.");
+  }
+  if (motion) {
+    const image = connectedInputs.image;
+    const video = connectedInputs.video;
+    if (!image) throw new Error("Connect a character image.");
+    if (!video) throw new Error("Connect a motion reference video.");
+    klingValidateImage(image, "Character image", 50, false);
+    if (typeof video !== "string" || !/^https?:\/\//i.test(video)) {
+      throw new Error("Motion video must be an uploaded or public MP4 or MOV URL.");
+    }
+    klingValidateMediaUrl(video, "Motion video", ["mp4", "mov"], 30, false);
+    const orientation = String(node.params.character_orientation ?? "image");
+    if (!["image", "video"].includes(orientation)) throw new Error("Choose a valid character orientation.");
+    const audio = node.params.keep_original_audio ?? true;
+    if (typeof audio !== "boolean") throw new Error("Keep original audio must be a boolean.");
+    const prompt = String(connectedInputs.prompt ?? "");
+    if (prompt.length > 2500) throw new Error("Prompt must be 2,500 characters or fewer.");
+    const seconds = Number(connectedInputs.motion_duration_seconds);
+    if (Number.isFinite(seconds) && seconds > 0 && (seconds < 3 || seconds > (orientation === "image" ? 10 : 30))) {
+      throw new Error(`Motion video must be 3 to ${orientation === "image" ? 10 : 30} seconds for this orientation.`);
+    }
+    const body = { model: `${rawModel}/${rawTask}`, image, video, character_orientation: orientation, keep_original_audio: audio, ...(prompt.trim() ? { prompt } : {}) };
+    return { model: body.model, task: rawTask, body };
   }
   if (klingV3Models.has(rawModel)
     && ![KLING_TASKS["Text to video"], KLING_TASKS["Image to video"]].includes(rawTask as never)) {
