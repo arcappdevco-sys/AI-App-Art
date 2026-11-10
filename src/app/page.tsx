@@ -12,6 +12,11 @@ import { runGraph } from "@/lib/executor";
 import { normalizeVeoParams } from "@/lib/veo";
 import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "@/lib/omni";
 import { normalizeKlingParams, KLING_MODELS, KLING_TASKS } from "@/lib/kling";
+import { normalizeWanParams, WAN_NODE_TYPE } from "@/lib/wan";
+import { deleteWanDocument } from "@/lib/wan-storage";
+import { MINIMAX_NODE_TYPE, normalizeMiniMaxParams } from "@/lib/minimax";
+import { FLUX3_NODE_TYPE, normalizeFlux3Params } from "@/lib/flux3";
+import { FLUX3_VIDEO_NODE_TYPE } from "@/lib/flux3-video";
 import { validateWorkflow, type WorkflowValidationIssue } from "@/lib/workflow-validation";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
@@ -43,13 +48,14 @@ const UI_BUTTON_COLOR_LABELS: Record<UiButtonColor, string> = {
 const imageModelGroups = [
   { provider: "Google", access: "FREE TIER", types: ["google/gemini-image"] },
   { provider: "fal", access: "PAID · API CONNECTED", types: ["fal/nano-banana"] },
+  { provider: "Atlas Cloud", access: "ATLAS CLOUD API · FLUX 3", types: [FLUX3_NODE_TYPE] },
   {
     provider: "OpenAI",
     access: "PAID · API CONNECTED",
     types: ["openai/gpt-image"],
   },
 ] as const;
-const videoModelTypes = ["video/seedance", "video/kling", "video/veo", "video/google-omni"] as const;
+const videoModelTypes = [WAN_NODE_TYPE, MINIMAX_NODE_TYPE, FLUX3_VIDEO_NODE_TYPE, "video/seedance", "video/kling", "video/veo", "video/google-omni"] as const;
 const utilityGroups = [
   { title: "Inputs", types: ["input/prompt", "input/image", "input/number"] },
   { title: "Outputs", types: ["output/preview"] },
@@ -75,8 +81,23 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
   if (value.version !== undefined && value.version !== 1) {
     throw new Error(`Workflow version ${String(value.version)} is not supported.`);
   }
+  const rawWanNodeIds = new Set(value.nodes.flatMap((item) =>
+    isRecord(item) && typeof item.id === "string" && isRecord(item.data) && item.data.type === WAN_NODE_TYPE
+      ? [item.id]
+      : []
+  ));
+  const rawMiniMaxNodeIds = new Set(value.nodes.flatMap((item) =>
+    isRecord(item) && typeof item.id === "string" && isRecord(item.data) && item.data.type === MINIMAX_NODE_TYPE
+      ? [item.id]
+      : []
+  ));
+  const rawFlux3NodeIds = new Set(value.nodes.flatMap((item) =>
+    isRecord(item) && typeof item.id === "string" && isRecord(item.data) && item.data.type === FLUX3_NODE_TYPE
+      ? [item.id]
+      : []
+  ));
   const nodeIds = new Set<string>();
-  const nodes = value.nodes.map((item, index) => {
+  const normalizedNodes = value.nodes.map((item, index) => {
     if (!isRecord(item) || typeof item.id !== "string" || !item.id
       || !isRecord(item.position) || typeof item.position.x !== "number" || !Number.isFinite(item.position.x)
       || typeof item.position.y !== "number" || !Number.isFinite(item.position.y)
@@ -99,6 +120,11 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
         ? "GPT Image 2.6 · Sunburst"
         : undefined;
     const params = isRecord(data.params) ? data.params : {};
+    const autoOwner = data.autoCreatedFor ?? data.wanAutoCreatedFor;
+    const autoRole = data.autoCreatedRole ?? data.wanAutoCreatedRole;
+    const isWanAutoImage = type === "input/image" && typeof autoOwner === "string" && rawWanNodeIds.has(autoOwner);
+    const isMiniMaxAutoImage = type === "input/image" && typeof autoOwner === "string" && rawMiniMaxNodeIds.has(autoOwner);
+    const isFlux3AutoImage = type === "input/image" && typeof autoOwner === "string" && rawFlux3NodeIds.has(autoOwner);
     return {
       id: item.id,
       type: "workflow",
@@ -106,21 +132,58 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
       data: {
         ...data,
         type,
-        params: {
-          ...params,
-          ...(legacyModel ? { model: legacyModel } : {}),
-          ...(type === "video/veo" ? normalizeVeoParams(params) : {}),
-          ...(type === "video/google-omni" ? normalizeOmniParams(params) : {}),
-          ...(type === "video/kling" ? normalizeKlingParams(params) : {}),
-        },
+        params: type === WAN_NODE_TYPE
+          ? normalizeWanParams(params)
+          : type === MINIMAX_NODE_TYPE
+            ? normalizeMiniMaxParams(params)
+          : type === FLUX3_NODE_TYPE
+            ? normalizeFlux3Params(params)
+          : {
+            ...params,
+            ...(legacyModel ? { model: legacyModel } : {}),
+            ...(type === "video/veo" ? normalizeVeoParams(params) : {}),
+            ...(type === "video/google-omni" ? normalizeOmniParams(params) : {}),
+            ...(type === "video/kling" ? normalizeKlingParams(params) : {}),
+          },
+        ...(isWanAutoImage || isMiniMaxAutoImage || isFlux3AutoImage ? {
+          autoCreatedFor: autoOwner,
+          autoCreatedRole: autoRole,
+        } : {}),
         status: "idle",
         log: "",
       },
     } as Node;
   });
+  const seenWanAutoRoles = new Set<string>();
+  const duplicateWanAutoIds = new Set<string>();
+  const seenMiniMaxAutoRoles = new Set<string>();
+  const duplicateMiniMaxAutoIds = new Set<string>();
+  const seenFlux3AutoRoles = new Set<string>();
+  const duplicateFlux3AutoIds = new Set<string>();
+  for (const node of normalizedNodes) {
+    const data = node.data as { autoCreatedFor?: string; autoCreatedRole?: string; type?: string };
+    if (data.type !== "input/image" || !data.autoCreatedFor || !data.autoCreatedRole) continue;
+    const key = `${data.autoCreatedFor}\u0000${data.autoCreatedRole}`;
+    if (rawWanNodeIds.has(data.autoCreatedFor)) {
+      if (seenWanAutoRoles.has(key)) duplicateWanAutoIds.add(node.id);
+      else seenWanAutoRoles.add(key);
+    }
+    if (rawMiniMaxNodeIds.has(data.autoCreatedFor)) {
+      if (seenMiniMaxAutoRoles.has(key)) duplicateMiniMaxAutoIds.add(node.id);
+      else seenMiniMaxAutoRoles.add(key);
+    }
+    if (rawFlux3NodeIds.has(data.autoCreatedFor)) {
+      if (seenFlux3AutoRoles.has(key)) duplicateFlux3AutoIds.add(node.id);
+      else seenFlux3AutoRoles.add(key);
+    }
+  }
+  const duplicateAutoIds = new Set([...duplicateWanAutoIds, ...duplicateMiniMaxAutoIds, ...duplicateFlux3AutoIds]);
+  const nodes = normalizedNodes.filter((node) => !duplicateAutoIds.has(node.id));
   const edgeIds = new Set<string>();
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const edges = value.edges.map((item, index) => {
+  const edges = value.edges.filter((item) =>
+    !isRecord(item) || !duplicateAutoIds.has(String(item.source))
+  ).map((item, index) => {
     if (!isRecord(item) || typeof item.id !== "string" || !item.id
       || typeof item.source !== "string" || !nodeIds.has(item.source)
       || typeof item.target !== "string" || !nodeIds.has(item.target)
@@ -464,19 +527,55 @@ export default function Page() {
           })
           .map((node) => node!.id)
         : [];
-      const replacedSeedanceImageSet = new Set(replacedSeedanceImageIds);
-      if (replacedSeedanceImageSet.size > 0) {
-        setNodes((current) => current.filter((node) => !replacedSeedanceImageSet.has(node.id)));
+      const isWanImageTarget = targetType === WAN_NODE_TYPE
+        && (["image", "last_image"].includes(targetHandle) || /^reference_image_\d+$/.test(targetHandle));
+      const replacedWanImageIds = isWanImageTarget
+        ? edges
+          .filter((edge) => edge.target === c.target && edge.targetHandle === targetHandle && edge.source !== c.source)
+          .map((edge) => nodes.find((node) => node.id === edge.source))
+          .filter((node) => {
+            const data = node?.data as { autoCreatedFor?: string; autoCreatedRole?: string } | undefined;
+            const role = data?.autoCreatedRole ?? "";
+            return data?.autoCreatedFor === c.target
+              && (["first_frame", "last_frame"].includes(role) || /^reference_image_\d+$/.test(role));
+          })
+          .map((node) => node!.id)
+        : [];
+      const isMiniMaxFrameTarget = targetType === MINIMAX_NODE_TYPE
+        && ["image", "end_image"].includes(targetHandle);
+      const replacedMiniMaxImageIds = isMiniMaxFrameTarget
+        ? edges
+          .filter((edge) => edge.target === c.target && edge.targetHandle === targetHandle && edge.source !== c.source)
+          .map((edge) => nodes.find((node) => node.id === edge.source))
+          .filter((node) => {
+            const data = node?.data as { autoCreatedFor?: string; autoCreatedRole?: string } | undefined;
+            return data?.autoCreatedFor === c.target
+              && ["first_frame", "last_frame"].includes(data.autoCreatedRole ?? "");
+          })
+          .map((node) => node!.id)
+        : [];
+      const replacedImageIds = new Set([
+        ...replacedSeedanceImageIds,
+        ...replacedWanImageIds,
+        ...replacedMiniMaxImageIds,
+      ]);
+      if (replacedImageIds.size > 0) {
+        setNodes((current) => current.filter((node) => !replacedImageIds.has(node.id)));
       }
       const allowsMultipleReferences = ["video/seedance", "video/google-omni"].includes(targetType ?? "")
         && c.targetHandle === "reference_images";
       const allowsMultipleKlingInputs = targetType === "video/kling"
         && ["reference_images", "middle_images"].includes(c.targetHandle ?? "");
+      const allowsMultipleMiniMaxReferences = targetType === MINIMAX_NODE_TYPE
+        && c.targetHandle === "references";
+      const allowsMultipleFlux3References = targetType === FLUX3_NODE_TYPE
+        && c.targetHandle === "reference_images";
       setEdges((current) => {
-        const withoutReplacedInputs = current.filter((edge) => !replacedSeedanceImageSet.has(edge.source));
+        const withoutReplacedInputs = current.filter((edge) => !replacedImageIds.has(edge.source));
         return addEdge(
           c,
-          allowsMultipleReferences || allowsMultipleKlingInputs
+          allowsMultipleReferences || allowsMultipleKlingInputs || allowsMultipleMiniMaxReferences
+            || allowsMultipleFlux3References
             ? withoutReplacedInputs
             : withoutReplacedInputs.filter((edge) => !(edge.target === c.target && edge.targetHandle === c.targetHandle))
         );
@@ -799,7 +898,9 @@ export default function Page() {
                       <span>
                         {type === "openai/gpt-image"
                           ? "Usage billed through OPENAI_API_KEY"
-                          : def.integration === "pending" ? "Available in UI · API setup later" : "Add image model node"}
+                          : type === FLUX3_NODE_TYPE
+                            ? "FLUX 3 text to image and image edit · Atlas Cloud"
+                            : def.integration === "pending" ? "Available in UI · API setup later" : "Add image model node"}
                       </span>
                     </span>
                     <span className="ff-card-add" aria-hidden="true">+</span>
@@ -817,7 +918,7 @@ export default function Page() {
           </div>
           <div className="ff-model-group">
             <div className="ff-group-heading">
-              <span className="ff-access">ATLAS CLOUD API · KLING, SEEDANCE, VEO & GEMINI OMNI FLASH</span>
+              <span className="ff-access">ATLAS CLOUD API · WAN 3.0, KLING, SEEDANCE, VEO & GEMINI OMNI FLASH</span>
             </div>
             {videoModelTypes.map((type) => {
               const def = registry[type];
@@ -826,8 +927,14 @@ export default function Page() {
                   <span className="ff-card-mark" aria-hidden="true">▶</span>
                   <span className="ff-card-copy">
                     <strong>{def.label}</strong>
-                    <span>{type === "video/seedance"
-                      ? "Seedance 2.5 text and image-to-video connected"
+                    <span>{type === FLUX3_VIDEO_NODE_TYPE
+                      ? "FLUX 3 text, image, frames, keyframes, extend, and edit video · Atlas Cloud"
+                      : type === MINIMAX_NODE_TYPE
+                      ? "MiniMax H3, Fast, Max, and Max Turbo · text, image, and reference-to-video"
+                      : type === WAN_NODE_TYPE
+                      ? "Wan 3.0 and Wan 3.0 Prime · text, image, and reference-to-video"
+                      : type === "video/seedance"
+                        ? "Seedance 2.5 text and image-to-video connected"
                       : type === "video/kling"
                         ? "Kling models connected"
                         : type === "video/veo"
@@ -878,8 +985,19 @@ export default function Page() {
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onNodesDelete={(deletedNodes) => {
             const deletedVideoModelIds = new Set(deletedNodes
-              .filter((node) => ["video/seedance", "video/veo"].includes((node.data as { type?: string }).type ?? ""))
+              .filter((node) => [WAN_NODE_TYPE, MINIMAX_NODE_TYPE, FLUX3_NODE_TYPE, "video/seedance", "video/veo"].includes((node.data as { type?: string }).type ?? ""))
               .map((node) => node.id));
+            for (const node of deletedNodes) {
+              const data = node.data as { type?: string; params?: { file?: { id?: unknown } | null } };
+              const documentId = data.type === WAN_NODE_TYPE && typeof data.params?.file?.id === "string"
+                ? data.params.file.id
+                : "";
+              if (documentId) {
+                void deleteWanDocument(documentId).catch((error: unknown) => {
+                  console.error("Could not remove the saved Wan document.", error);
+                });
+              }
+            }
             const deletedOmniIds = new Set(deletedNodes
               .filter((node) => (node.data as { type?: string }).type === "video/google-omni")
               .map((node) => node.id));

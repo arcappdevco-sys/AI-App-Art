@@ -1,0 +1,37 @@
+import { useEffect, useState } from "react";
+
+// Atlas serves videos with "Content-Disposition: attachment" and no CORS headers,
+// which stops <video> from playing them; load through the same-origin download route.
+export function usePlayableVideo(url: string | undefined) {
+  const [state, setState] = useState<{ source: string; blobUrl: string } | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!url) return;
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    fetch("/api/media/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        objectUrl = URL.createObjectURL(blob.type.startsWith("video/") ? blob : new Blob([blob], { type: "video/mp4" }));
+        setState({ source: url, blobUrl: objectUrl });
+        setFailed(null);
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setFailed(error instanceof Error ? error.message : "Could not load video.");
+      });
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [url]);
+
+  const src = url && state?.source === url ? state.blobUrl : undefined;
+  return { src, loading: Boolean(url) && !src && !failed, error: url ? failed : null };
+}

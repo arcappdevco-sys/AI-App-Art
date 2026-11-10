@@ -2925,6 +2925,604 @@ body {
   color: #e5bf7c;
 }
 
+.ff-wan-controls {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 5px;
+}
+
+.ff-wan-field {
+  display: grid;
+  gap: 4px;
+  margin: 4px 10px 0;
+  color: #9eada8;
+  font-size: 9px;
+}
+
+.ff-wan-field input:not([type="file"]),
+.ff-wan-field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 27px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  color: var(--text);
+  padding: 5px 7px;
+  font: inherit;
+  font-size: 10px;
+}
+
+.ff-wan-field input[type="file"] {
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.ff-wan-field small,
+.ff-wan-note {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-wan-note {
+  margin: 2px 10px 0;
+}
+
+.ff-wan-unverified {
+  color: #d7bd8e;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.ff-wan-warning {
+  margin: 4px 10px 0;
+  color: #e5bf7c;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-wan-port {
+  min-height: 13px;
+}
+
+.ff-wan-add,
+.ff-wan-action,
+.ff-wan-confirm button,
+.ff-wan-preview button,
+.ff-wan-poll-error button,
+.ff-wan-document-name button {
+  min-height: 27px;
+  border: 1px solid var(--line-control);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--text-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ff-wan-add,
+.ff-wan-action {
+  margin: 5px 10px 0;
+  padding: 4px 8px;
+}
+
+.ff-wan-add:hover:not(:disabled),
+.ff-wan-action:hover:not(:disabled),
+.ff-wan-confirm button:hover,
+.ff-wan-preview button:hover,
+.ff-wan-poll-error button:hover,
+.ff-wan-document-name button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ff-wan-add:disabled,
+.ff-wan-action:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.ff-wan-actions {
+  display: flex;
+  gap: 6px;
+  margin-right: 10px;
+}
+
+.ff-wan-actions .ff-wan-action {
+  flex: 1;
+}
+
+.ff-wan-secondary {
+  background: var(--surface-deep);
+}
+
+.ff-wan-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 5px 10px 0;
+  color: #9eada8;
+  font-size: 9px;
+}
+
+.ff-wan-toggle input {
+  accent-color: var(--accent);
+}
+
+.ff-wan-locked {
+  opacity: 0.75;
+}
+
+.ff-wan-document {
+  display: grid;
+  gap: 4px;
+  margin: 8px 10px 0;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.ff-wan-document .ff-wan-field {
+  margin: 3px 0 0;
+}
+
+.ff-wan-document-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.ff-wan-document-name button,
+.ff-wan-confirm button,
+.ff-wan-preview button,
+.ff-wan-poll-error button {
+  min-height: 23px;
+  padding: 2px 6px;
+}
+
+.ff-wan-cost,
+.ff-wan-status,
+.ff-wan-confirm,
+.ff-wan-poll-error,
+.ff-wan-preview {
+  display: grid;
+  gap: 5px;
+  margin: 7px 10px 0;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-wan-cost {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.ff-wan-status strong {
+  color: var(--text-strong);
+}
+
+.ff-wan-confirm,
+.ff-wan-poll-error,
+.ff-wan-preview {
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-deep);
+}
+
+.ff-wan-confirm {
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+}
+
+.ff-wan-preview pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  color: var(--text);
+  font: 9px/1.45 var(--font-geist-mono), ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ff-wan-poll-error {
+  color: #e5bf7c;
+}
+
+.ff-minimax-controls {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 5px;
+}
+
+.ff-minimax-field {
+  display: grid;
+  gap: 4px;
+  margin: 4px 10px 0;
+  color: #9eada8;
+  font-size: 9px;
+}
+
+.ff-minimax-field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 27px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  color: var(--text);
+  padding: 5px 7px;
+  font: inherit;
+  font-size: 10px;
+}
+
+.ff-minimax-field small,
+.ff-minimax-note,
+.ff-minimax-output small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-minimax-note,
+.ff-minimax-warning {
+  margin: 2px 10px 0;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-minimax-warning {
+  color: #e5bf7c;
+}
+
+.ff-minimax-unverified {
+  color: #d7bd8e;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.ff-minimax-port {
+  min-height: 13px;
+}
+
+.ff-minimax-add,
+.ff-minimax-action,
+.ff-minimax-confirm button,
+.ff-minimax-preview button {
+  min-height: 27px;
+  border: 1px solid var(--line-control);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--text-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ff-minimax-add,
+.ff-minimax-action {
+  margin: 5px 10px 0;
+  padding: 4px 8px;
+}
+
+.ff-minimax-add:hover,
+.ff-minimax-action:hover:not(:disabled),
+.ff-minimax-confirm button:hover,
+.ff-minimax-preview button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ff-minimax-action:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.ff-minimax-actions {
+  display: flex;
+  gap: 6px;
+  margin-right: 10px;
+}
+
+.ff-minimax-actions .ff-minimax-action {
+  flex: 1;
+}
+
+.ff-minimax-secondary {
+  background: var(--surface-deep);
+}
+
+.ff-minimax-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 5px 10px 0;
+  color: #9eada8;
+  font-size: 9px;
+}
+
+.ff-minimax-toggle input {
+  accent-color: var(--accent);
+}
+
+.ff-minimax-cost,
+.ff-minimax-status,
+.ff-minimax-confirm,
+.ff-minimax-poll-error,
+.ff-minimax-preview {
+  display: grid;
+  gap: 5px;
+  margin: 7px 10px 0;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-minimax-cost {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.ff-minimax-status strong {
+  color: var(--text-strong);
+}
+
+.ff-minimax-confirm,
+.ff-minimax-poll-error,
+.ff-minimax-preview {
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-deep);
+}
+
+.ff-minimax-confirm > div {
+  display: flex;
+  gap: 5px;
+}
+
+.ff-minimax-confirm button,
+.ff-minimax-preview button {
+  min-height: 23px;
+  padding: 2px 6px;
+}
+
+.ff-minimax-preview pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  color: var(--text);
+  font: 9px/1.45 var(--font-geist-mono), ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ff-minimax-output {
+  display: grid;
+  gap: 5px;
+  margin: 7px 10px 0;
+}
+
+.ff-minimax-output video {
+  width: 100%;
+  max-height: 220px;
+  border-radius: 5px;
+  background: #000;
+}
+
+.ff-flux3-controls {
+  display: grid;
+  gap: 5px;
+  padding-bottom: 5px;
+}
+
+.ff-flux3-field {
+  display: grid;
+  gap: 4px;
+  margin: 4px 10px 0;
+  color: #9eada8;
+  font-size: 9px;
+}
+
+.ff-flux3-field select,
+.ff-flux3-field input[type="range"] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ff-flux3-field select {
+  min-height: 27px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface-deep);
+  color: var(--text);
+  padding: 5px 7px;
+  font: inherit;
+  font-size: 10px;
+}
+
+.ff-flux3-field input[type="range"] {
+  accent-color: var(--accent);
+}
+
+.ff-flux3-field small,
+.ff-flux3-note,
+.ff-flux3-output small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-flux3-note,
+.ff-flux3-warning {
+  margin: 2px 10px 0;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-flux3-warning {
+  color: #e5bf7c;
+}
+
+.ff-flux3-unverified {
+  color: #d7bd8e;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.ff-flux3-port {
+  min-height: 13px;
+}
+
+.ff-flux3-list {
+  margin: 2px 10px 0;
+  padding-left: 14px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.ff-flux3-add,
+.ff-flux3-action,
+.ff-flux3-confirm button,
+.ff-flux3-preview button {
+  min-height: 27px;
+  border: 1px solid var(--line-control);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--text-strong);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ff-flux3-add,
+.ff-flux3-action {
+  margin: 5px 10px 0;
+  padding: 4px 8px;
+}
+
+.ff-flux3-add:hover:not(:disabled),
+.ff-flux3-action:hover:not(:disabled),
+.ff-flux3-confirm button:hover,
+.ff-flux3-preview button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ff-flux3-add:disabled,
+.ff-flux3-action:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.ff-flux3-actions {
+  display: flex;
+  gap: 6px;
+  margin-right: 10px;
+}
+
+.ff-flux3-actions .ff-flux3-action {
+  flex: 1;
+}
+
+.ff-flux3-secondary {
+  background: var(--surface-deep);
+}
+
+.ff-flux3-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 5px 10px 0;
+  color: #9eada8;
+  font-size: 9px;
+}
+
+.ff-flux3-toggle input {
+  accent-color: var(--accent);
+}
+
+.ff-flux3-cost,
+.ff-flux3-status,
+.ff-flux3-confirm,
+.ff-flux3-poll-error,
+.ff-flux3-preview {
+  display: grid;
+  gap: 5px;
+  margin: 7px 10px 0;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ff-flux3-cost {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.ff-flux3-status strong {
+  color: var(--text-strong);
+}
+
+.ff-flux3-confirm,
+.ff-flux3-poll-error,
+.ff-flux3-preview {
+  padding: 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-deep);
+}
+
+.ff-flux3-confirm > div {
+  display: flex;
+  gap: 5px;
+}
+
+.ff-flux3-confirm button,
+.ff-flux3-preview button {
+  min-height: 23px;
+  padding: 2px 6px;
+}
+
+.ff-flux3-preview pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  color: var(--text);
+  font: 9px/1.45 var(--font-geist-mono), ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ff-flux3-output {
+  display: grid;
+  gap: 5px;
+  margin: 7px 10px 0;
+}
+
+.ff-flux3-output img {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 5px;
+  background: #000;
+}
+
 .ff-prompt-assistant {
   display: grid;
   gap: 8px;

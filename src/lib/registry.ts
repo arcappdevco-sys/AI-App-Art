@@ -6,6 +6,10 @@ import { VEO_MODELS, buildVeoRequest } from "./veo";
 import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_TASKS, buildOmniRequest } from "./omni";
 import { KLING_DEFAULTS, KLING_MODELS, KLING_TASKS, buildKlingRequest } from "./kling";
 import { PROMPT_ASSISTANT_MODELS, PROMPT_ASSISTANT_TARGETS } from "./prompt-assistant";
+import { WAN_DEFAULTS, WAN_NODE_TYPE } from "./wan";
+import { MINIMAX_DEFAULTS, MINIMAX_NODE_TYPE } from "./minimax";
+import { FLUX3_DEFAULTS, FLUX3_NODE_TYPE } from "./flux3";
+import { FLUX3_VIDEO_DEFAULTS, FLUX3_VIDEO_NODE_TYPE } from "./flux3-video";
 
 fal.config({ proxyUrl: "/api/fal/proxy" });
 
@@ -877,9 +881,152 @@ const googleOmniVideo: NodeDef = {
   },
 };
 
+const wanVideo: NodeDef = {
+  type: WAN_NODE_TYPE,
+  label: "Wan 3.0",
+  category: "Video",
+  autoPrompt: true,
+  inputs: {
+    prompt: "text",
+    image: "image",
+    last_image: "image",
+    ...Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`reference_image_${index + 1}`, "image" as const])),
+    ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`reference_video_${index + 1}`, "video" as const])),
+    ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`reference_audio_${index + 1}`, "audio" as const])),
+  },
+  conditionalInputs: {
+    image: { param: "task", value: "image-to-video" },
+    last_image: { param: "task", value: "image-to-video" },
+    ...Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
+      `reference_image_${index + 1}`,
+      { param: "task", value: "reference-to-video" } as const,
+    ])),
+    ...Object.fromEntries(
+      Array.from({ length: 5 }, (_, index) => [`reference_video_${index + 1}`, { param: "task", value: "reference-to-video" } as const])
+    ),
+    ...Object.fromEntries(
+      Array.from({ length: 5 }, (_, index) => [`reference_audio_${index + 1}`, { param: "task", value: "reference-to-video" } as const])
+    ),
+  },
+  outputs: { video: "video" },
+  params: Object.entries(WAN_DEFAULTS).map(([key, value]) => ({
+    key,
+    label: key.replaceAll("_", " "),
+    kind: "text" as const,
+    default: value,
+  })),
+  execute: async ({ params }) => {
+    const outputUrl = typeof params.last_output_url === "string" ? params.last_output_url : "";
+    if (/^https?:\/\/\S+$/i.test(outputUrl)) return { video: outputUrl };
+    throw new Error("Generate Wan 3.0 from its node controls; it cannot be run as part of workflow Run.");
+  },
+};
+
+const miniMaxVideo: NodeDef = {
+  type: MINIMAX_NODE_TYPE,
+  label: "MiniMax H3",
+  category: "Video",
+  autoPrompt: true,
+  inputs: {
+    prompt: "text",
+    image: "image",
+    end_image: "image",
+    references: "image",
+    ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`reference_video_${index + 1}`, "video" as const])),
+    ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`reference_audio_${index + 1}`, "audio" as const])),
+  },
+  conditionalInputs: {
+    image: { param: "task", value: "image-to-video" },
+    end_image: { param: "task", value: "image-to-video" },
+    references: { param: "task", value: "reference-to-video" },
+    ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+      `reference_video_${index + 1}`,
+      { param: "task", value: "reference-to-video" } as const,
+    ])),
+    ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+      `reference_audio_${index + 1}`,
+      { param: "task", value: "reference-to-video" } as const,
+    ])),
+  },
+  outputs: { video: "video" },
+  params: Object.entries(MINIMAX_DEFAULTS).map(([key, value]) => ({
+    key,
+    label: key.replaceAll("_", " "),
+    kind: "text" as const,
+    default: value,
+  })),
+  execute: async ({ params }) => {
+    const outputUrl = typeof params.last_output_url === "string" ? params.last_output_url : "";
+    if (/^https?:\/\/\S+$/i.test(outputUrl)) return { video: outputUrl };
+    throw new Error("Generate MiniMax H3 from its node controls before running connected Preview nodes.");
+  },
+};
+
+const flux3Image: NodeDef = {
+  type: FLUX3_NODE_TYPE,
+  label: "FLUX 3 Image",
+  category: "fal",
+  autoPrompt: true,
+  inputs: { prompt: "text", reference_images: "image" },
+  conditionalInputs: { reference_images: { param: "task", value: "edit" } },
+  outputs: { image: "image" },
+  params: Object.entries(FLUX3_DEFAULTS).map(([key, value]) => ({
+    key,
+    label: key.replaceAll("_", " "),
+    kind: "text" as const,
+    default: value,
+  })),
+  execute: async ({ params }) => {
+    const urls = Array.isArray(params.last_output_urls) ? params.last_output_urls : [];
+    const first = urls.find((url: unknown) => typeof url === "string" && /^https?:\/\/\S+$/i.test(url));
+    if (first) return { image: first };
+    throw new Error("Generate FLUX 3 Image from its node controls before running connected Preview nodes.");
+  },
+};
+
+const flux3Video: NodeDef = {
+  type: FLUX3_VIDEO_NODE_TYPE,
+  label: "FLUX 3 Video",
+  category: "fal",
+  autoPrompt: true,
+  inputs: {
+    prompt: "text",
+    image: "image",
+    start_image: "image",
+    end_image: "image",
+    extend_video: "video",
+    edit_video: "video",
+    ...Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`keyframe_${index + 1}`, "image" as const])),
+  },
+  conditionalInputs: {
+    image: { param: "task", value: "image-to-video" },
+    start_image: { param: "task", value: "first-last-frame-to-video" },
+    end_image: { param: "task", value: "first-last-frame-to-video" },
+    extend_video: { param: "task", value: "extend-video" },
+    edit_video: { param: "task", value: "edit-video" },
+    ...Object.fromEntries(Array.from({ length: 10 }, (_, index) => [
+      `keyframe_${index + 1}`,
+      { param: "task", value: "keyframes-to-video" },
+    ])),
+  },
+  outputs: { video: "video" },
+  params: Object.entries(FLUX3_VIDEO_DEFAULTS).map(([key, value]) => ({
+    key,
+    label: key.replaceAll("_", " "),
+    kind: "text" as const,
+    default: value,
+  })),
+  execute: async ({ params }) => {
+    const urls = Array.isArray(params.last_output_urls) ? params.last_output_urls : [];
+    const first = urls.find((url: unknown) => typeof url === "string" && /^https?:\/\/\S+$/i.test(url));
+    if (first) return { video: first };
+    throw new Error("Generate FLUX 3 Video from its node controls before running connected Preview nodes.");
+  },
+};
+
 export const registry: Record<string, NodeDef> = Object.fromEntries(
   [
     prompt, number, image, promptAssistant, falModel, nanoBanana, geminiImage, gptImage,
-    seedanceVideo, klingVideo, veoVideo, googleOmniVideo, preview,
+    seedanceVideo, klingVideo, veoVideo, googleOmniVideo, wanVideo, miniMaxVideo, flux3Image, flux3Video, preview,
   ].map((d) => [d.type, d])
 );

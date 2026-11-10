@@ -15,7 +15,13 @@ Add provider API keys to `.env.local` as needed. Keep these keys private and do 
 
 The **ChatGPT Image** node uses `OPENAI_API_KEY` and OpenAI's GPT Image models. OpenAI API usage is billed separately and is not included in Nano Banana's free tier.
 
-Video generation uses the server-side `ATLASCLOUD_API_KEY`. The app connects Kling, Seedance 2.5 text/image-to-video, Veo 3.1 (standard, Fast, and Lite supported tasks), and Gemini Omni Flash (original) text/image/reference/video-edit tasks to Atlas Cloud. Gemini Omni 1.1 and Gemini Omni video-extend are not listed in Atlas Cloud's current video API catalog, so they are not offered as runnable choices.
+Video generation uses the server-side `ATLASCLOUD_API_KEY`. The Wan 3.0 and MiniMax H3 nodes send supported text-to-video, image-to-video, and reference-to-video requests through `/api/atlas/wan`; set `ATLASCLOUD_API_KEY` in `.env.local` before using **Generate**. The browser never receives the key. Wan documents are kept in this browser's IndexedDB, and uploaded media URLs are temporary generation inputs.
+
+The FLUX 3 Image node (text to image and image edit) uses the same server route and key, submits to Atlas `generateImage`, and has a **Check Atlas key** button that makes one read-only request and never spends credits.
+
+The FLUX 3 Video node covers text to video, image to video, first and last frame, keyframes, extend video and edit video. It submits to Atlas `generateVideo` (the documented path; Atlas's schema files list `generateImage` for some of these models, so this is unverified) and uses the same route, polling and **Check Atlas key** button.
+
+The app also connects Kling, Seedance 2.5 text/image-to-video, Veo 3.1 (standard, Fast, and Lite supported tasks), and Gemini Omni Flash (original) text/image/reference/video-edit tasks to Atlas Cloud. Gemini Omni 1.1 and Gemini Omni video-extend are not listed in Atlas Cloud's current video API catalog, so they are not offered as runnable choices.
 
 ## Private invite-only deployment
 

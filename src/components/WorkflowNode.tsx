@@ -13,6 +13,14 @@ import { SEEDANCE_MODELS, SEEDANCE_RATES } from "@/lib/seedance";
 import { VEO_RATES } from "@/lib/veo";
 import { normalizeOmniParams, OMNI_DEFAULTS, OMNI_MODELS, OMNI_RATES, OMNI_TASKS } from "@/lib/omni";
 import { KLING_DEFAULTS, KLING_MODELS, KLING_RATES, KLING_TASKS } from "@/lib/kling";
+import { WAN_NODE_TYPE } from "@/lib/wan";
+import { FLUX3_NODE_TYPE } from "@/lib/flux3";
+import Flux3NodeControls from "@/components/Flux3NodeControls";
+import Flux3VideoNodeControls from "@/components/Flux3VideoNodeControls";
+import { FLUX3_VIDEO_NODE_TYPE } from "@/lib/flux3-video";
+import WanNodeControls from "@/components/WanNodeControls";
+import { MINIMAX_NODE_TYPE } from "@/lib/minimax";
+import MiniMaxNodeControls from "@/components/MiniMaxNodeControls";
 import {
   PROMPT_ASSISTANT_IMAGE_INPUTS,
   PROMPT_ASSISTANT_MODELS,
@@ -261,6 +269,10 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const isVeo = d.type === "video/veo";
   const isOmni = d.type === "video/google-omni";
   const isKling = d.type === "video/kling";
+  const isWan = d.type === WAN_NODE_TYPE;
+  const isMiniMax = d.type === MINIMAX_NODE_TYPE;
+  const isFlux3 = d.type === FLUX3_NODE_TYPE;
+  const isFlux3Video = d.type === FLUX3_VIDEO_NODE_TYPE;
   const isOmniImage = d.type === "input/image" && (
     d.omniAutoCreatedFor
     || renderedEdges.some((edge) => edge.source === id
@@ -1368,7 +1380,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           </span>
         )}
         <i className="ff-dot" />
-        {def.category !== "Input" && runControl && (
+        {def.category !== "Input" && runControl && !isWan && !isMiniMax && !isFlux3 && !isFlux3Video && (
           <button
             className="ff-node-run"
             type="button"
@@ -1408,6 +1420,10 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       {d.type === "video/google-omni" && (
         <div className="ff-node-notice">Atlas Cloud API connected for Gemini Omni Flash text, image, reference, and video-edit tasks.</div>
       )}
+      {isWan && <WanNodeControls nodeId={id} nodeData={d} />}
+      {isMiniMax && <MiniMaxNodeControls nodeId={id} nodeData={d} />}
+      {isFlux3 && <Flux3NodeControls nodeId={id} nodeData={d} />}
+      {isFlux3Video && <Flux3VideoNodeControls nodeId={id} nodeData={d} />}
       {seedanceImageToVideo && (
         <div className="ff-node-hint">
           Connect any image output directly to First frame or Last frame; Run executes upstream nodes first.
@@ -1417,6 +1433,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
 
       {Object.entries(def.inputs)
         .filter(([name]) => {
+          if (isWan || isMiniMax || isFlux3 || isFlux3Video) return false;
           if (isOmni) return showOmniInput(name);
           if (isKling) return klingInputVisible(name);
           const condition = def.conditionalInputs?.[name];
@@ -1772,6 +1789,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         )}
 
       {def.params.filter((param) => {
+        if (isWan || isMiniMax || isFlux3 || isFlux3Video) return false;
         if (isPromptAssistant && ["conversation", "refined_prompt"].includes(param.key)) return false;
         if (isPromptNode && ["conversation", "refined_prompt"].includes(param.key)) return false;
         if (param.visibleWhen && d.params[param.visibleWhen.param] !== param.visibleWhen.value) return false;
@@ -1978,7 +1996,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         </div>
       ))}
 
-      {Object.values(d.outputs ?? {}).map((v, i) => (
+      {Object.values(isFlux3Video || isMiniMax ? {} : d.outputs ?? {}).map((v, i) => (
         <Media key={i} value={v} previewLabel={isPreviewNode ? d.title || def.label || "workflow" : undefined} />
       ))}
       {isPreviewNode && !Object.values(d.outputs ?? {}).some((value) => mediaType(value)) && (
