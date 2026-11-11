@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { registerEditorUploadBridge } from "@/lib/editor-upload-bridge";
+import { prepareEditorVideoSource } from "@/lib/editor-video-source";
 import { applyMatteClip, getKeyColorChroma, refineMatte, RGB_LUMA_WEIGHTS } from "@/lib/chroma-key";
 import {
   deleteEditorMedia,
@@ -273,7 +274,7 @@ async function fetchMediaFile(src: string, name: string) {
   const blob = await response.blob();
   if (blob.size === 0) throw new Error(`"${name}" is empty and cannot be saved.`);
   if (blob.size > 512 * 1024 * 1024) throw new Error(`"${name}" is larger than the 512 MB editor-storage limit.`);
-  return new File([blob], name, { type: blob.type || "video/mp4" });
+  return new File([blob], name, { type: blob.type.startsWith("video/") ? blob.type : "video/mp4" });
 }
 
 export default function VideoEditor({ assets, hidden = false }: { assets: VideoAsset[]; hidden?: boolean }) {
@@ -311,6 +312,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   const [isRestoringHistory, setIsRestoringHistory] = useState(false);
   const [error, setError] = useState("");
   const previewRef = useRef<HTMLVideoElement>(null);
+  const workflowClipUrls = useRef(new Set<string>());
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const keyerCanvasRef = useRef<HTMLCanvasElement>(null);
   const compositeBackgroundInputRef = useRef<HTMLInputElement>(null);
@@ -346,6 +348,13 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
   }, [compositeBackgroundImageUrl]);
   useEffect(() => () => {
     compositeBackgroundLoadId.current += 1;
+  }, []);
+  useEffect(() => {
+    const urls = workflowClipUrls.current;
+    return () => {
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      urls.clear();
+    };
   }, []);
   const unsavedMediaName = uploadedAssets.find((asset) => !asset.mediaId)?.name
     ?? sequences.flatMap((sequence) => [...sequence.clips, ...sequence.audioClips]).find((clip) => !clip.mediaId)?.name;
@@ -1194,21 +1203,23 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     setLoadingAssetId(asset.id);
     const probe = document.createElement("video");
     probe.preload = "metadata";
+    let preparedUrl: string | null = null;
     let normalizedUrl: string | null = null;
     try {
+      const prepared = await prepareEditorVideoSource(asset, fetchMediaFile);
+      preparedUrl = prepared.ownedUrl;
       let clipAsset: VideoAsset = {
         id: asset.id,
         name: asset.name,
-        src: asset.src,
+        src: prepared.src,
         mediaId: asset.mediaId ?? `clip-media-${crypto.randomUUID()}`,
-        ...(asset.file ? { file: asset.file } : {}),
+        file: prepared.file,
       };
       try {
-        await loadMedia(probe, asset.src);
-      } catch (originalError) {
-        if (!asset.file) throw originalError;
+        await loadMedia(probe, clipAsset.src);
+      } catch {
         const formData = new FormData();
-        formData.append("clip", asset.file, asset.file.name);
+        formData.append("clip", prepared.file, prepared.file.name);
         const response = await fetch("/api/video/normalize", { method: "POST", body: formData });
         if (!response.ok) {
           let message = `Could not prepare "${asset.name}" for preview (${response.status}).`;
@@ -1245,7 +1256,8 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
         trimStart: 0,
         trimEnd: duration,
       };
-      const mediaFile = clipAsset.file ?? await fetchMediaFile(asset.src, asset.name);
+      const mediaFile = clipAsset.file;
+      if (!mediaFile) throw new Error(`Could not read "${asset.name}".`);
       if (mediaFile.size > 512 * 1024 * 1024) {
         throw new Error(`"${asset.name}" is larger than the 512 MB editor-storage limit.`);
       }
@@ -1260,7 +1272,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
       await saveEditorMedia(mediaId, mediaFile);
       clip.file = mediaFile;
       const currentSnapshot = editorSnapshotRef.current;
-      const historySnapshot = normalizedUrl
+      const historySnapshot = normalizedUrl && asset.file
         ? {
           ...currentSnapshot,
           uploadedAssets: currentSnapshot.uploadedAssets.map((item) => item.id === asset.id
@@ -1279,12 +1291,20 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
           playheadTime,
         };
       }));
-      if (normalizedUrl) {
+      if (normalizedUrl && asset.file) {
         setUploadedAssets((current) => current.map((item) => item.id === asset.id
           ? { ...clipAsset, file: mediaFile }
           : item));
-        URL.revokeObjectURL(asset.src);
+        const sourceInUse = currentSnapshot.sequences.some((sequence) =>
+          [...sequence.clips, ...sequence.audioClips].some((item) => item.src === asset.src));
+        if (!sourceInUse && asset.src.startsWith("blob:")) URL.revokeObjectURL(asset.src);
+      }
+      if (normalizedUrl) {
+        if (!asset.file) workflowClipUrls.current.add(normalizedUrl);
         normalizedUrl = null;
+      } else if (preparedUrl) {
+        workflowClipUrls.current.add(preparedUrl);
+        preparedUrl = null;
       }
       playbackWanted.current = false;
       setIsPlaying(false);
@@ -1292,6 +1312,7 @@ export default function VideoEditor({ assets, hidden = false }: { assets: VideoA
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not add this video.");
     } finally {
+      if (preparedUrl) URL.revokeObjectURL(preparedUrl);
       if (normalizedUrl) URL.revokeObjectURL(normalizedUrl);
       setLoadingAssetId("");
       probe.removeAttribute("src");

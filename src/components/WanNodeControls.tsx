@@ -24,6 +24,7 @@ import {
   type WanUploadKind,
 } from "@/lib/wan-api";
 import { deleteWanDocument, loadWanDocument, saveWanDocument } from "@/lib/wan-storage";
+import { isWanAutomaticInput, selectWanIncoming } from "@/lib/wan-connections";
 
 type WanNodeControlsProps = {
   nodeId: string;
@@ -206,8 +207,8 @@ export default function WanNodeControls({ nodeId, nodeData, workflowRunning }: W
     [edges, nodeId],
   );
   const incomingByHandle = useMemo(
-    () => new Map(connectedEdges.map((edge) => [edge.targetHandle ?? "", edge])),
-    [connectedEdges],
+    () => selectWanIncoming(connectedEdges, nodes, nodeId),
+    [connectedEdges, nodes, nodeId],
   );
 
   const setWanParams = (patch: Record<string, unknown>) => {
@@ -410,9 +411,16 @@ export default function WanNodeControls({ nodeId, nodeData, workflowRunning }: W
       return !wantedRoles.has(role);
     });
     const obsoleteIds = new Set(obsolete.map((candidate) => candidate.id));
-    const obsoleteEdges = getEdges().filter((edge) =>
+    const existingEdges = getEdges();
+    const currentNodes = getNodes();
+    const selectedEdges = selectWanIncoming(existingEdges, currentNodes, nodeId);
+    const sources = new Map(currentNodes.map((candidate) => [candidate.id, candidate]));
+    const obsoleteEdges = existingEdges.filter((edge) =>
       (edge.target === nodeId && !validHandles.has(edge.targetHandle ?? ""))
       || obsoleteIds.has(edge.source)
+      || (edge.target === nodeId
+        && isWanAutomaticInput(sources.get(edge.source), nodeId)
+        && selectedEdges.get(edge.targetHandle ?? "")?.id !== edge.id)
     );
     if (obsolete.length || obsoleteEdges.length) {
       await deleteElements({
@@ -428,7 +436,7 @@ export default function WanNodeControls({ nodeId, nodeData, workflowRunning }: W
     ]));
     const position = getNode(nodeId)?.position ?? { x: 400, y: 200 };
     const additions = requestedInputs
-      .filter((input) => !existingRoleToNode.has(input.role))
+      .filter((input) => !existingRoleToNode.has(input.role) && !selectedEdges.has(input.handle))
       .map((input) => {
         const inputId = `input/image-${crypto.randomUUID()}`;
         return {
@@ -476,7 +484,13 @@ export default function WanNodeControls({ nodeId, nodeData, workflowRunning }: W
         window.requestAnimationFrame(() => {
           const currentParams = asRecord(asRecord(getNode(nodeId)?.data).params);
           updateNodeInternals(nodeId);
-          if (currentParams.task === nextTask) addEdges(edgesToAdd);
+          if (currentParams.task === nextTask) {
+            const currentEdges = getEdges();
+            const availableEdges = edgesToAdd.filter((edge) =>
+              !currentEdges.some((current) => current.target === nodeId && current.targetHandle === edge.targetHandle)
+            );
+            if (availableEdges.length) addEdges(availableEdges);
+          }
         });
       });
     }
@@ -1014,8 +1028,8 @@ export default function WanNodeControls({ nodeId, nodeData, workflowRunning }: W
           <button
             type="button"
             className="ff-wan-action nodrag"
-            disabled={active || workflowRunning || requestErrors.length > 0}
-            title={requestErrors[0] ?? (active ? "Generation is in progress." : "")}
+            disabled={active || workflowRunning || !promptText.trim() || requestErrors.length > 0}
+            title={!promptText.trim() ? "Connect a Prompt node with prompt text." : requestErrors[0] ?? (active ? "Generation is in progress." : "")}
             onClick={handleGenerate}
           >
             Generate

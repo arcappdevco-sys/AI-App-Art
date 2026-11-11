@@ -55,6 +55,7 @@ const DOCUMENT_EXTENSIONS = new Set([
   "docx", "doc", "xlsx", "xls", "pptx", "ppt", "pdf", "txt", "key", "pages", "numbers", "md",
 ]);
 const PREDICTION_ID = /^[a-zA-Z0-9_-]{1,200}$/;
+const LOCAL_MEDIA_PLACEHOLDER = "[local file uploaded during generation]";
 
 export type WanStoredFile = {
   id: string;
@@ -186,12 +187,12 @@ function describeWanMedia(value: unknown): MediaDescription | null {
   if (typeof value === "string") {
     if (/^https?:\/\//i.test(value)) return { value, local: false };
     const data = parseDataUrl(value);
-    if (data) return { value: "[local file uploaded during generation]", local: true, ...data };
+    if (data) return { value: LOCAL_MEDIA_PLACEHOLDER, local: true, ...data };
     return null;
   }
   if (typeof File !== "undefined" && value instanceof File) {
     return {
-      value: "[local file uploaded during generation]",
+      value: LOCAL_MEDIA_PLACEHOLDER,
       local: true,
       type: value.type.toLowerCase(),
       size: value.size,
@@ -209,7 +210,7 @@ function describeWanMedia(value: unknown): MediaDescription | null {
   if (!local && valueText) return describeWanMedia(valueText);
   if (!local && typeof valueText !== "string") return null;
   return {
-    value: dataUrl || valueText || "[local file uploaded during generation]",
+    value: LOCAL_MEDIA_PLACEHOLDER,
     local,
     ...(type ? { type } : {}),
     ...(size !== undefined ? { size } : {}),
@@ -490,7 +491,7 @@ export function buildWanRequest(node: WanNodeLike, resolvedInputs: WanResolvedIn
   }
   const validationBody = structuredClone(body);
   const placeholderUrl = "https://example.com/media";
-  const replaceLocalUrl = (value: unknown) => value === "[local file uploaded during generation]" ? placeholderUrl : value;
+  const replaceLocalUrl = (value: unknown) => value === LOCAL_MEDIA_PLACEHOLDER ? placeholderUrl : value;
   for (const key of ["image", "last_image", "file"]) {
     if (key in validationBody) validationBody[key] = replaceLocalUrl(validationBody[key]);
   }

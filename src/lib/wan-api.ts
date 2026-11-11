@@ -129,5 +129,9 @@ export function wanDataUrlToFile(value: string, filename: string, fallbackType: 
   }
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
-  return new File([buffer], filename, { type: mimeType });
+  const extension = mimeType.split("/")[1]?.replace("jpeg", "jpg").replace(/[^a-z0-9]/gi, "");
+  const name = !/\.[a-z0-9]{2,5}$/i.test(filename) && extension
+    ? `${filename}.${extension}`
+    : filename;
+  return new File([buffer], name, { type: mimeType });
 }

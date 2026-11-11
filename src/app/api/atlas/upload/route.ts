@@ -1,38 +1,11 @@
 import { NextResponse } from "next/server";
+import { findAtlasUploadUrl } from "@/lib/atlas-upload";
 
 const MAX_IMAGE_BYTES = 30 * 1024 * 1024;
 const IMAGE_TYPES = new Set([
   "image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff",
   "image/gif", "image/heic", "image/heif",
 ]);
-
-function findMediaUrl(value: unknown, depth = 0): string {
-  if (depth > 4 || value === null || value === undefined) return "";
-  if (typeof value === "string") return /^https?:\/\/\S+$/i.test(value) ? value : "";
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const url = findMediaUrl(item, depth + 1);
-      if (url) return url;
-    }
-    return "";
-  }
-  if (typeof value !== "object") return "";
-
-  const record = value as Record<string, unknown>;
-  for (const key of ["url", "file_url", "fileUrl", "media_url", "mediaUrl", "image_url", "imageUrl"]) {
-    const url = findMediaUrl(record[key], depth + 1);
-    if (url) return url;
-  }
-  for (const key of ["data", "result", "file", "media", "output"]) {
-    const url = findMediaUrl(record[key], depth + 1);
-    if (url) return url;
-  }
-  for (const value of Object.values(record)) {
-    const url = findMediaUrl(value, depth + 1);
-    if (url) return url;
-  }
-  return "";
-}
 
 export async function POST(request: Request) {
   const apiKey = process.env.ATLASCLOUD_API_KEY;
@@ -85,7 +58,7 @@ export async function POST(request: Request) {
     const message = typeof result.message === "string" ? result.message : `Atlas Cloud upload failed (${response.status}).`;
     return NextResponse.json({ error: message }, { status: response.status });
   }
-  const url = findMediaUrl(result);
+  const url = findAtlasUploadUrl(result, 0, true);
   if (!url) {
     const responseKeys = Object.keys(result).join(", ");
     const code = result.code === undefined ? "" : ` (code: ${String(result.code)})`;

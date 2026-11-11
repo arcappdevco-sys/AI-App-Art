@@ -3,6 +3,7 @@ import { validateWanRequestBody, validateWanUploadFile, validateWanImageMetadata
 import { validateMiniMaxRequestBody, validateMiniMaxUpload } from "@/lib/minimax";
 import { FLUX3_MIN_SIDE_PX, FLUX3_SUBMIT_PATH, validateFlux3RequestBody, validateFlux3Upload } from "@/lib/flux3";
 import { FLUX3_VIDEO_SUBMIT_PATH, validateFlux3VideoRequestBody, validateFlux3VideoUpload } from "@/lib/flux3-video";
+import { findAtlasUploadUrl } from "@/lib/atlas-upload";
 const ATLAS_API = "https://api.atlascloud.ai/api/v1/model";
 const PREDICTION_ID = /^[a-zA-Z0-9_-]{1,200}$/;
 const DOCUMENT_MAX_BYTES = 100 * 1024 * 1024;
@@ -100,6 +101,18 @@ function apiKeyMissing() {
   return NextResponse.json({ error: "Atlas API key is not configured on the server." }, { status: 500 });
 }
 
+function uploadResponse(payload: unknown, apiKey: string) {
+  const url = findAtlasUploadUrl(payload);
+  if (url) return NextResponse.json({ url });
+  const fields = isRecord(payload) ? Object.keys(payload).join(", ") : "";
+  const data = isRecord(payload) ? payload.data : undefined;
+  const dataFields = isRecord(data) ? Object.keys(data).join(", ") : "";
+  const message = atlasMessage(payload, "", apiKey);
+  return NextResponse.json({
+    error: `Atlas upload did not return a media URL.${fields ? ` Response fields: ${fields}.` : ""}${dataFields ? ` Data fields: ${dataFields}.` : ""}${message ? ` Atlas: ${message}` : ""}`.replaceAll(apiKey, "[redacted]"),
+  }, { status: 502 });
+}
+
 function atlasAuthorization(apiKey: string) {
   const token = apiKey.trim().replace(/^Bearer\s+/i, "");
   return `Bearer ${token}`;
@@ -175,10 +188,7 @@ async function uploadMedia(request: Request, apiKey: string) {
         : atlasMessage(payload, `Atlas media upload failed (${response.status}).`, apiKey),
     }, { status: response.status });
   }
-  if (!isRecord(payload) || typeof payload.url !== "string" || !payload.url) {
-    return NextResponse.json({ error: "Atlas upload did not return a media URL." }, { status: 502 });
-  }
-  return NextResponse.json({ url: payload.url });
+  return uploadResponse(payload, apiKey);
 }
 
 async function uploadMiniMaxMedia(form: FormData, apiKey: string, signal: AbortSignal) {
@@ -228,10 +238,7 @@ async function uploadMiniMaxMedia(form: FormData, apiKey: string, signal: AbortS
         : atlasMessage(payload, `Atlas media upload failed (${response.status}).`, apiKey),
     }, { status: response.status });
   }
-  if (!isRecord(payload) || typeof payload.url !== "string" || !/^https?:\/\/\S+$/i.test(payload.url)) {
-    return NextResponse.json({ error: "Atlas upload did not return a public media URL." }, { status: 502 });
-  }
-  return NextResponse.json({ url: payload.url });
+  return uploadResponse(payload, apiKey);
 }
 
 async function uploadFlux3Media(form: FormData, apiKey: string, signal: AbortSignal) {
@@ -276,10 +283,7 @@ async function uploadFlux3Media(form: FormData, apiKey: string, signal: AbortSig
         : atlasMessage(payload, `Atlas media upload failed (${response.status}).`, apiKey),
     }, { status: response.status });
   }
-  if (!isRecord(payload) || typeof payload.url !== "string" || !/^https?:\/\/\S+$/i.test(payload.url)) {
-    return NextResponse.json({ error: "Atlas upload did not return a public media URL." }, { status: 502 });
-  }
-  return NextResponse.json({ url: payload.url });
+  return uploadResponse(payload, apiKey);
 }
 
 async function generateFlux3(body: unknown, request: Request, apiKey: string) {
@@ -362,10 +366,7 @@ async function uploadFlux3VideoMedia(form: FormData, apiKey: string, signal: Abo
         : atlasMessage(payload, `Atlas media upload failed (${response.status}).`, apiKey),
     }, { status: response.status });
   }
-  if (!isRecord(payload) || typeof payload.url !== "string" || !/^https?:\/\/\S+$/i.test(payload.url)) {
-    return NextResponse.json({ error: "Atlas upload did not return a public media URL." }, { status: 502 });
-  }
-  return NextResponse.json({ url: payload.url });
+  return uploadResponse(payload, apiKey);
 }
 
 async function generateFlux3Video(body: unknown, request: Request, apiKey: string) {

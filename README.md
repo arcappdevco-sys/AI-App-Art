@@ -42,6 +42,8 @@ The **ChatGPT Image** node uses `OPENAI_API_KEY` and OpenAI's GPT Image models. 
 
 Video generation uses the server-side `ATLASCLOUD_API_KEY`. The Wan 3.0 and MiniMax H3 nodes send supported text-to-video, image-to-video, and reference-to-video requests through `/api/atlas/wan`; set `ATLASCLOUD_API_KEY` in `.env.local` before using **Generate**. The browser never receives the key. Wan documents are kept in this browser's IndexedDB, and uploaded media URLs are temporary generation inputs.
 
+For Wan image-to-video, connect a non-empty Prompt node and an image to **First frame**. You can also connect the same generated image to **Last frame** to return to it at the end. Local images, including Nano Banana free-tier outputs, are checked and uploaded when generation starts.
+
 The FLUX 3 Image node (text to image and image edit) uses the same server route and key, submits to Atlas `generateImage`, and has a **Check Atlas key** button that makes one read-only request and never spends credits.
 
 The FLUX 3 Video node covers text to video, image to video, first and last frame, keyframes, extend video and edit video. It submits to Atlas `generateVideo` (the documented path; Atlas's schema files list `generateImage` for some of these models, so this is unverified) and uses the same route, polling and **Check Atlas key** button.
@@ -75,6 +77,8 @@ Before sharing the link, confirm the Access application covers the entire hostna
 ## Video editor export
 
 The video editor saves Footage media, sequences, video and audio clips, transitions, trims, selection, playhead, and the active tool in this browser using IndexedDB. This data is local to the browser and device; clearing site data removes it. Browser storage quotas vary, so keep backup copies of important footage. Media files larger than 512 MB are not saved to the editor.
+
+Adding a Workflow video to the timeline downloads a local copy for playback and persistence. The source URL must still be available when the clip is added; saved timeline clips can subsequently be restored from browser storage.
 
 Choose Midnight, Ocean, Violet, or Light from the Theme menu in the top bar. Set the accent color independently with the Buttons menu; available colors are Blue, Violet, Coral, Amber, and Slate. This colors primary buttons and accent text/highlights, while ordinary text and theme backgrounds retain their contrast. Both selections apply to the workflow builder and video editor and are saved in this browser.
 
