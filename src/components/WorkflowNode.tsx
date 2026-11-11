@@ -30,6 +30,7 @@ import {
   PROMPT_ASSISTANT_MODELS,
   type PromptAssistantTarget,
 } from "@/lib/prompt-assistant";
+import { findPromptAssistantTargets, promptAssistantTargetContext } from "@/lib/prompt-assistant-profiles";
 
 export const WorkflowRunContext = createContext<{
   runNode: (nodeId: string) => void;
@@ -275,6 +276,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const { addEdges, addNodes, deleteElements, getEdges, getNode, getNodes, updateNodeData } = useReactFlow();
   const runControl = useContext(WorkflowRunContext);
   const renderedEdges = useEdges();
+  const assistantTargetIds = renderedEdges.filter((edge) => edge.source === id && edge.sourceHandle === "text"
+    && edge.targetHandle === "prompt").map((edge) => edge.target);
+  const assistantTargetNodes = useNodesData(assistantTargetIds);
   const d = data as any;
   const def = registry[d.type];
   const isPreviewNode = d.type === "output/preview";
@@ -284,6 +288,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   const [assistantDraft, setAssistantDraft] = useState("");
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantError, setAssistantError] = useState("");
+  const [assistantNotice, setAssistantNotice] = useState("");
   const isSeedance = d.type === "video/seedance";
   const seedanceAtlasTask = isSeedance
     && d.params.model === SEEDANCE_MODELS["Seedance 2.5"]
@@ -1404,6 +1409,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       && typeof (message as { content?: unknown }).content === "string")
     : [];
   const assistantTarget = String(d.params?.target ?? "kling-v4-text") as PromptAssistantTarget;
+  const connectedAssistantTargets = isPromptNode && isAssistantEnabled
+    ? findPromptAssistantTargets(id, assistantTargetNodes, renderedEdges) : [];
+  const connectedAssistantContext = promptAssistantTargetContext(connectedAssistantTargets);
   const savedAssistantModel = String(d.params?.model ?? PROMPT_ASSISTANT_MODELS["GPT-6 Luna"]);
   const assistantModel = Object.values(PROMPT_ASSISTANT_MODELS).includes(
     savedAssistantModel as (typeof PROMPT_ASSISTANT_MODELS)[keyof typeof PROMPT_ASSISTANT_MODELS],
@@ -1417,9 +1425,15 @@ export default function WorkflowNode({ id, data }: NodeProps) {
     if (!message || assistantLoading || runControl?.isRunning) return;
     setAssistantLoading(true);
     setAssistantError("");
+    setAssistantNotice("");
     setParam("refined_prompt", "");
     updateNodeData(id, { outputs: {}, status: "running", log: "Sending prompt to OpenAI…" });
     try {
+      if (process.env.NODE_ENV === "development") {
+        for (const target of connectedAssistantTargets) {
+          if (!promptAssistantTargetContext([target])) console.warn(`No Prompt Assistant profile for ${target.type}.`);
+        }
+      }
       const response = await fetch("/api/prompt-assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1430,13 +1444,15 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           connectedBrief: assistantConnectedBrief,
           history: assistantConversation,
           message,
+          ...(connectedAssistantContext ? { connectedTargets: connectedAssistantTargets } : {}),
         }),
       });
-      const result = await response.json() as { content?: unknown; error?: unknown };
+      const result = await response.json() as { content?: unknown; error?: unknown; notice?: unknown };
       if (!response.ok || typeof result.content !== "string" || !result.content.trim()) {
         throw new Error(typeof result.error === "string" ? result.error : "Prompt Assistant could not refine the prompt.");
       }
       const refinedPrompt = result.content.trim();
+      if (typeof result.notice === "string") setAssistantNotice(result.notice);
       const conversation = [
         ...assistantConversation.slice(-18),
         { role: "user" as const, content: message },
@@ -2012,6 +2028,14 @@ export default function WorkflowNode({ id, data }: NodeProps) {
 
       {isAssistantEnabled && (
         <section className="ff-prompt-assistant">
+          {isPromptNode && connectedAssistantContext && (
+            <div className="ff-param-help">
+              Optimizing for: {connectedAssistantTargets.length > 1
+                ? `${connectedAssistantTargets.length} models`
+                : `${connectedAssistantContext.known[0].profile.label}${connectedAssistantTargets[0].task
+                  ? ` · ${connectedAssistantTargets[0].task.replaceAll("-", " ")}` : ""}`}
+            </div>
+          )}
           <div className="ff-prompt-assistant-context">
             <strong>Image context</strong>
             <span>{assistantImageSetup.length ? assistantImageSetup.join(" · ") : "No image inputs connected"}</span>
@@ -2047,6 +2071,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
             />
           </label>
           {assistantError && <div className="ff-prompt-assistant-error" role="alert">{assistantError}</div>}
+          {assistantNotice && <div className="ff-param-help" role="status">{assistantNotice}</div>}
           <div className="ff-prompt-assistant-actions">
             <button
               type="button"
@@ -2065,6 +2090,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
                 setParam("refined_prompt", "");
                 updateNodeData(id, { outputs: {}, status: "idle", log: "" });
                 setAssistantError("");
+                setAssistantNotice("");
                 setAssistantDraft("");
               }}
             >

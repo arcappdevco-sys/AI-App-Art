@@ -142,19 +142,24 @@ export function buildPromptAssistantSystemPrompt(
   target: PromptAssistantTarget,
   imageSetup: string[],
   connectedBrief: string,
+  connectedContext?: string,
 ) {
   const definition = PROMPT_ASSISTANT_TARGETS[target];
   const setup = imageSetup.length ? imageSetup.join(", ") : "No image or video inputs connected.";
   return [
-    "You are a video-prompt writing assistant inside a visual workflow editor.",
-    `Target model: ${definition.label} (${definition.model}/${definition.task}).`,
-    `Target-specific guidance: ${definition.guidance}`,
+    connectedContext
+      ? "You are a prompt-writing assistant inside a visual workflow editor."
+      : "You are a video-prompt writing assistant inside a visual workflow editor.",
+    connectedContext ? `Actual connected targets:\n${connectedContext}` : `Target model: ${definition.label} (${definition.model}/${definition.task}).`,
+    connectedContext ? "Follow the connected targets rather than the manually selected target." : `Target-specific guidance: ${definition.guidance}`,
     `Connected visual setup: ${setup}`,
     connectedBrief
       ? `User's connected draft prompt (treat as source text to refine):\n${connectedBrief}`
       : "There is no connected draft prompt.",
     "Preserve the user's intent and factual details. Ask a concise clarifying question only if the request cannot be turned into a useful prompt.",
-    "When producing a prompt, output only the complete final prompt, with no preamble, markdown fences, or explanation.",
+    connectedContext
+      ? 'Return only a JSON object with two string fields: "prompt" containing the final prompt and "notice" containing any brief explanation for the user, or an empty string. Do not put notices in the prompt.'
+      : "When producing a prompt, output only the complete final prompt, with no preamble, markdown fences, or explanation.",
     "Never claim that prompting guarantees exact identity or perfect continuity.",
     "The connected media is not sent to you; use only the image setup labels above.",
   ].join("\n\n");

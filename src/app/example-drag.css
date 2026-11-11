@@ -1,0 +1,18 @@
+.ff-example-drag-preview {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-deep);
+  color: var(--accent);
+  opacity: 0.9;
+  box-shadow: 0 4px 16px #0004;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ff-example-drag-disallowed {
+  opacity: 0.45;
+}

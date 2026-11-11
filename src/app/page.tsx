@@ -3,6 +3,8 @@
 import "@xyflow/react/dist/style.css";
 import "./flow.css";
 import "./canvas-groups.css";
+import "./example-drag.css";
+import "./ollama-chat.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, Background, Controls, MiniMap, addEdge,
@@ -25,6 +27,8 @@ import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 import Compositor from "@/components/Compositor";
 import CanvasGroups from "@/components/CanvasGroups";
+import { ExampleDragPreview, useExampleDrag } from "@/components/ExampleDrag";
+import OllamaChat from "@/components/OllamaChat";
 import { createCanvasGroup, groupBoundsForNodes, normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
 
 const nodeTypes = { workflow: WorkflowNode };
@@ -417,10 +421,10 @@ export default function Page() {
     };
   }, [saveWorkflowLocally, storageReady]);
 
-  const addNode = (type: string, groupExample = false) => {
+  const addNode = (type: string, groupExample = false, dropPosition?: { x: number; y: number }) => {
     const def = registry[type];
     if (!def) return;
-    const position = { x: 100 + nodes.length * 30, y: 100 + nodes.length * 30 };
+    const position = dropPosition ?? { x: 100 + nodes.length * 30, y: 100 + nodes.length * 30 };
     const additions = createWorkflowNodes(type, registry, position);
     setNodes((ns) => [...ns, ...additions.nodes]);
     if (additions.edges.length) setEdges((es) => [...es, ...additions.edges]);
@@ -448,6 +452,12 @@ export default function Page() {
       window.requestAnimationFrame(groupExampleWhenMeasured);
     }
   };
+
+  const exampleDrag = useExampleDrag(groupCanvasRef, (type, screenPosition) => {
+    const flow = groupFlowRef.current;
+    if (flow) addNode(type, true, flow.screenToFlowPosition(screenPosition));
+    else console.error("Could not place the example: the canvas is not ready.");
+  });
 
   const isValidConnection = useCallback(
     (c: Connection | Edge) => {
@@ -847,6 +857,7 @@ export default function Page() {
             )}
         </div>
         <div className="ff-toolbar-actions">
+          <OllamaChat />
           {activeView === "workflow" ? (
             <>
           <button className="ff-toolbar-button" onClick={createWorkflow} disabled={!storageReady || isRunning}>New</button>
@@ -969,7 +980,11 @@ export default function Page() {
             {videoModelTypes.map((type) => {
               const def = registry[type];
               return (
-                <button className="ff-node-card" key={type} onClick={() => addNode(type, true)}>
+                <button className="ff-node-card" key={type} onClick={() => addNode(type, true)}
+                  onPointerDown={(event) => exampleDrag.onPointerDown(event, type, def.label)}
+                  onPointerMove={exampleDrag.onPointerMove} onPointerUp={exampleDrag.onPointerUp}
+                  onPointerCancel={exampleDrag.onPointerCancel} onLostPointerCapture={exampleDrag.onPointerCancel}
+                  onClickCapture={exampleDrag.onClickCapture} onDragStart={(event) => event.preventDefault()}>
                   <span className="ff-card-mark" aria-hidden="true">▶</span>
                   <span className="ff-card-copy">
                     <strong>{def.label}</strong>
@@ -1131,6 +1146,7 @@ export default function Page() {
       </div>
       <VideoEditor assets={videoAssets} hidden={activeView !== "editor"} />
       <Compositor hidden={activeView !== "compositor"} />
+      <ExampleDragPreview preview={exampleDrag.preview} />
     </div>
   );
 }
