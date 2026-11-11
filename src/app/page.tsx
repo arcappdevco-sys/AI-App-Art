@@ -2,6 +2,7 @@
 
 import "@xyflow/react/dist/style.css";
 import "./flow.css";
+import "./canvas-groups.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, Background, Controls, MiniMap, addEdge,
@@ -23,6 +24,8 @@ import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 import Compositor from "@/components/Compositor";
+import CanvasGroups from "@/components/CanvasGroups";
+import { normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
 
 const nodeTypes = { workflow: WorkflowNode };
 const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
@@ -68,6 +71,7 @@ type SavedWorkflow = {
   name: string;
   nodes: Node[];
   edges: Edge[];
+  groups: CanvasGroup[];
   updatedAt: number;
 };
 
@@ -75,7 +79,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes" | "edges"> {
+function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes" | "edges" | "groups"> {
   if (!isRecord(value) || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
     throw new Error("Workflow file must contain nodes and edges arrays.");
   }
@@ -209,6 +213,7 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
       : DEFAULT_WORKFLOW_NAME,
     nodes,
     edges,
+    groups: normalizeCanvasGroups(value.groups),
   };
 }
 
@@ -219,6 +224,8 @@ export default function Page() {
   const [themeError, setThemeError] = useState("");
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [groups, setGroups] = useState<CanvasGroup[]>([]);
+  const groupCanvasRef = useRef<HTMLElement>(null);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
   const [workflows, setWorkflows] = useState<SavedWorkflow[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState("");
@@ -322,7 +329,7 @@ export default function Page() {
           const legacy = window.localStorage.getItem(LEGACY_WORKFLOW_STORAGE_KEY);
           const normalized = legacy
             ? normalizeWorkflow(JSON.parse(legacy))
-            : { name: DEFAULT_WORKFLOW_NAME, nodes: [], edges: [] };
+            : { name: DEFAULT_WORKFLOW_NAME, nodes: [], edges: [], groups: [] };
           nextActiveId = crypto.randomUUID();
           nextWorkflows = [{ id: nextActiveId, ...normalized, updatedAt: Date.now() }];
         }
@@ -334,6 +341,7 @@ export default function Page() {
         setWorkflowName(active.name);
         setNodes(active.nodes);
         setEdges(active.edges);
+        setGroups(active.groups);
         const serialized = JSON.stringify({ version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows });
         window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
         window.localStorage.removeItem(LEGACY_WORKFLOW_STORAGE_KEY);
@@ -362,6 +370,7 @@ export default function Page() {
       name: workflowName.trim() || DEFAULT_WORKFLOW_NAME,
       nodes: savedNodes,
       edges,
+      groups,
       updatedAt: Date.now(),
     };
     const nextWorkflows = workflowsRef.current.some((workflow) => workflow.id === activeId)
@@ -385,11 +394,12 @@ export default function Page() {
       setStorageStatus("Unable to save workflow");
       return false;
     }
-  }, [edges, nodes, workflowName]);
+  }, [edges, groups, nodes, workflowName]);
 
   const clearCanvas = () => {
     setNodes([]);
     setEdges([]);
+    setGroups([]);
     setShowValidation(false);
     setValidationIssues([]);
     cache.current.clear();
@@ -661,6 +671,7 @@ export default function Page() {
     setWorkflowName(next.name);
     setNodes(next.nodes);
     setEdges(next.edges);
+    setGroups(next.groups);
     setShowValidation(false);
     setValidationIssues([]);
     setStorageStatus("Switched workflow");
@@ -674,6 +685,7 @@ export default function Page() {
       name: DEFAULT_WORKFLOW_NAME,
       nodes: [],
       edges: [],
+      groups: [],
       updatedAt: Date.now(),
     };
     const next = [...workflowsRef.current, workflow];
@@ -681,6 +693,7 @@ export default function Page() {
     setWorkflowName(workflow.name);
     setNodes([]);
     setEdges([]);
+    setGroups([]);
     setShowValidation(false);
     setValidationIssues([]);
     cache.current.clear();
@@ -699,6 +712,7 @@ export default function Page() {
     setWorkflowName(active.name);
     setNodes(active.nodes);
     setEdges(active.edges);
+    setGroups(active.groups);
     setShowValidation(false);
     setValidationIssues([]);
     cache.current.clear();
@@ -716,6 +730,7 @@ export default function Page() {
       name: workflowName.trim() || DEFAULT_WORKFLOW_NAME,
       nodes: savedNodes,
       edges,
+      groups,
     }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -743,6 +758,7 @@ export default function Page() {
       setWorkflowName(workflow.name);
       setNodes(workflow.nodes);
       setEdges(workflow.edges);
+      setGroups(workflow.groups);
       setShowValidation(false);
       setValidationIssues([]);
       cache.current.clear();
@@ -984,7 +1000,7 @@ export default function Page() {
         </div>
       </aside>
 
-      <main className="ff-canvas">
+      <main className="ff-canvas" ref={groupCanvasRef}>
         <WorkflowRunContext.Provider value={{ runNode, isRunning, openEditor: () => setActiveView("editor") }}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}
@@ -1044,9 +1060,10 @@ export default function Page() {
           colorMode={uiTheme === "light" ? "light" : "dark"} fitView deleteKeyCode={["Backspace", "Delete"]}
         >
           <Background gap={28} size={1} />
+          <CanvasGroups key={activeWorkflowId} groups={groups} setGroups={setGroups} canvasRef={groupCanvasRef} active={activeView === "workflow"} />
           <Controls />
           <MiniMap pannable zoomable />
-          {nodes.length === 0 && (
+          {nodes.length === 0 && groups.length === 0 && (
             <div className="ff-empty-state">
               <span className="ff-empty-icon" aria-hidden="true">✦</span>
               <strong>Your canvas is ready</strong>

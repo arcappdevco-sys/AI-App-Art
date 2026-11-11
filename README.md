@@ -1,6 +1,8 @@
 # fal flow
 
 fal flow is a visual editor for building image and video generation workflows.
+
+On the workflow canvas, right-click empty space and choose **Add group**, or select nodes and press Ctrl+G (Cmd+G on macOS) to organize them in a colored group. Drag a group's title to move the nodes whose centers are inside it; resize from its bottom-right corner. Double-click the title to rename it, or right-click the title for colors, fit, and removal. Groups are saved with the workflow and do not affect generation or connections.
 The **Compositor** tab provides a separate, locally saved node graph for images and video. Add Media nodes, connect processing nodes to the Viewer, and select nodes to edit their properties. Merge layers, transform them, apply rectangular masks, color correction and chroma keying. A Tracker analyzes one selected feature from frame zero at five samples per second. To choose the feature, show the tracker's input in the Viewer, pause at frame zero, select the Tracker, and click the feature. Run tracking and connect its motion output to a Transform or Mask.
 
 The Viewer displays only its connected input. For example, connect Media → Color correction → Viewer to see color changes. Selecting an image node outside the Viewer path offers **Show in Viewer**, which replaces the Viewer's current input; the node still needs its own required inputs connected.
