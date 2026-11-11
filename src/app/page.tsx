@@ -6,7 +6,7 @@ import "./canvas-groups.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, Background, Controls, MiniMap, addEdge,
-  useNodesState, useEdgesState, type Connection, type Edge, type Node,
+  useNodesState, useEdgesState, type Connection, type Edge, type Node, type ReactFlowInstance,
 } from "@xyflow/react";
 import { registry } from "@/lib/registry";
 import { runGraph } from "@/lib/executor";
@@ -25,7 +25,7 @@ import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 import Compositor from "@/components/Compositor";
 import CanvasGroups from "@/components/CanvasGroups";
-import { normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
+import { createCanvasGroup, groupBoundsForNodes, normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
 
 const nodeTypes = { workflow: WorkflowNode };
 const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
@@ -226,6 +226,7 @@ export default function Page() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const groupCanvasRef = useRef<HTMLElement>(null);
+  const groupFlowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
   const [workflows, setWorkflows] = useState<SavedWorkflow[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState("");
@@ -416,13 +417,36 @@ export default function Page() {
     };
   }, [saveWorkflowLocally, storageReady]);
 
-  const addNode = (type: string) => {
+  const addNode = (type: string, groupExample = false) => {
     const def = registry[type];
     if (!def) return;
     const position = { x: 100 + nodes.length * 30, y: 100 + nodes.length * 30 };
     const additions = createWorkflowNodes(type, registry, position);
     setNodes((ns) => [...ns, ...additions.nodes]);
     if (additions.edges.length) setEdges((es) => [...es, ...additions.edges]);
+    if (groupExample && additions.nodes.length) {
+      const workflowId = activeWorkflowIdRef.current;
+      const nodeIds = new Set(additions.nodes.map((node) => node.id));
+      const edgeIds = new Set(additions.edges.map((edge) => edge.id));
+      let deadline = 0;
+      const groupExampleWhenMeasured = (timestamp: number) => {
+        if (!deadline) deadline = timestamp + 10000;
+        if (activeWorkflowIdRef.current !== workflowId) return;
+        const flow = groupFlowRef.current;
+        const created = flow?.getNodes().filter((node) => nodeIds.has(node.id)) ?? [];
+        const edgesReady = flow && [...edgeIds].every((id) => flow.getEdges().some((edge) => edge.id === id));
+        if (created.length === nodeIds.size && edgesReady
+          && created.every((node) => (node.measured?.width ?? 0) > 0 && (node.measured?.height ?? 0) > 0)) {
+          const bounds = groupBoundsForNodes(created);
+          if (bounds) setGroups((current) => [...current, { ...createCanvasGroup(bounds), title: def.label }]);
+        } else if (timestamp < deadline) {
+          window.requestAnimationFrame(groupExampleWhenMeasured);
+        } else {
+          console.error(`Could not create a group for ${def.label}: the example did not finish loading.`);
+        }
+      };
+      window.requestAnimationFrame(groupExampleWhenMeasured);
+    }
   };
 
   const isValidConnection = useCallback(
@@ -945,7 +969,7 @@ export default function Page() {
             {videoModelTypes.map((type) => {
               const def = registry[type];
               return (
-                <button className="ff-node-card" key={type} onClick={() => addNode(type)}>
+                <button className="ff-node-card" key={type} onClick={() => addNode(type, true)}>
                   <span className="ff-card-mark" aria-hidden="true">▶</span>
                   <span className="ff-card-copy">
                     <strong>{def.label}</strong>
@@ -1004,6 +1028,7 @@ export default function Page() {
         <WorkflowRunContext.Provider value={{ runNode, isRunning, openEditor: () => setActiveView("editor") }}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+          onInit={(instance) => { groupFlowRef.current = instance; }}
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onNodesDelete={(deletedNodes) => {
             const deletedVideoModelIds = new Set(deletedNodes
