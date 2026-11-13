@@ -1,0 +1,512 @@
+.storyboard-workspace {
+  grid-column: 1 / -1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.storyboard-workspace[hidden] {
+  display: none !important;
+}
+
+.storyboard-toolbar {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--toolbar-surface);
+}
+
+.storyboard-title-label,
+.storyboard-ratio-label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.storyboard-title-label {
+  width: min(320px, 34vw);
+}
+
+.storyboard-title-label input,
+.storyboard-ratio-label select,
+.storyboard-scene-title,
+.storyboard-field input,
+.storyboard-field textarea,
+.storyboard-field select {
+  min-width: 0;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font: inherit;
+}
+
+.storyboard-title-label input {
+  padding: 8px 10px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.storyboard-ratio-label select {
+  min-height: 34px;
+  padding: 0 25px 0 9px;
+  font-size: 12px;
+}
+
+.storyboard-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.storyboard-toolbar button,
+.storyboard-scene-actions button,
+.storyboard-shot-actions button,
+.storyboard-notes > button,
+.storyboard-add-scene-shot {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.storyboard-toolbar button:hover:not(:disabled),
+.storyboard-scene-actions button:hover:not(:disabled),
+.storyboard-shot-actions button:hover:not(:disabled),
+.storyboard-notes > button:hover,
+.storyboard-add-scene-shot:hover {
+  border-color: var(--line-hover);
+  color: var(--text);
+}
+
+.storyboard-toolbar button:disabled,
+.storyboard-scene-actions button:disabled,
+.storyboard-shot-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.storyboard-toolbar .storyboard-primary-action,
+.storyboard-empty .storyboard-primary-action {
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--button-text);
+}
+
+.storyboard-toolbar .storyboard-primary-action:hover,
+.storyboard-empty .storyboard-primary-action:hover {
+  border-color: var(--button-hover);
+  background: var(--button-hover);
+  color: var(--button-text);
+}
+
+.storyboard-board {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 24px clamp(16px, 3vw, 48px) 48px;
+}
+
+.storyboard-storage-error {
+  margin: 10px 24px 0;
+  color: #ef8175;
+  font-size: 11px;
+}
+
+.storyboard-empty {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.storyboard-empty > span {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 25px;
+}
+
+.storyboard-empty strong {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.storyboard-empty .storyboard-primary-action {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.storyboard-scene {
+  margin: 0 auto 24px;
+  max-width: 1700px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.storyboard-scene-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding-bottom: 12px;
+}
+
+.storyboard-collapse {
+  width: 28px;
+  height: 30px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.storyboard-collapse:hover {
+  background: var(--surface-hover);
+}
+
+.storyboard-scene-title {
+  width: min(300px, 35vw);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.storyboard-shot-count {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.storyboard-scene-actions,
+.storyboard-shot-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.storyboard-scene-actions {
+  margin-left: auto;
+}
+
+.storyboard-scene-actions button,
+.storyboard-shot-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.storyboard-scene-actions button[aria-label^="Move"],
+.storyboard-shot-actions button[aria-label^="Move"] {
+  min-width: 28px;
+  padding: 0 5px;
+  font-size: 15px;
+}
+
+.storyboard-toolbar button:focus-visible,
+.storyboard-toolbar input:focus-visible,
+.storyboard-toolbar select:focus-visible,
+.storyboard-board button:focus-visible,
+.storyboard-board input:focus-visible,
+.storyboard-board textarea:focus-visible,
+.storyboard-board select:focus-visible,
+.storyboard-frame:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.storyboard-shot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  align-items: start;
+  gap: 14px;
+}
+
+.storyboard-shot-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line-control);
+  border-radius: 9px;
+  background: var(--panel-raised);
+}
+
+.storyboard-shot-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.storyboard-shot-card-header {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.storyboard-shot-number {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: var(--surface-selected);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.storyboard-drag-handle {
+  width: 26px;
+  height: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: grab;
+  font-size: 18px;
+}
+
+.storyboard-drag-handle:active {
+  cursor: grabbing;
+}
+
+.storyboard-shot-actions {
+  margin-left: auto;
+}
+
+.storyboard-shot-actions button {
+  padding: 0 6px;
+}
+
+.storyboard-frame {
+  position: relative;
+  display: grid;
+  overflow: hidden;
+  place-items: center;
+  border: 1px dashed var(--line-hover);
+  border-radius: 7px;
+  background: var(--surface-deep);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.storyboard-frame > span {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.storyboard-frame > span strong {
+  color: var(--accent);
+  font-size: 23px;
+  font-weight: 450;
+}
+
+.storyboard-frame > span small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.storyboard-frame > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.storyboard-remove-image {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  z-index: 1;
+  min-height: 27px;
+  padding: 0 8px;
+  border: 1px solid #ffffff50;
+  border-radius: 5px;
+  background: #101617d9;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+}
+
+.storyboard-file-input {
+  display: none;
+}
+
+.storyboard-inline-error {
+  margin: 6px 0 0;
+  color: #ef8175;
+  font-size: 10px;
+}
+
+.storyboard-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.storyboard-field > span {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.storyboard-field small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 450;
+}
+
+.storyboard-field input,
+.storyboard-field select {
+  width: 100%;
+  min-height: 33px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.storyboard-field textarea {
+  width: 100%;
+  min-height: 56px;
+  resize: vertical;
+  padding: 7px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.storyboard-field input::placeholder,
+.storyboard-field textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.storyboard-shot-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 0 9px;
+}
+
+.storyboard-duration-field {
+  grid-column: 1 / -1;
+}
+
+.storyboard-notes {
+  margin-top: 9px;
+  border-top: 1px solid var(--line);
+}
+
+.storyboard-notes > button {
+  min-height: 30px;
+  margin-top: 7px;
+  padding: 0 7px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+}
+
+.storyboard-notes .storyboard-field {
+  margin-top: 4px;
+}
+
+.storyboard-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.storyboard-delete-action {
+  color: #ef9b84 !important;
+}
+
+.storyboard-add-scene-shot {
+  min-height: 34px;
+  margin-top: 12px;
+  border-style: dashed;
+  background: transparent;
+}
+
+@media (max-width: 760px) {
+  .storyboard-toolbar {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 14px;
+  }
+
+  .storyboard-title-label {
+    flex: 1 1 180px;
+    width: auto;
+  }
+
+  .storyboard-toolbar-actions {
+    width: 100%;
+  }
+
+  .storyboard-toolbar-actions button {
+    flex: 1;
+  }
+
+  .storyboard-board {
+    padding: 14px 10px 30px;
+  }
+
+  .storyboard-scene {
+    padding: 9px;
+  }
+
+  .storyboard-scene-header {
+    flex-wrap: wrap;
+  }
+
+  .storyboard-scene-title {
+    flex: 1;
+    width: auto;
+  }
+
+  .storyboard-scene-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+}

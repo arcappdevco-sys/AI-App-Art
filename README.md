@@ -2,6 +2,8 @@
 
 fal flow is a visual editor for building image and video generation workflows.
 
+The **Storyboard** tab is a manual planning board for organizing a video into scenes and shots. Add frame images, descriptions, camera details, durations and notes; the board is saved with each workflow. Images larger than 2048 px on the long edge are downscaled on upload (PNG losslessly; JPEG/WebP at quality 0.9), while aspect-ratio cropping is display-only. Storyboard images are stored locally with the project and exported JSON, so large boards can use substantial browser storage.
+
 On the workflow canvas, right-click empty space and choose **Add group**, or select nodes and press Ctrl+G (Cmd+G on macOS) to organize them in a colored group. Drag a group's title to move the nodes whose centers are inside it; resize from its bottom-right corner. Double-click the title to rename it, or right-click the title for colors, fit, and removal. Groups are saved with the workflow and do not affect generation or connections.
 The **Compositor** tab provides a separate, locally saved node graph for images and video. Add Media nodes, connect processing nodes to the Viewer, and select nodes to edit their properties. Merge layers, transform them, apply rectangular masks, color correction and chroma keying. A Tracker analyzes one selected feature from frame zero at five samples per second. To choose the feature, show the tracker's input in the Viewer, pause at frame zero, select the Tracker, and click the feature. Run tracking and connect its motion output to a Transform or Mask.
 

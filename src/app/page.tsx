@@ -5,6 +5,7 @@ import "./flow.css";
 import "./canvas-groups.css";
 import "./example-drag.css";
 import "./ollama-chat.css";
+import "../components/StoryboardTab.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow, Background, Controls, MiniMap, addEdge,
@@ -26,6 +27,8 @@ import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 import Compositor from "@/components/Compositor";
+import StoryboardTab from "@/components/StoryboardTab";
+import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
 import CanvasGroups from "@/components/CanvasGroups";
 import { ExampleDragPreview, useExampleDrag } from "@/components/ExampleDrag";
 import OllamaChat from "@/components/OllamaChat";
@@ -76,6 +79,7 @@ type SavedWorkflow = {
   nodes: Node[];
   edges: Edge[];
   groups: CanvasGroup[];
+  storyboard: StoryboardData;
   updatedAt: number;
 };
 
@@ -83,7 +87,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes" | "edges" | "groups"> {
+function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes" | "edges" | "groups" | "storyboard"> {
   if (!isRecord(value) || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
     throw new Error("Workflow file must contain nodes and edges arrays.");
   }
@@ -218,17 +222,19 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
     nodes,
     edges,
     groups: normalizeCanvasGroups(value.groups),
+    storyboard: normalizeStoryboard(value.storyboard),
   };
 }
 
 export default function Page() {
-  const [activeView, setActiveView] = useState<"workflow" | "editor" | "compositor">("workflow");
+  const [activeView, setActiveView] = useState<"storyboard" | "workflow" | "editor" | "compositor">("workflow");
   const [uiTheme, setUiTheme] = useState<UiTheme>("midnight");
   const [uiButtonColor, setUiButtonColor] = useState<UiButtonColor>("blue");
   const [themeError, setThemeError] = useState("");
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
+  const [storyboard, setStoryboard] = useState<StoryboardData>(() => createEmptyStoryboard());
   const groupCanvasRef = useRef<HTMLElement>(null);
   const groupFlowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
@@ -334,7 +340,13 @@ export default function Page() {
           const legacy = window.localStorage.getItem(LEGACY_WORKFLOW_STORAGE_KEY);
           const normalized = legacy
             ? normalizeWorkflow(JSON.parse(legacy))
-            : { name: DEFAULT_WORKFLOW_NAME, nodes: [], edges: [], groups: [] };
+            : {
+              name: DEFAULT_WORKFLOW_NAME,
+              nodes: [],
+              edges: [],
+              groups: [],
+              storyboard: createEmptyStoryboard(),
+            };
           nextActiveId = crypto.randomUUID();
           nextWorkflows = [{ id: nextActiveId, ...normalized, updatedAt: Date.now() }];
         }
@@ -347,6 +359,7 @@ export default function Page() {
         setNodes(active.nodes);
         setEdges(active.edges);
         setGroups(active.groups);
+        setStoryboard(active.storyboard);
         const serialized = JSON.stringify({ version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows });
         window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
         window.localStorage.removeItem(LEGACY_WORKFLOW_STORAGE_KEY);
@@ -376,6 +389,7 @@ export default function Page() {
       nodes: savedNodes,
       edges,
       groups,
+      storyboard,
       updatedAt: Date.now(),
     };
     const nextWorkflows = workflowsRef.current.some((workflow) => workflow.id === activeId)
@@ -399,7 +413,7 @@ export default function Page() {
       setStorageStatus("Unable to save workflow");
       return false;
     }
-  }, [edges, groups, nodes, workflowName]);
+  }, [edges, groups, nodes, storyboard, workflowName]);
 
   const clearCanvas = () => {
     setNodes([]);
@@ -706,6 +720,7 @@ export default function Page() {
     setNodes(next.nodes);
     setEdges(next.edges);
     setGroups(next.groups);
+    setStoryboard(next.storyboard);
     setShowValidation(false);
     setValidationIssues([]);
     setStorageStatus("Switched workflow");
@@ -720,6 +735,7 @@ export default function Page() {
       nodes: [],
       edges: [],
       groups: [],
+      storyboard: createEmptyStoryboard(),
       updatedAt: Date.now(),
     };
     const next = [...workflowsRef.current, workflow];
@@ -728,6 +744,7 @@ export default function Page() {
     setNodes([]);
     setEdges([]);
     setGroups([]);
+    setStoryboard(workflow.storyboard);
     setShowValidation(false);
     setValidationIssues([]);
     cache.current.clear();
@@ -747,6 +764,7 @@ export default function Page() {
     setNodes(active.nodes);
     setEdges(active.edges);
     setGroups(active.groups);
+    setStoryboard(active.storyboard);
     setShowValidation(false);
     setValidationIssues([]);
     cache.current.clear();
@@ -765,6 +783,7 @@ export default function Page() {
       nodes: savedNodes,
       edges,
       groups,
+      storyboard,
     }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -793,6 +812,7 @@ export default function Page() {
       setNodes(workflow.nodes);
       setEdges(workflow.edges);
       setGroups(workflow.groups);
+      setStoryboard(workflow.storyboard);
       setShowValidation(false);
       setValidationIssues([]);
       cache.current.clear();
@@ -816,6 +836,7 @@ export default function Page() {
         </div>
         <div className="ff-workflow-name">
           <nav className="ff-mode-tabs" aria-label="App workspace">
+            <button type="button" aria-pressed={activeView === "storyboard"} onClick={() => setActiveView("storyboard")}>Storyboard</button>
             <button type="button" aria-pressed={activeView === "workflow"} onClick={() => setActiveView("workflow")}>Workflow</button>
             <button type="button" aria-pressed={activeView === "editor"} onClick={() => setActiveView("editor")}>Video editor</button>
             <button type="button" aria-pressed={activeView === "compositor"} onClick={() => setActiveView("compositor")}>Compositor</button>
@@ -852,8 +873,10 @@ export default function Page() {
             </>
             ) : activeView === "editor" ? (
               <span className="ff-editor-mode-status">Timeline editor · H.264 MOV / MP4 export</span>
-            ) : (
+            ) : activeView === "compositor" ? (
               <span className="ff-editor-mode-status">Compositor workspace</span>
+            ) : (
+              <span className="ff-editor-mode-status">Storyboard workspace</span>
             )}
         </div>
         <div className="ff-toolbar-actions">
@@ -1146,6 +1169,8 @@ export default function Page() {
       </div>
       <VideoEditor assets={videoAssets} hidden={activeView !== "editor"} />
       <Compositor hidden={activeView !== "compositor"} />
+      <StoryboardTab storyboard={storyboard} onChange={setStoryboard} hidden={activeView !== "storyboard"}
+        saveError={storageStatus.startsWith("Unable to") ? storageError : ""} />
       <ExampleDragPreview preview={exampleDrag.preview} />
     </div>
   );
