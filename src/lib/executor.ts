@@ -1,4 +1,5 @@
 import { registry } from "./registry";
+import { getLowSettingsProfile } from "./runModeLowSettings";
 import type { Graph, NodeStatus } from "./types";
 
 type Outputs = Record<string, unknown>;
@@ -7,6 +8,7 @@ export interface RunOpts {
   /** Persist this Map between runs: unchanged nodes are skipped (saves fal credits). */
   cache: Map<string, { key: string; outputs: Outputs }>;
   fresh?: boolean;
+  lowSettings?: boolean;
   targetIds?: string[];
   signal?: AbortSignal;
   onStatus: (id: string, status: NodeStatus, info?: string) => void;
@@ -73,6 +75,9 @@ export async function runGraph(graph: Graph, o: RunOpts) {
       const node = byId.get(id)!;
       const def = registry[node.type];
       if (!def) throw new Error(`Unknown node type: ${node.type}`);
+      const params = o.lowSettings
+        ? { ...node.params, ...getLowSettingsProfile(node.type, node.params).overrides }
+        : node.params;
 
       const inputs: Outputs = {};
       try {
@@ -109,7 +114,7 @@ export async function runGraph(graph: Graph, o: RunOpts) {
         throw err;
       }
 
-      const key = JSON.stringify([node.type, node.params, inputs]);
+      const key = JSON.stringify([node.type, params, inputs]);
       const hit = o.cache.get(id);
       if (!o.fresh && hit?.key === key) {
         o.onOutput(id, hit.outputs);
@@ -122,7 +127,7 @@ export async function runGraph(graph: Graph, o: RunOpts) {
       try {
         const outputs = await def.execute({
           inputs,
-          params: node.params,
+          params,
           signal: o.signal,
           log: (m) => o.onStatus(id, "running", m),
           updateParams: (patch) => o.onParams?.(id, patch),

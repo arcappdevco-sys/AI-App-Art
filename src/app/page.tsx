@@ -6,13 +6,19 @@ import "./canvas-groups.css";
 import "./example-drag.css";
 import "./ollama-chat.css";
 import "../components/StoryboardTab.css";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   ReactFlow, Background, Controls, MiniMap, addEdge,
   useNodesState, useEdgesState, type Connection, type Edge, type Node, type ReactFlowInstance,
 } from "@xyflow/react";
 import { registry } from "@/lib/registry";
 import { runGraph } from "@/lib/executor";
+import {
+  estimateNodeCost,
+  getLowSettingsProfile,
+  lowSettingsDescription,
+  lowSettingsNodeLabel,
+} from "@/lib/runModeLowSettings";
 import { normalizeVeoParams } from "@/lib/veo";
 import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "@/lib/omni";
 import { normalizeKlingParams, KLING_MODELS, KLING_TASKS } from "@/lib/kling";
@@ -39,11 +45,14 @@ const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
 const LEGACY_WORKFLOW_STORAGE_KEY = "fal-flow:workflow";
 const UI_THEME_STORAGE_KEY = "fal-flow:ui-theme";
 const UI_BUTTON_COLOR_STORAGE_KEY = "fal-flow:ui-button-color";
+const UI_RUN_MODE_STORAGE_KEY = "fal-flow:run-mode";
 const DEFAULT_WORKFLOW_NAME = "Untitled workflow";
 const UI_THEMES = ["midnight", "ocean", "violet", "light"] as const;
 type UiTheme = (typeof UI_THEMES)[number];
 const UI_BUTTON_COLORS = ["blue", "violet", "coral", "amber", "slate"] as const;
 type UiButtonColor = (typeof UI_BUTTON_COLORS)[number];
+const RUN_MODES = ["all", "low"] as const;
+type RunMode = (typeof RUN_MODES)[number];
 const UI_THEME_LABELS: Record<UiTheme, string> = {
   midnight: "Midnight",
   ocean: "Ocean",
@@ -226,10 +235,35 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
   };
 }
 
+function workflowGenerationNodes(nodes: Node[]) {
+  return nodes.flatMap((node) => {
+    const data = node.data as { type?: string; params?: unknown };
+    const type = data.type ?? "";
+    const definition = registry[type];
+    if (!definition || ["Input", "Output", "Assistant"].includes(definition.category)) return [];
+    return [{
+      id: node.id,
+      type,
+      label: lowSettingsNodeLabel(type, definition.label, isRecord(data.params) ? data.params : {}),
+      params: isRecord(data.params) ? data.params : {},
+    }];
+  });
+}
+
+function formatRunCost(total: number, withoutEstimate: number) {
+  const missing = withoutEstimate
+    ? `; ${withoutEstimate} ${withoutEstimate === 1 ? "node has" : "nodes have"} no estimate`
+    : "";
+  return `~$${total.toFixed(3)}${missing}`;
+}
+
 export default function Page() {
   const [activeView, setActiveView] = useState<"storyboard" | "workflow" | "editor" | "compositor">("workflow");
   const [uiTheme, setUiTheme] = useState<UiTheme>("midnight");
   const [uiButtonColor, setUiButtonColor] = useState<UiButtonColor>("blue");
+  const [runMode, setRunMode] = useState<RunMode>("all");
+  const [runModeMenuOpen, setRunModeMenuOpen] = useState(false);
+  const [runModeMenuPosition, setRunModeMenuPosition] = useState({ top: 0, right: 12 });
   const [themeError, setThemeError] = useState("");
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -244,10 +278,16 @@ export default function Page() {
   const [storageStatus, setStorageStatus] = useState("Loading saved workflow…");
   const [storageError, setStorageError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const [lowSettingsNodeIds, setLowSettingsNodeIds] = useState<string[]>([]);
+  const [lowRunSummary, setLowRunSummary] = useState("");
   const [validationIssues, setValidationIssues] = useState<WorkflowValidationIssue[]>([]);
   const [showValidation, setShowValidation] = useState(false);
   const cache = useRef(new Map());
   const abort = useRef<AbortController | null>(null);
+  const runModeMenuRef = useRef<HTMLDivElement>(null);
+  const runModeArrowRef = useRef<HTMLButtonElement>(null);
+  const runModeOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const lowRunSummaryTimer = useRef<number | null>(null);
   const runInProgress = useRef(false);
   const lastSavedPayload = useRef("");
   const workflowsRef = useRef<SavedWorkflow[]>([]);
@@ -258,6 +298,8 @@ export default function Page() {
       try {
         const savedTheme = window.localStorage.getItem(UI_THEME_STORAGE_KEY);
         if (savedTheme && UI_THEMES.includes(savedTheme as UiTheme)) setUiTheme(savedTheme as UiTheme);
+        const savedRunMode = window.localStorage.getItem(UI_RUN_MODE_STORAGE_KEY);
+        if (savedRunMode && RUN_MODES.includes(savedRunMode as RunMode)) setRunMode(savedRunMode as RunMode);
         const savedButtonColor = window.localStorage.getItem(UI_BUTTON_COLOR_STORAGE_KEY);
         if (savedButtonColor && UI_BUTTON_COLORS.includes(savedButtonColor as UiButtonColor)) {
           setUiButtonColor(savedButtonColor as UiButtonColor);
@@ -290,6 +332,27 @@ export default function Page() {
       setThemeError("Button color change could not be saved.");
     }
   };
+  const changeRunMode = (mode: RunMode) => {
+    setRunMode(mode);
+    setRunModeMenuOpen(false);
+    setThemeError("");
+    try {
+      window.localStorage.setItem(UI_RUN_MODE_STORAGE_KEY, mode);
+    } catch (error) {
+      console.error("Could not save the selected run mode.", error);
+      setThemeError("Run mode preference could not be saved.");
+    }
+  };
+  useEffect(() => {
+    if (!runModeMenuOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof window.Node && !runModeMenuRef.current?.contains(event.target)) {
+        setRunModeMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [runModeMenuOpen]);
   const videoAssets = useMemo<VideoAsset[]>(() => nodes.flatMap((node) => {
     const data = node.data as {
       type?: string;
@@ -621,9 +684,34 @@ export default function Page() {
     const type = (n.data as { type?: string }).type;
     return type ? registry[type]?.integration === "pending" : false;
   });
+  const generationSettings = useMemo(() => workflowGenerationNodes(nodes).map((node) => {
+    const lowProfile = getLowSettingsProfile(node.type, node.params);
+    return {
+      ...node,
+      lowProfile,
+      lowParams: { ...node.params, ...lowProfile.overrides },
+      description: lowSettingsDescription(node.type, node.label, node.params),
+    };
+  }), [nodes]);
+  const runModeEstimates = useMemo(() => {
+    let currentTotal = 0;
+    let lowTotal = 0;
+    let currentMissing = 0;
+    let lowMissing = 0;
+    for (const node of generationSettings) {
+      const current = estimateNodeCost(node.type, node.params);
+      const low = estimateNodeCost(node.type, node.lowParams);
+      if (current === null) currentMissing++;
+      else currentTotal += current;
+      if (low === null) lowMissing++;
+      else lowTotal += low;
+    }
+    return { currentTotal, lowTotal, currentMissing, lowMissing };
+  }, [generationSettings]);
 
-  const executeGraph = async (targetIds?: string[]) => {
+  const executeGraph = async (targetIds?: string[], lowSettings = false) => {
     if (runInProgress.current) return;
+    const shouldUseLowSettings = lowSettings && !targetIds;
     const graph: Graph = {
       nodes: nodes.map((n) => {
         const data = n.data as { type: string; params: Record<string, unknown> };
@@ -655,6 +743,12 @@ export default function Page() {
     if (generators.length && !window.confirm(
       `This run may submit ${generators.length} AI generation node${generators.length === 1 ? "" : "s"} (${generators.map((node) => registry[node.type].label).join(", ")}). Provider charges may apply. Stopping only stops waiting; submitted jobs may still be billed. Continue?`,
     )) return;
+    const loweredNodes = shouldUseLowSettings
+      ? generationSettings.filter((node) => Object.keys(node.lowProfile.overrides).length > 0)
+      : [];
+    if (lowRunSummaryTimer.current !== null) window.clearTimeout(lowRunSummaryTimer.current);
+    setLowRunSummary("");
+    setLowSettingsNodeIds(loweredNodes.map((node) => node.id));
     runInProgress.current = true;
     setIsRunning(true);
     abort.current = new AbortController();
@@ -662,6 +756,7 @@ export default function Page() {
       await runGraph(graph, {
         cache: cache.current,
         fresh: !targetIds,
+        lowSettings: shouldUseLowSettings,
         ...(targetIds ? { targetIds } : {}),
         signal: abort.current.signal,
         onStatus: (id, status: NodeStatus, info) =>
@@ -686,9 +781,17 @@ export default function Page() {
       abort.current = null;
       runInProgress.current = false;
       setIsRunning(false);
+      setLowSettingsNodeIds([]);
+      if (shouldUseLowSettings) {
+        const asSetCount = generationSettings.length - loweredNodes.length;
+        setLowRunSummary(
+          `Test run at lowest settings. ${loweredNodes.length} nodes lowered, ${asSetCount} ran as set. Full quality is a separate paid run.`
+        );
+        lowRunSummaryTimer.current = window.setTimeout(() => setLowRunSummary(""), 8000);
+      }
     }
   };
-  const run = () => { void executeGraph(); };
+  const run = () => { void executeGraph(undefined, runMode === "low"); };
   const runNode = (nodeId: string) => { void executeGraph([nodeId]); };
 
   const persistWorkflowList = (nextWorkflows: SavedWorkflow[], nextActiveId: string) => {
@@ -824,6 +927,40 @@ export default function Page() {
     }
   };
 
+  const focusRunModeOption = (index: number) => {
+    window.requestAnimationFrame(() => runModeOptionRefs.current[index]?.focus());
+  };
+  const toggleRunModeMenu = () => {
+    const opening = !runModeMenuOpen;
+    if (opening) {
+      const bounds = runModeArrowRef.current?.getBoundingClientRect();
+      if (bounds) {
+        setRunModeMenuPosition({
+          top: bounds.bottom + 7,
+          right: Math.max(12, window.innerWidth - bounds.right),
+        });
+      }
+    }
+    setRunModeMenuOpen(opening);
+    if (opening) focusRunModeOption(runMode === "all" ? 0 : 1);
+  };
+  const handleRunModeMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const activeIndex = runModeOptionRefs.current.findIndex((option) => option === document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setRunModeMenuOpen(false);
+      runModeArrowRef.current?.focus();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      const start = activeIndex < 0 ? (runMode === "all" ? 0 : 1) : activeIndex;
+      focusRunModeOption((start + step + RUN_MODES.length) % RUN_MODES.length);
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      focusRunModeOption(event.key === "Home" ? 0 : RUN_MODES.length - 1);
+    }
+  };
+
   return (
     <div className="ff-app" data-theme={uiTheme} data-button-color={uiButtonColor}>
       <header className="ff-toolbar">
@@ -896,14 +1033,91 @@ export default function Page() {
             }} />
           </label>
           <button className="ff-toolbar-button" onClick={() => abort.current?.abort()} disabled={!isRunning}>Stop</button>
-          <button
-            className="ff-run"
-            onClick={run}
-            disabled={isRunning}
-            title="Check for missing inputs and unsupported models before running"
-          >
-            {isRunning ? "Running workflow…" : "Run workflow"} <span aria-hidden="true">↗</span>
-          </button>
+          <div className="ff-run-split" ref={runModeMenuRef}>
+            <button
+              className="ff-run"
+              onClick={run}
+              disabled={isRunning}
+              title="Check for missing inputs and unsupported models before running"
+            >
+              {isRunning ? "Running workflow…" : "Run workflow"}
+              {runMode === "low" && !isRunning && <span className="ff-run-low-label">Low</span>}
+              <span aria-hidden="true">↗</span>
+            </button>
+            <button
+              type="button"
+              ref={runModeArrowRef}
+              className="ff-run-mode-toggle"
+              aria-label="Choose workflow run mode"
+              aria-haspopup="menu"
+              aria-expanded={runModeMenuOpen}
+              aria-controls="ff-run-mode-menu"
+              disabled={isRunning}
+              onClick={toggleRunModeMenu}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  if (!runModeMenuOpen) toggleRunModeMenu();
+                } else if (event.key === "Escape" && runModeMenuOpen) {
+                  event.preventDefault();
+                  setRunModeMenuOpen(false);
+                }
+              }}
+            >
+              <span aria-hidden="true">▾</span>
+            </button>
+            {runModeMenuOpen && (
+              <div
+                className="ff-run-mode-menu"
+                id="ff-run-mode-menu"
+                role="menu"
+                aria-label="Workflow run mode"
+                style={runModeMenuPosition}
+                onKeyDown={handleRunModeMenuKeyDown}
+              >
+                {RUN_MODES.map((mode, index) => (
+                  <button
+                    key={mode}
+                    ref={(element) => { runModeOptionRefs.current[index] = element; }}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={runMode === mode}
+                    className="ff-run-mode-option"
+                    onClick={() => {
+                      changeRunMode(mode);
+                      runModeArrowRef.current?.focus();
+                    }}
+                  >
+                    <span className="ff-run-mode-option-heading">
+                      <strong>{mode === "all" ? "Run all" : "Run at lowest settings"}</strong>
+                      <span aria-hidden="true">{runMode === mode ? "✓" : ""}</span>
+                    </span>
+                    <small>{mode === "all"
+                      ? "Run every node with its current settings."
+                      : "Run every node at its cheapest setting. Your node settings are not changed. Full quality is a separate paid run."}</small>
+                  </button>
+                ))}
+                <details className="ff-run-mode-changes">
+                  <summary>Show changes</summary>
+                  <ul>
+                    {generationSettings.length
+                      ? generationSettings.map((node) => <li key={node.id}>{node.description}</li>)
+                      : <li>No generation nodes in this graph.</li>}
+                  </ul>
+                </details>
+                <div className="ff-run-mode-estimates" aria-label="Estimated workflow costs">
+                  <span>Run all: {formatRunCost(runModeEstimates.currentTotal, runModeEstimates.currentMissing)}</span>
+                  <span>At lowest settings: {formatRunCost(runModeEstimates.lowTotal, runModeEstimates.lowMissing)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+          {lowRunSummary && (
+            <div className="ff-low-run-summary" role="status">
+              <span>{lowRunSummary}</span>
+              <button type="button" aria-label="Dismiss low-settings run summary" onClick={() => setLowRunSummary("")}>×</button>
+            </div>
+          )}
             </>
           ) : activeView === "editor" ? (
             <span className="ff-toolbar-note">H.264 MOV and MP4 export rendered on the server</span>
@@ -1063,7 +1277,7 @@ export default function Page() {
       </aside>
 
       <main className="ff-canvas" ref={groupCanvasRef}>
-        <WorkflowRunContext.Provider value={{ runNode, isRunning, openEditor: () => setActiveView("editor") }}>
+        <WorkflowRunContext.Provider value={{ runNode, isRunning, lowSettingsNodeIds, openEditor: () => setActiveView("editor") }}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}
           onInit={(instance) => { groupFlowRef.current = instance; }}

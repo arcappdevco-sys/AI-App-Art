@@ -115,6 +115,204 @@
   color: var(--button-text);
 }
 
+.storyboard-script-panel {
+  display: grid;
+  gap: 8px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.storyboard-script-heading-row,
+.storyboard-script-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.storyboard-script-heading-row h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.storyboard-script-heading-row p,
+.storyboard-script-disclosure {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.storyboard-script-upload {
+  position: relative;
+  display: inline-flex;
+  min-height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.storyboard-script-upload:hover {
+  border-color: var(--line-hover);
+  color: var(--text);
+}
+
+.storyboard-script-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.storyboard-script-input {
+  width: 100%;
+  min-height: 82px;
+  max-height: 220px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.storyboard-script-footer > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.storyboard-script-footer button {
+  min-height: 32px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 1px solid var(--button-bg);
+  border-radius: 6px;
+  background: var(--button-bg);
+  color: var(--button-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.storyboard-script-footer button:hover:not(:disabled) {
+  border-color: var(--button-hover);
+  background: var(--button-hover);
+}
+
+.storyboard-script-footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.storyboard-script-upload:focus-within,
+.storyboard-script-input:focus-visible,
+.storyboard-script-footer button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.storyboard-image-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--toolbar-surface);
+}
+
+.storyboard-image-heading h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.storyboard-image-heading p,
+.storyboard-image-disclosure {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.storyboard-image-controls {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.storyboard-image-controls label {
+  display: grid;
+  min-width: min(320px, 45vw);
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.storyboard-image-controls select {
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.storyboard-image-controls button,
+.storyboard-generate-frame {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--button-bg);
+  border-radius: 6px;
+  background: var(--button-bg);
+  color: var(--button-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.storyboard-image-controls button:hover:not(:disabled),
+.storyboard-generate-frame:hover:not(:disabled) {
+  border-color: var(--button-hover);
+  background: var(--button-hover);
+}
+
+.storyboard-image-controls button:disabled,
+.storyboard-generate-frame:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.storyboard-image-progress {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.storyboard-image-controls select:focus-visible,
+.storyboard-image-controls button:focus-visible,
+.storyboard-generate-frame:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .storyboard-board {
   min-height: 0;
   flex: 1;
@@ -364,6 +562,20 @@
   font-size: 10px;
 }
 
+.storyboard-generate-frame {
+  width: 100%;
+  margin-top: 7px;
+  border-color: var(--line-control);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+}
+
+.storyboard-generate-frame:hover:not(:disabled) {
+  border-color: var(--line-hover);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 .storyboard-file-input {
   display: none;
 }
@@ -486,6 +698,31 @@
 
   .storyboard-toolbar-actions button {
     flex: 1;
+  }
+
+  .storyboard-script-panel {
+    padding: 12px 14px;
+  }
+
+  .storyboard-script-heading-row {
+    align-items: flex-start;
+  }
+
+  .storyboard-script-footer {
+    align-items: flex-start;
+  }
+
+  .storyboard-image-panel {
+    padding: 12px 14px;
+  }
+
+  .storyboard-image-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .storyboard-image-controls label {
+    min-width: 0;
   }
 
   .storyboard-board {

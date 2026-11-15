@@ -17,6 +17,95 @@ const { WAN_DEFAULTS, WAN_NODE_TYPE } = lib("wan");
 const { MINIMAX_DEFAULTS, MINIMAX_NODE_TYPE } = lib("minimax");
 const { FLUX3_DEFAULTS, FLUX3_NODE_TYPE } = lib("flux3");
 const { FLUX3_VIDEO_DEFAULTS, FLUX3_VIDEO_NODE_TYPE } = lib("flux3-video");
+const { estimateNodeCost, getLowSettingsProfile, LOW_MODE_SHORTEN_DURATION } = lib("runModeLowSettings");
+const { registry } = lib("registry");
+
+test("low settings profiles apply known cheapest options without mutating node settings", () => {
+  const cases = [
+    [WAN_NODE_TYPE, { resolution: "1080p" }, { resolution: "480p" }],
+    [MINIMAX_NODE_TYPE, { ...MINIMAX_DEFAULTS, model: "minimax/h3", task: "text-to-video", resolution: "2K" }, { resolution: "480P" }],
+    ["video/kling", { model: "kwaivgi/kling-v4.0", resolution: "1080p" }, { resolution: "720p" }],
+    ["video/kling", { model: "kwaivgi/kling-v3.0-pro", resolution: "1080p" }, {}],
+    ["video/seedance", { model: "bytedance/seedance-2.5", task: "text-to-video", resolution: "1080p", draft: false, variations: "3" }, { draft: true, variations: "1" }],
+    [FLUX3_NODE_TYPE, { ...FLUX3_DEFAULTS, resolution: "4k" }, { resolution: "768sq" }],
+    [FLUX3_VIDEO_NODE_TYPE, { ...FLUX3_VIDEO_DEFAULTS, resolution: "1080p" }, { resolution: "720p" }],
+    ["video/veo", { model: "google/veo3.1", resolution: "1080p", count: "4" }, { resolution: "720p", count: "1" }],
+    ["video/google-omni", { model: "google/gemini-omni-1.2-flash", task: "text-to-video", resolution: "1080p", variations: "3" }, { resolution: "360p", variations: "1" }],
+    ["fal/nano-banana", { num_images: 4 }, { num_images: 1 }],
+    ["openai/gpt-image", { quality: "auto", size: "auto" }, { quality: "low" }],
+  ];
+
+  for (const [type, params, expected] of cases) {
+    const original = structuredClone(params);
+    const result = getLowSettingsProfile(type, params);
+    assert.deepEqual(result.overrides, expected, type);
+    assert.deepEqual(params, original, `${type} settings must remain unchanged`);
+  }
+  assert.match(
+    getLowSettingsProfile("openai/gpt-image", { quality: "auto", size: "auto" }).needsDecision,
+    /1024x1024.*1536x1024.*1024x1536/,
+  );
+});
+
+test("low-mode cost estimates reuse existing rates and leave unestimated tasks explicit", () => {
+  const params = {
+    model: "google/veo3.1",
+    task: "text-to-video",
+    duration: "8",
+    resolution: "1080p",
+    count: "4",
+  };
+  const lowParams = { ...params, ...getLowSettingsProfile("video/veo", params).overrides };
+  assert.equal(estimateNodeCost("video/veo", params), 6.4);
+  assert.equal(estimateNodeCost("video/veo", lowParams), 1.6);
+  assert.equal(estimateNodeCost(FLUX3_VIDEO_NODE_TYPE, { task: "edit-video", duration: 5 }), null);
+  assert.equal(estimateNodeCost("openai/gpt-image", { quality: "low" }), null);
+  assert.equal(LOW_MODE_SHORTEN_DURATION, false);
+});
+
+test("low workflow execution uses copied settings and does not poison normal-run cache", async () => {
+  const nodeParams = {
+    model: "google/veo3.1",
+    task: "text-to-video",
+    duration: "8",
+    resolution: "1080p",
+    aspect_ratio: "16:9",
+    count: "4",
+    generate_audio: true,
+  };
+  const graph = {
+    nodes: [
+      { id: "prompt", type: "input/prompt", params: { text: "A test" } },
+      { id: "veo", type: "video/veo", params: nodeParams },
+    ],
+    edges: [{ source: "prompt", sourceHandle: "text", target: "veo", targetHandle: "prompt" }],
+  };
+  const originalExecute = registry["video/veo"].execute;
+  const executedParams = [];
+  registry["video/veo"].execute = async ({ params }) => {
+    executedParams.push(params);
+    return { video: "https://example.com/output.mp4" };
+  };
+  const options = {
+    cache: new Map(),
+    onStatus: () => {},
+    onOutput: () => {},
+  };
+  try {
+    await runGraph(graph, { ...options, fresh: true, lowSettings: true });
+    assert.equal(executedParams[0].resolution, "720p");
+    assert.equal(executedParams[0].count, "1");
+    assert.equal(nodeParams.resolution, "1080p");
+    assert.equal(nodeParams.count, "4");
+
+    await runGraph(graph, { ...options, targetIds: ["veo"] });
+    assert.equal(executedParams.length, 2, "normal execution must not reuse low-mode output");
+    assert.equal(executedParams[1].resolution, "1080p");
+    assert.equal(executedParams[1].count, "4");
+  } finally {
+    registry["video/veo"].execute = originalExecute;
+  }
+});
 
 test("workflow runs fresh Atlas generations, propagates outputs, and isolates failures", async () => {
   const originalFetch = global.fetch;

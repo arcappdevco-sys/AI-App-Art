@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type Ke
 import {
   STORYBOARD_ASPECT_RATIOS,
   STORYBOARD_CAMERA_MOVES,
+  STORYBOARD_SCRIPT_MAX_CHARACTERS,
   STORYBOARD_SHOT_TYPES,
   createStoryboardScene,
   createStoryboardShot,
@@ -11,48 +12,12 @@ import {
   type StoryboardScene,
   type StoryboardShot,
 } from "@/lib/StoryboardData";
+import { STORYBOARD_FRAME_MODELS, buildStoryboardFramePrompt, generateStoryboardFrame, type StoryboardFrameModelId } from "@/lib/StoryboardFrameGeneration";
+import { storyboardImageDataUrl } from "@/lib/StoryboardImages";
+import { normalizeGeneratedStoryboard } from "@/lib/StoryboardScript";
 
 type ShotLocation = { sceneId: string; shotId: string; sceneIndex: number; shotIndex: number };
 type DraggedShot = { sceneId: string; shotId: string };
-
-function readDataUrl(file: Blob) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => typeof reader.result === "string"
-      ? resolve(reader.result)
-      : reject(new Error("Could not read the image file."));
-    reader.onerror = () => reject(new Error("Could not read the image file."));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function storyboardImageDataUrl(file: File) {
-  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-    throw new Error("Choose a PNG, JPEG, or WebP image.");
-  }
-  const image = await createImageBitmap(file);
-  try {
-    if (Math.max(image.width, image.height) <= 2048) return await readDataUrl(file);
-    const scale = 2048 / Math.max(image.width, image.height);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(image.width * scale));
-    canvas.height = Math.max(1, Math.round(image.height * scale));
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Image resizing is not available in this browser.");
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const resized = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => blob
-        ? resolve(blob)
-        : reject(new Error("Could not resize the image.")), file.type, file.type === "image/png" ? undefined : 0.9);
-    });
-    if (resized.type !== file.type) {
-      throw new Error(`This browser cannot preserve ${file.type.slice(6).toUpperCase()} while resizing the image.`);
-    }
-    return await readDataUrl(resized);
-  } finally {
-    image.close();
-  }
-}
 
 function shotHasContent(shot: StoryboardShot) {
   return Boolean(
@@ -101,10 +66,127 @@ export default function StoryboardTab({
   const [selectedSceneId, setSelectedSceneId] = useState("");
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(() => new Set());
   const [imageErrors, setImageErrors] = useState<Record<string, string>>({});
+  const [scriptText, setScriptText] = useState("");
+  const [scriptFileName, setScriptFileName] = useState("");
+  const [scriptError, setScriptError] = useState("");
+  const [generatingStoryboard, setGeneratingStoryboard] = useState(false);
+  const [frameModel, setFrameModel] = useState<StoryboardFrameModelId>(STORYBOARD_FRAME_MODELS[0].id);
+  const [generatingShotIds, setGeneratingShotIds] = useState<Set<string>>(() => new Set());
+  const [frameErrors, setFrameErrors] = useState<Record<string, string>>({});
+  const [frameBatchProgress, setFrameBatchProgress] = useState("");
+  const [generatingMissingFrames, setGeneratingMissingFrames] = useState(false);
   const draggedShot = useRef<DraggedShot | null>(null);
   const locations = useMemo(() => shotLocations(storyboard.scenes), [storyboard.scenes]);
   const shotNumbers = useMemo(() => new Map(locations.map((location, index) => [location.shotId, index + 1])), [locations]);
   const ratio = storyboard.aspectRatio.replace(":", " / ");
+
+  const handleScriptFile = async (file?: File) => {
+    if (!file) return;
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    if (!["txt", "md", "fountain"].includes(extension ?? "")
+      && !["text/plain", "text/markdown", "application/octet-stream"].includes(file.type)) {
+      setScriptError("Choose a .txt, .md, or .fountain script file.");
+      return;
+    }
+    if (file.size > STORYBOARD_SCRIPT_MAX_CHARACTERS * 4) {
+      setScriptError(`Scripts must be ${STORYBOARD_SCRIPT_MAX_CHARACTERS.toLocaleString()} characters or fewer.`);
+      return;
+    }
+    try {
+      const text = await file.text();
+      if (text.length > STORYBOARD_SCRIPT_MAX_CHARACTERS) {
+        setScriptError(`Scripts must be ${STORYBOARD_SCRIPT_MAX_CHARACTERS.toLocaleString()} characters or fewer.`);
+        return;
+      }
+      setScriptText(text);
+      setScriptFileName(file.name);
+      setScriptError("");
+    } catch {
+      setScriptError("Could not read that script file.");
+    }
+  };
+
+  const buildStoryboardFromScript = async () => {
+    if (!scriptText.trim() || generatingStoryboard) return;
+    if (storyboard.scenes.length > 0
+      && !window.confirm("Replace all current scenes and shots with the generated storyboard?")) return;
+    setGeneratingStoryboard(true);
+    setScriptError("");
+    try {
+      const response = await fetch("/api/storyboard/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ script: scriptText }),
+      });
+      const result: unknown = await response.json();
+      if (!response.ok) {
+        const message = typeof result === "object" && result !== null
+          && "error" in result && typeof result.error === "string"
+          ? result.error
+          : `Storyboard generation failed (${response.status}).`;
+        throw new Error(message);
+      }
+      const generated = normalizeGeneratedStoryboard(result);
+      onChange((current) => ({ ...current, scenes: generated.scenes }));
+      setSelectedSceneId(generated.scenes[0]?.id ?? "");
+    } catch (error) {
+      setScriptError(error instanceof Error ? error.message : "Could not generate the storyboard.");
+    } finally {
+      setGeneratingStoryboard(false);
+    }
+  };
+
+  const generateFrameForShot = async (scene: StoryboardScene, shot: StoryboardShot) => {
+    setGeneratingShotIds((current) => new Set(current).add(shot.id));
+    setFrameErrors((current) => ({ ...current, [shot.id]: "" }));
+    try {
+      const prompt = buildStoryboardFramePrompt(scene, shot, storyboard.aspectRatio);
+      const frame = await generateStoryboardFrame(frameModel, prompt, storyboard.aspectRatio);
+      onChange((current) => ({
+        ...current,
+        scenes: current.scenes.map((item) => ({
+          ...item,
+          shots: item.shots.map((candidate) => candidate.id === shot.id ? { ...candidate, frame } : candidate),
+        })),
+      }));
+    } catch (error) {
+      setFrameErrors((current) => ({
+        ...current,
+        [shot.id]: error instanceof Error ? error.message : "Could not generate this frame.",
+      }));
+      throw error;
+    } finally {
+      setGeneratingShotIds((current) => {
+        const next = new Set(current);
+        next.delete(shot.id);
+        return next;
+      });
+    }
+  };
+
+  const generateMissingFrames = async () => {
+    const missingShots = storyboard.scenes.flatMap((scene) => scene.shots
+      .filter((shot) => !shot.frame && Boolean(shot.title.trim() || shot.description.trim()))
+      .map((shot) => ({ scene, shot })));
+    if (!missingShots.length || generatingMissingFrames) return;
+    const model = STORYBOARD_FRAME_MODELS.find((item) => item.id === frameModel);
+    if (!window.confirm(`Generate ${missingShots.length} image${missingShots.length === 1 ? "" : "s"} with ${model?.label ?? frameModel}? Each image may incur API charges. Continue?`)) return;
+    setGeneratingMissingFrames(true);
+    setFrameBatchProgress(`Generating 0 of ${missingShots.length} frames…`);
+    let completed = 0;
+    for (const { scene, shot } of missingShots) {
+      try {
+        await generateFrameForShot(scene, shot);
+      } catch {
+        // Keep processing the remaining shots and report each failure on its card.
+      } finally {
+        completed += 1;
+        setFrameBatchProgress(`Generating ${completed} of ${missingShots.length} frames…`);
+      }
+    }
+    setGeneratingMissingFrames(false);
+    setFrameBatchProgress(`Finished: ${completed} frame${completed === 1 ? "" : "s"} processed. Review any shot-level errors.`);
+  };
 
   const addScene = () => {
     const scene = createStoryboardScene(nextSceneNumber(storyboard.scenes));
@@ -264,6 +346,76 @@ export default function StoryboardTab({
         </div>
       </header>
 
+      <section className="storyboard-script-panel" aria-labelledby="storyboard-script-heading">
+        <div className="storyboard-script-heading-row">
+          <div>
+            <h2 id="storyboard-script-heading">Build from a script</h2>
+            <p>Upload or paste a script, then explicitly send it to OpenAI to create scenes and shots.</p>
+          </div>
+          <label className="storyboard-script-upload">
+            Upload script
+            <input type="file" accept=".txt,.md,.fountain,text/plain,text/markdown"
+              aria-label="Upload a .txt, .md, or .fountain script"
+              onChange={(event) => {
+                void handleScriptFile(event.target.files?.[0]);
+                event.target.value = "";
+              }} />
+          </label>
+        </div>
+        <textarea className="storyboard-script-input" aria-label="Script text"
+          placeholder="Paste your script here…"
+          maxLength={STORYBOARD_SCRIPT_MAX_CHARACTERS}
+          value={scriptText}
+          onChange={(event) => {
+            setScriptText(event.target.value);
+            setScriptError("");
+          }} />
+        <div className="storyboard-script-footer">
+          <span>{scriptFileName ? `${scriptFileName} · ` : ""}{scriptText.length.toLocaleString()} / {STORYBOARD_SCRIPT_MAX_CHARACTERS.toLocaleString()} characters</span>
+          <button type="button" className="storyboard-primary-action"
+            disabled={!scriptText.trim() || generatingStoryboard}
+            onClick={() => void buildStoryboardFromScript()}>
+            {generatingStoryboard ? "Building storyboard…" : "Build storyboard"}
+          </button>
+        </div>
+        <p className="storyboard-script-disclosure">
+          Your script is sent to OpenAI only when you choose Build storyboard. Your configured OpenAI API key is used; API usage may be billed. Generated shots have no frame images.
+        </p>
+        {scriptError && <p className="storyboard-inline-error" role="alert">{scriptError}</p>}
+      </section>
+
+      <section className="storyboard-image-panel" aria-labelledby="storyboard-image-heading">
+        <div className="storyboard-image-heading">
+          <div>
+            <h2 id="storyboard-image-heading">Generate shot frames</h2>
+            <p>Choose an image model, then generate missing frames from their scene and shot details.</p>
+          </div>
+        </div>
+        <div className="storyboard-image-controls">
+          <label>
+            <span>Image model</span>
+            <select aria-label="Storyboard image model" value={frameModel}
+            disabled={generatingShotIds.size > 0 || generatingMissingFrames}
+              onChange={(event) => setFrameModel(event.target.value as StoryboardFrameModelId)}>
+              {STORYBOARD_FRAME_MODELS.map((model) => (
+                <option key={model.id} value={model.id}>{model.label}</option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="storyboard-primary-action"
+            disabled={generatingMissingFrames || generatingShotIds.size > 0
+              || !storyboard.scenes.some((scene) => scene.shots.some((shot) =>
+                !shot.frame && Boolean(shot.title.trim() || shot.description.trim())))}
+            onClick={() => void generateMissingFrames()}>
+            {generatingMissingFrames ? "Generating frames…" : "Generate missing frames"}
+          </button>
+          {frameBatchProgress && <span className="storyboard-image-progress" role="status">{frameBatchProgress}</span>}
+        </div>
+        <p className="storyboard-image-disclosure">
+          Generation sends scene and shot details to the selected provider. API usage may be billed. Generated images are stored with this project; they are resized to fit the storyboard’s local image limit.
+        </p>
+      </section>
+
       {saveError && <p className="storyboard-storage-error" role="alert">Could not save this storyboard: {saveError}</p>}
 
       <div className="storyboard-board">
@@ -410,6 +562,13 @@ export default function StoryboardTab({
                             <span><strong>＋</strong> Add frame image <small>PNG, JPEG, or WebP · or paste</small></span>
                           )}
                         </div>
+                        <button type="button" className="storyboard-generate-frame"
+                          disabled={generatingShotIds.size > 0 || generatingMissingFrames
+                            || !(shot.title.trim() || shot.description.trim())}
+                          onClick={() => void generateFrameForShot(scene, shot).catch(() => undefined)}>
+                          {generatingShotIds.has(shot.id) ? "Generating frame…" : shot.frame ? "Regenerate frame" : "Generate frame"}
+                        </button>
+                        {frameErrors[shot.id] && <p className="storyboard-inline-error" role="alert">{frameErrors[shot.id]}</p>}
                         {imageErrors[shot.id] && <p className="storyboard-inline-error" role="status">{imageErrors[shot.id]}</p>}
                         <label className="storyboard-field">
                           <span>Shot title <small>Optional</small></span>

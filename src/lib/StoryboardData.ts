@@ -24,6 +24,7 @@ export const STORYBOARD_CAMERA_MOVES = [
   "Orbit",
   "Crane",
 ] as const;
+export const STORYBOARD_SCRIPT_MAX_CHARACTERS = 40000;
 
 export type StoryboardAspectRatio = (typeof STORYBOARD_ASPECT_RATIOS)[number];
 export type StoryboardShotType = (typeof STORYBOARD_SHOT_TYPES)[number] | "";

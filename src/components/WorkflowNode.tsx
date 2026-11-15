@@ -35,6 +35,7 @@ import { findPromptAssistantTargets, promptAssistantTargetContext } from "@/lib/
 export const WorkflowRunContext = createContext<{
   runNode: (nodeId: string) => void;
   isRunning: boolean;
+  lowSettingsNodeIds: string[];
   openEditor: () => void;
 } | null>(null);
 
@@ -1484,6 +1485,9 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           <span className="ff-node-status" aria-live="polite">
             {d.status === "running" ? "Running" : d.status === "queued" ? "Queued" : d.status === "done" ? "Done" : d.status === "error" ? "Error" : ""}
           </span>
+        )}
+        {runControl?.isRunning && runControl.lowSettingsNodeIds.includes(id) && (
+          <span className="ff-node-low-badge">Low</span>
         )}
         <i className="ff-dot" />
         {def.category !== "Input" && runControl && !isWan && !isMiniMax && !isFlux3 && !isFlux3Video && (
