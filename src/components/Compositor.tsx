@@ -5,17 +5,21 @@ import {
   ReactFlow, Background, Controls, Handle, Position, addEdge, useEdgesState, useNodesState,
   type Connection, type Edge, type NodeProps, type ReactFlowInstance,
 } from "@xyflow/react";
-import { COMPOSITOR_INPUTS, COMPOSITOR_LABELS, DEFAULT_VIEWER_TRANSFORM, EMPTY_COMPOSITOR_MARKS, compositorBypassInput, compositorMediaSource, compositorRange, nextCompositorTime, interpolateTrack, reachesCompositorNode, trackPatch, zoomViewerAt, type CompositorMarks, type CompositorParams, type TrackPoint } from "@/lib/compositor";
-import { COMPOSITOR_NODE_OPTIONS, COMPOSITOR_TEMPLATES, createCompositorNode, createCompositorTemplate, type CompositorNode, type CompositorNodeOption, type TemplateId } from "@/lib/compositor-templates";
-import { applyColorCorrection, type CurvePoint } from "@/lib/compositor-color";
+import { COMPOSITOR_INPUTS, COMPOSITOR_LABELS, DEFAULT_VIEWER_TRANSFORM, EMPTY_COMPOSITOR_MARKS, compositorBypassInput, compositorMediaSource, compositorRange, nextCompositorTime, reachesCompositorNode, trackPatch, zoomViewerAt, type CompositorMarks, type CompositorParamValue, type CompositorParams } from "@/lib/compositor";
+import { COMPOSITOR_NODE_OPTIONS, COMPOSITOR_TEMPLATES, appendCompositorTemplate, createCompositorNode, createCompositorTemplate, type CompositorNode, type CompositorNodeOption, type TemplateId } from "@/lib/compositor-templates";
+import { applyCompositorMask, convertMaskGeometry, createMaskGeometry, createMaskLayer, getMaskLayers, hasMaskKeyframeAt, maskGeometryAt, removeMaskKeyframe, setMaskKeyframe, updateMaskGeometry, validateMaskProjection, type MaskGeometry, type MaskLayer, type MaskShapeKind } from "@/lib/compositor-mask";
+import { applyColorCorrection } from "@/lib/compositor-color";
 import ColorCurves from "@/components/ColorCurves";
 import ColorNumberField from "@/components/ColorNumberField";
+import MaskEditor from "@/components/MaskEditor";
+import TrackerEditor from "@/components/TrackerEditor";
 import { applyCompositorKeyer } from "@/lib/compositor-keyer";
 import { CompositorHistory, compositorHistoryShortcut } from "@/lib/compositor-history";
+import { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, planarTrackingMatrix, similarityTrackingMatrix, trackerAnchors, trackerMode, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingCanvas, type TrackingData, type TrackingMatrix, type TrackingPoint, type TrackingResult, type TrackingSample } from "@/lib/compositor-tracking";
 
 type CompNode = CompositorNode;
-type Project = { nodes: CompNode[]; edges: Edge[]; media: Record<string, File>; tracks?: Record<string, TrackPoint[]>; marks?: CompositorMarks };
-type HistorySnapshot = { nodes: CompNode[]; edges: Edge[]; files: Record<string, File>; tracks: Record<string, TrackPoint[]>; selected: string; marks: CompositorMarks };
+type Project = { nodes: CompNode[]; edges: Edge[]; media: Record<string, File>; tracks?: Record<string, TrackingData>; marks?: CompositorMarks };
+type HistorySnapshot = { nodes: CompNode[]; edges: Edge[]; files: Record<string, File>; tracks: Record<string, TrackingData>; selected: string; marks: CompositorMarks };
 const HISTORY_LIMIT = 50;
 const WIDTH = 640, HEIGHT = 360;
 const labels = COMPOSITOR_LABELS;
@@ -89,6 +93,15 @@ function number(params: CompositorParams, key: string, fallback: number) {
   const value = Number(params[key]);
   return Number.isFinite(value) ? value : fallback;
 }
+function inspectTracking(data: TrackingData, time: number): { sample?: TrackingSample; error?: string } {
+  try { return { sample: trackingAt(data, time) }; }
+  catch (caught) { return { error: caught instanceof Error ? caught.message : String(caught) }; }
+}
+function inspectMaskProjection(geometry: MaskGeometry | undefined, matrix: TrackingMatrix): string {
+  if (!geometry) return "";
+  try { validateMaskProjection(geometry, matrix); return ""; }
+  catch (caught) { return caught instanceof Error ? caught.message : String(caught); }
+}
 function graphDuration(id: string, nodes: CompNode[], edges: Edge[], durations: Record<string, number>, visited = new Set<string>()): number {
   if (visited.has(id)) return 0;
   visited.add(id);
@@ -139,7 +152,7 @@ async function createMedia(file: File): Promise<Media> {
 }
 
 async function renderGraph(
-  nodes: CompNode[], edges: Edge[], media: Record<string, Media>, tracks: Record<string, TrackPoint[]>,
+  nodes: CompNode[], edges: Edge[], media: Record<string, Media>, tracks: Record<string, TrackingData>,
   target: string, time: number,
 ): Promise<HTMLCanvasElement> {
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -183,19 +196,17 @@ async function renderGraph(
         const source = await input("image");
         const motionEdge = edges.find((edge) => edge.target === id && edge.targetHandle === "motion");
         const tracker = motionEdge ? byId.get(motionEdge.source) : undefined;
-        const offset = motionEdge && !tracker?.data.disabled ? interpolateTrack(tracks[motionEdge.source] ?? [], time) : { x: 0, y: 0 };
+        const motion: TrackingMatrix = motionEdge && !tracker?.data.disabled
+          ? trackingAt(tracks[motionEdge.source] ?? [], time).matrix : IDENTITY_TRACKING_MATRIX;
         if (node.data.kind === "transform") {
           const scale = Math.max(0.01, number(params, "scale", 100) / 100);
-          ctx.translate(WIDTH / 2 + number(params, "x", 0) + offset.x, HEIGHT / 2 + number(params, "y", 0) + offset.y);
+          const perspective = Math.abs(motion[6]) > 1e-10 || Math.abs(motion[7]) > 1e-10;
+          if (!perspective) ctx.transform(motion[0], motion[3], motion[1], motion[4], motion[2], motion[5]);
+          ctx.translate(WIDTH / 2 + number(params, "x", 0), HEIGHT / 2 + number(params, "y", 0));
           ctx.scale(scale, scale); ctx.drawImage(source, -WIDTH / 2, -HEIGHT / 2);
+          if (perspective) return warpTrackingCanvas(result, motion);
         } else if (node.data.kind === "mask") {
-          ctx.drawImage(source, 0, 0);
-          const matte = canvas(), matteCtx = context(matte);
-          matteCtx.fillRect(number(params, "x", 320) + offset.x - number(params, "width", 240) / 2,
-            number(params, "y", 180) + offset.y - number(params, "height", 180) / 2,
-            Math.max(0, number(params, "width", 240)), Math.max(0, number(params, "height", 180)));
-          ctx.globalCompositeOperation = params.invert ? "destination-out" : "destination-in";
-          ctx.drawImage(matte, 0, 0);
+          return applyCompositorMask(source, getMaskLayers(params), time, Boolean(params.invert), motion);
         } else {
           ctx.drawImage(source, 0, 0);
           if (node.data.kind === "key" || node.data.kind === "color") {
@@ -214,7 +225,7 @@ async function renderGraph(
 
 async function drawPreview(
   output: HTMLCanvasElement | null, nodes: CompNode[], edges: Edge[], media: Record<string, Media>,
-  tracks: Record<string, TrackPoint[]>, viewerId: string | undefined, at: number,
+  tracks: Record<string, TrackingData>, viewerId: string | undefined, at: number,
 ) {
   if (!viewerId || !output) throw new Error("Connect a Viewer before rendering.");
   const result = await renderGraph(nodes, edges, media, tracks, viewerId, at);
@@ -239,7 +250,7 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CompNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [files, setFiles] = useState<Record<string, File>>({});
-  const [tracks, setTracks] = useState<Record<string, TrackPoint[]>>({});
+  const [tracks, setTracks] = useState<Record<string, TrackingData>>({});
   const [selected, setSelected] = useState("");
   const [time, setTime] = useState(0);
   const [marks, setMarks] = useState<CompositorMarks>(EMPTY_COMPOSITOR_MARKS);
@@ -260,6 +271,12 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
   const [panning, setPanning] = useState(false);
   const [historyAvailability, setHistoryAvailability] = useState({ undo: false, redo: false });
   const [historyRevision, setHistoryRevision] = useState(0);
+  const [maskLayerSelection, setMaskLayerSelection] = useState<Record<string, string>>({});
+  const [maskPointSelection, setMaskPointSelection] = useState<{ layerId: string; index: number } | null>(null);
+  const [editMaskOnSource, setEditMaskOnSource] = useState(true);
+  const [activeTrackingPoint, setActiveTrackingPoint] = useState(0);
+  const [trackingProgress, setTrackingProgress] = useState<{ time: number; end: number } | null>(null);
+  const [trackingRecovery, setTrackingRecovery] = useState<{ id: string; anchors: TrackingPoint[] } | null>(null);
   const mediaRef = useRef<Record<string, Media>>({});
   const previewRef = useRef<HTMLCanvasElement>(null);
   const channelRef = useRef<HTMLCanvasElement>(null);
@@ -271,14 +288,50 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
   const history = useRef(new CompositorHistory<HistorySnapshot>(HISTORY_LIMIT));
   const historyGroup = useRef<{ recorded: boolean; type: "text" | "pointer"; target: EventTarget } | null>(null);
   const restoringHistory = useRef(false);
+  const trackingCancelled = useRef(false);
   const selectedNode = nodes.find((node) => node.id === selected);
+  const selectedMaskLayers = selectedNode?.data.kind === "mask" ? getMaskLayers(selectedNode.data.params) : [];
+  const selectedMaskLayerId = selectedNode ? maskLayerSelection[selectedNode.id] : undefined;
+  const selectedMaskLayer = selectedMaskLayers.find((layer) => layer.id === selectedMaskLayerId) ?? selectedMaskLayers[0];
+  const selectedMaskLayerIndex = selectedMaskLayers.findIndex((layer) => layer.id === selectedMaskLayer?.id);
+  const selectedMaskGeometry = selectedMaskLayer ? maskGeometryAt(selectedMaskLayer, time) : undefined;
+  const selectedMaskHasKeyframe = selectedMaskLayer ? hasMaskKeyframeAt(selectedMaskLayer, time) : false;
+  const selectedMaskPoint = selectedMaskLayer && maskPointSelection?.layerId === selectedMaskLayer.id
+    ? maskPointSelection.index : null;
   const selectedEdges = edges.filter((edge) => edge.selected);
   const viewer = nodes.find((node) => node.data.kind === "viewer");
   const viewerId = viewer?.id;
+  const editingMask = selectedNode?.data.kind === "mask" && !selectedNode.data.disabled && editMaskOnSource;
+  const maskInput = editingMask ? edges.find((edge) => edge.target === selectedNode.id && edge.targetHandle === "image") : undefined;
+  const editingTracker = selectedNode?.data.kind === "tracker" && !selectedNode.data.disabled;
+  const trackerInput = editingTracker ? edges.find((edge) => edge.target === selectedNode.id && edge.targetHandle === "image") : undefined;
+  const previewTarget = editingMask ? maskInput?.source ?? selectedNode.id
+    : editingTracker && trackerInput ? trackerInput.source : viewerId;
+  const maskMotion = editingMask ? edges.find((edge) => edge.target === selectedNode.id && edge.targetHandle === "motion") : undefined;
+  const motionNode = maskMotion ? nodes.find((node) => node.id === maskMotion.source) : undefined;
+  const motionData = maskMotion && !motionNode?.data.disabled ? tracks[maskMotion.source] : undefined;
+  const maskTracking = maskMotion && !motionNode?.data.disabled ? inspectTracking(motionData ?? [], time) : {};
+  const maskMatrix = maskTracking.sample?.matrix ?? IDENTITY_TRACKING_MATRIX;
+  const maskProjectionError = maskTracking.error || inspectMaskProjection(selectedMaskGeometry, maskMatrix);
+  const trackerData = editingTracker ? tracks[selectedNode.id] : undefined;
+  const trackSamples = trackerData ? Array.isArray(trackerData)
+    ? trackerData.map((sample) => ({ time: sample.time, anchors: [{ x: sample.x, y: sample.y }], confidence: sample.confidence }))
+    : trackerData.samples : [];
+  const trackerPreview = trackerData ? inspectTracking(trackerData, time) : {};
+  const recovery = editingTracker && trackingRecovery?.id === selectedNode.id && trackerData
+    && !Array.isArray(trackerData) && !trackerData.complete && trackerData.samples.length > 0
+    && Math.abs(trackerData.samples[trackerData.samples.length - 1].time - time) <= 0.001 ? trackingRecovery : null;
+  const currentTrackerAnchors = recovery?.anchors ?? trackerPreview.sample?.anchors
+    ?? (editingTracker ? trackerAnchors(selectedNode.data.params) : []);
+  const trackerEditable = Boolean(editingTracker && trackerInput && !busy && (recovery || time <= 0.001));
+  const pathStride = Math.max(1, Math.ceil(trackSamples.length / 1000));
+  const trackerPaths = currentTrackerAnchors.map((_, index) =>
+    trackSamples.filter((__, sampleIndex) => sampleIndex % pathStride === 0 || sampleIndex === trackSamples.length - 1)
+      .map((sample) => sample.anchors[index]).filter((point): point is TrackingPoint => Boolean(point)));
   const showViewerHint = selectedNode && selectedNode.data.kind !== "viewer" && selectedNode.data.kind !== "tracker"
     && (!viewerId || !reachesCompositorNode(edges, selectedNode.id, viewerId));
   const durationFor = (id: string) => graphDuration(id, nodes, edges, mediaDurations);
-  const duration = viewer ? durationFor(viewer.id) : 0;
+  const duration = Math.max(viewer ? durationFor(viewer.id) : 0, trackerInput ? durationFor(trackerInput.source) : 0);
   const range = compositorRange(marks, duration);
 
   useEffect(() => {
@@ -356,12 +409,12 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
 
   const draw = (at: number) => drawPreview(previewRef.current, nodes, edges, mediaRef.current, tracks, viewerId, at);
   useEffect(() => {
-    if (hidden || busy || !viewerId) return;
+    if (hidden || busy || !previewTarget) return;
     let active = true;
     drawing.current = drawing.current.catch(() => {}).then(async () => {
       if (!active) return;
       try {
-        await drawPreview(previewRef.current, nodes, edges, mediaRef.current, tracks, viewerId, time);
+        await drawPreview(previewRef.current, nodes, edges, mediaRef.current, tracks, previewTarget, time);
         if (active && previewRef.current && channelRef.current && viewChannel !== "rgb") {
           const output = context(channelRef.current);
           output.clearRect(0, 0, WIDTH, HEIGHT);
@@ -386,7 +439,7 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
       }
     });
     return () => { active = false; };
-  }, [nodes, edges, tracks, time, hidden, busy, viewerId, mediaVersion, viewChannel]);
+  }, [nodes, edges, tracks, time, hidden, busy, previewTarget, mediaVersion, viewChannel]);
   useEffect(() => {
     if (!playing || hidden || busy || !duration) return;
     const timer = window.setInterval(() => setTime((current) => nextCompositorTime(current, range.start, range.end)), 100);
@@ -440,7 +493,7 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
       setHistoryRevision((revision) => revision + 1);
       const nextViewer = next.nodes.find((node) => node.data.kind === "viewer");
       const nextDuration = nextViewer ? graphDuration(nextViewer.id, next.nodes, next.edges, durations) : 0;
-      setPickingKey(""); setTime((currentTime) => Math.min(currentTime, nextDuration)); setError(""); setRenderError("");
+      setPickingKey(""); setTrackingRecovery(null); setTime((currentTime) => Math.min(currentTime, nextDuration)); setError(""); setRenderError("");
       updateHistoryAvailability();
     } catch (caught) {
       Object.values(loaded).forEach((item) => URL.revokeObjectURL(item.url));
@@ -456,22 +509,27 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
         { x: 30 + ((current.length - 1) % 3) * 210, y: 40 + Math.floor((current.length - 1) / 3) * 140 }), selected: true }]);
     setSelected(id);
   };
-  const applyTemplate = async (id: TemplateId) => {
+  const applyTemplate = async (id: TemplateId, mode: "add" | "replace") => {
     const template = COMPOSITOR_TEMPLATES.find((item) => item.id === id);
     if (!template || busy || !ready) return;
-    if (!window.confirm(`Load the ${template.name} template? This replaces the current compositor project, including its uploaded media and tracking data.`)) return;
+    if (mode === "replace" && !window.confirm(`Load the ${template.name} template? This replaces the current compositor project, including its uploaded media and tracking data.`)) return;
     setPlaying(false); setBusy(true);
     try {
       await drawing.current;
       const graph = createCompositorTemplate(id, () => crypto.randomUUID());
+      const appended = mode === "add" ? appendCompositorTemplate(nodes, edges, graph) : undefined;
       recordHistory();
-      Object.values(mediaRef.current).forEach((item) => URL.revokeObjectURL(item.url));
-      mediaRef.current = {};
-      setFiles({}); setMediaDurations({}); setTracks({}); setMarks(EMPTY_COMPOSITOR_MARKS);
-      setNodes(graph.nodes); setEdges(graph.edges); setSelected(graph.nodes[0].id);
-      setTime(0); setError(""); setRenderError("");
+      if (appended) {
+        setNodes(appended.nodes); setEdges(appended.edges); setSelected(appended.selectedId);
+      } else {
+        Object.values(mediaRef.current).forEach((item) => URL.revokeObjectURL(item.url));
+        mediaRef.current = {};
+        setFiles({}); setMediaDurations({}); setTracks({}); setMarks(EMPTY_COMPOSITOR_MARKS);
+        setNodes(graph.nodes); setEdges(graph.edges); setSelected(graph.nodes[0].id); setTime(0);
+      }
+      setError(""); setRenderError("");
       setTemplateVersion((version) => version + 1);
-      setStatus(`${template.name} template loaded`);
+      setStatus(mode === "add" ? `${template.name} added to canvas` : `${template.name} template loaded`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally { setBusy(false); }
@@ -566,7 +624,43 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
     setNodes((current) => current.map((node) => node.id === selected
       ? { ...node, data: { ...node.data, params: { ...node.data.params, ...values } } } : node));
   };
-  const update = (key: string, value: string | number | boolean | CurvePoint[]) => updateParams({ [key]: value });
+  const update = (key: string, value: CompositorParamValue) => updateParams({ [key]: value });
+  const updateMaskLayer = (layer: MaskLayer) => {
+    if (!selectedNode || selectedNode.data.kind !== "mask") return;
+    update("layers", selectedMaskLayers.map((current) => current.id === layer.id ? layer : current));
+  };
+  const addMaskLayer = (kind: MaskShapeKind) => {
+    if (!selectedNode || selectedNode.data.kind !== "mask") return;
+    const layer = createMaskLayer(kind, crypto.randomUUID());
+    update("layers", [...selectedMaskLayers, layer]);
+    setEditMaskOnSource(true);
+    setPlaying(false);
+    setMaskLayerSelection((current) => ({ ...current, [selectedNode.id]: layer.id }));
+  };
+  const moveMaskLayer = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= selectedMaskLayers.length) return;
+    const next = [...selectedMaskLayers];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    next[0] = { ...next[0], operation: "add" };
+    update("layers", next);
+  };
+  const updateMaskBounds = (key: "x" | "y" | "width" | "height", value: number) => {
+    if (!selectedMaskLayer || !selectedMaskGeometry || !("x" in selectedMaskGeometry)) return;
+    updateMaskLayer(updateMaskGeometry(selectedMaskLayer, { ...selectedMaskGeometry, [key]: value }, time));
+  };
+  const updateTrackerAnchor = (index: number, point: TrackingPoint) => {
+    if (!selectedNode || selectedNode.data.kind !== "tracker") return;
+    if (recovery) {
+      setTrackingRecovery({ ...recovery, anchors: recovery.anchors.map((anchor, i) => i === index ? point : anchor) });
+      return;
+    }
+    if (trackerMode(selectedNode.data.params) === "planar") {
+      updateParams({ [`planeX${index + 1}`]: point.x, [`planeY${index + 1}`]: point.y });
+    } else {
+      updateParams(index === 0 ? { x: point.x, y: point.y } : { x2: point.x, y2: point.y });
+    }
+  };
   const pickKeyColor = async (x: number, y: number) => {
     const edge = edges.find((item) => item.target === selected && item.targetHandle === "image");
     if (!edge) { setError("Connect the Keyer's image input before picking a color."); setPickingKey(""); return; }
@@ -613,39 +707,100 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(false); }
   };
-  const runTracking = async () => {
+  const runTracking = async (resume = false) => {
     if (!selectedNode || selectedNode.data.kind !== "tracker") return;
     if (selectedNode.data.disabled) { setError("Enable the Tracker before tracking."); return; }
     const edge = edges.find((item) => item.target === selectedNode.id && item.targetHandle === "image");
     if (!edge) { setError("Connect a video to the Tracker image input."); return; }
     const trackDuration = durationFor(edge.source);
     if (!trackDuration) { setError("Tracking requires a video source."); return; }
-    if (trackDuration > 60) { setError("Tracking is limited to videos of 60 seconds or less."); return; }
+    const existing = tracks[selectedNode.id];
+    if (resume && (!existing || Array.isArray(existing) || existing.complete || !existing.samples.length || !recovery)) {
+      setError("There is no interrupted track to resume."); return;
+    }
+    const mode = trackerMode(selectedNode.data.params);
+    const rate = Math.max(1, Math.min(15, number(selectedNode.data.params, "sampleRate", 5)));
+    const samples: TrackingSample[] = resume && existing && !Array.isArray(existing)
+      ? existing.samples.map((sample) => ({ ...sample, anchors: sample.anchors.map((point) => ({ ...point })) })) : [];
+    let anchors = resume && recovery ? recovery.anchors.map((point) => ({ ...point })) : trackerAnchors(selectedNode.data.params);
+    let failure = "";
+    let completed = false;
+    trackingCancelled.current = false;
     setPlaying(false); setBusy(true); setError(""); setStatus("Tracking...");
     try {
       await drawing.current;
-      const points: TrackPoint[] = [];
-      let x = Math.round(number(selectedNode.data.params, "x", 320) / 2);
-      let y = Math.round(number(selectedNode.data.params, "y", 180) / 2);
-      if (x < 5 || x >= 315 || y < 5 || y >= 175) throw new Error("Choose a tracking point away from the image edge.");
       const small = document.createElement("canvas"); small.width = 320; small.height = 180;
       const ctx = context(small);
-      let previous: Uint8ClampedArray | undefined;
-      for (let sample = 0; sample < Math.ceil(trackDuration * 5); sample++) {
-        const at = sample / 5;
+      const readFrame = async (at: number) => {
         ctx.clearRect(0, 0, 320, 180);
         ctx.drawImage(await renderGraph(nodes, edges, mediaRef.current, tracks, edge.source, at), 0, 0, 320, 180);
-        const pixels = ctx.getImageData(0, 0, 320, 180).data;
-        const result = trackPatch(previous ?? pixels, pixels, 320, 180, x, y);
-        if (result.confidence < 0.8) throw new Error(`Tracking lost at ${at.toFixed(1)} seconds. Choose a clearer feature.`);
-        x = result.x; y = result.y; previous = pixels;
-        points.push({ time: at, x: x * 2, y: y * 2, confidence: result.confidence });
+        return ctx.getImageData(0, 0, 320, 180).data;
+      };
+      if (anchors.some((point) => point.x < 10 || point.x >= 630 || point.y < 10 || point.y >= 350)) {
+        throw new Error("Choose tracking points away from the image edge.");
       }
-      recordHistory();
-      setTracks((current) => ({ ...current, [selectedNode.id]: points }));
-      setStatus(`Tracked ${points.length} frames`);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); setStatus("Tracking failed"); }
-    finally { setBusy(false); }
+      if (mode === "planar") { validateTrackingSurface(anchors); planarTrackingMatrix(anchors, anchors); }
+      else similarityTrackingMatrix(anchors, anchors);
+      const start = samples.length ? samples[samples.length - 1].time : 0;
+      let previous = await readFrame(start);
+      let features: TrackingPoint[] = [];
+      if (mode === "planar") features = detectPlanarFeatures(previous, 320, 180, anchors.map((point) => ({ x: point.x / 2, y: point.y / 2 })));
+      else for (const point of anchors) trackPatch(previous, previous, 320, 180, Math.round(point.x / 2), Math.round(point.y / 2));
+      if (!samples.length) samples.push({ time: 0, matrix: IDENTITY_TRACKING_MATRIX, anchors, confidence: 1 });
+      else {
+        const initial = samples.length === 1 ? anchors : samples[0].anchors;
+        const matrix = mode === "planar" ? planarTrackingMatrix(initial, anchors) : similarityTrackingMatrix(initial, anchors);
+        validateTrackingProjection(matrix);
+        samples[samples.length - 1] = { ...samples[samples.length - 1], anchors, matrix };
+      }
+      const initial = samples[0].anchors;
+      const lastTime = Math.max(0, trackDuration - 0.001);
+      for (let index = 1; start + (index - 1) / rate < lastTime; index++) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+        if (trackingCancelled.current) { failure = "Tracking stopped."; break; }
+        const at = Math.min(start + index / rate, lastTime);
+        setTrackingProgress({ time: at, end: trackDuration });
+        const pixels = await readFrame(at);
+        let confidence = 1;
+        if (mode === "planar") {
+          const result = trackPlanarFeatures(previous, pixels, 320, 180, features);
+          features = result.features;
+          anchors = anchors.map((point) => {
+            const mapped = transformTrackingPoint(result.matrix, { x: point.x / 2, y: point.y / 2 });
+            return { x: mapped.x * 2, y: mapped.y * 2 };
+          });
+          validateTrackingSurface(anchors);
+          confidence = result.confidence;
+        } else {
+          anchors = anchors.map((point) => {
+            const x = Math.round(point.x / 2), y = Math.round(point.y / 2);
+            if (x < 5 || x >= 315 || y < 5 || y >= 175) throw new Error("A tracked feature moved too close to the image edge.");
+            const match = trackPatch(previous, pixels, 320, 180, x, y);
+            if (match.confidence < 0.8) throw new Error("A tracking feature was lost.");
+            confidence = Math.min(confidence, match.confidence);
+            return { x: match.x * 2, y: match.y * 2 };
+          });
+        }
+        const matrix = mode === "planar" ? planarTrackingMatrix(initial, anchors) : similarityTrackingMatrix(initial, anchors);
+        validateTrackingProjection(matrix);
+        samples.push({ time: at, matrix, anchors, confidence });
+        previous = pixels;
+      }
+      completed = !failure;
+    } catch (caught) { failure = caught instanceof Error ? caught.message : String(caught); }
+    finally {
+      if (samples.length) {
+        const result: TrackingResult = { mode, samples, complete: completed, endTime: trackDuration };
+        recordHistory();
+        setTracks((current) => ({ ...current, [selectedNode.id]: result }));
+        const last = samples[samples.length - 1];
+        setTrackingRecovery(completed ? null : { id: selectedNode.id, anchors: last.anchors });
+        if (!completed) setTime(last.time);
+        setStatus(completed ? `Tracked ${samples.length} samples` : `Tracking paused at ${last.time.toFixed(1)} s`);
+      } else setStatus("Tracking failed");
+      if (failure) setError(`${failure}${samples.length ? " Adjust the markers and resume." : ""}`);
+      setTrackingProgress(null); setBusy(false);
+    }
   };
   const download = (blob: Blob, name: string) => {
     const url = URL.createObjectURL(blob);
@@ -724,19 +879,6 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
             disabled={!ready || busy || option.kind === "viewer" && Boolean(viewer)}>+ {option.label}</button>)}
       </div>
       <p className="comp-status" role="status">{status}</p>
-      <section className="comp-templates" aria-labelledby="comp-templates-heading">
-        <h2 id="comp-templates-heading">Templates</h2>
-        <p>Load a pre-connected graph. This replaces the current project after confirmation; use Undo to restore it.</p>
-        <p>Each template includes connected media inputs. Select a media input to upload your image or video.</p>
-        {COMPOSITOR_TEMPLATES.map((template) => <div key={template.id} className="comp-template">
-          <button type="button" disabled={!ready || busy} onClick={() => void applyTemplate(template.id)}>{template.name}</button>
-          <small>{template.description}</small>
-        </div>)}
-        <details>
-          <summary>Tracking template steps</summary>
-          <small>Load a video into Background video and an image into Overlay image. Select Tracker, pause at frame 0, click a feature in the Viewer, and run Track video. Then select Merge and click Show in Viewer. Adjust the overlay with Transform.</small>
-        </details>
-      </section>
       {selectedEdges.length > 0 && <section className="comp-inspector" aria-label="Selected connections">
         <h2>{selectedEdges.length === 1 ? "Connection selected" : `${selectedEdges.length} connections selected`}</h2>
         <small>Press Delete or Backspace, or use the button below. The nodes will remain.</small>
@@ -757,7 +899,7 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
         }}
         onPointerDownCapture={(event) => {
           const target = event.target;
-          if (target instanceof Element && (target.closest(".comp-curve-graph") || target.matches('input[type="range"], input[type="color"]'))) {
+          if (target instanceof Element && (target.closest(".comp-curve-graph, .comp-mask-editor") || target.matches('input[type="range"], input[type="color"]'))) {
             historyGroup.current = { recorded: false, type: "pointer", target };
           }
         }}
@@ -810,10 +952,94 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
           {keyRange("edgeFeather", "Edge feather (pixels)", 0, 20, 0)}
         </>}
         {selectedNode.data.kind === "mask" && <>
-          {(["x", "y", "width", "height"] as const).map((key) => <NumberField key={key}
-            label={{ x: "Center X", y: "Center Y", width: "Width", height: "Height" }[key]}
-            value={number(params ?? {}, key, 0)} min={key === "width" || key === "height" ? 0 : undefined}
-            disabled={busy} onChange={(value) => update(key, value)} />)}
+          <div className="comp-mask-add">
+            {(["rectangle", "ellipse", "polygon", "freehand", "bezier"] as const).map((kind) =>
+              <button type="button" key={kind} disabled={busy} onClick={() => addMaskLayer(kind)}>+ {kind}</button>)}
+          </div>
+          <p>Choose a shape, then draw it directly on the video in the Viewer. Layers combine from top to bottom.</p>
+          {selectedMaskLayers.length > 0 ? <div className="comp-mask-layers">
+            {selectedMaskLayers.map((layer, index) => <div className="comp-mask-layer-row" key={layer.id}>
+              <button type="button" className="comp-mask-layer-select" aria-pressed={layer.id === selectedMaskLayer?.id}
+                onClick={() => setMaskLayerSelection((current) => ({ ...current, [selectedNode.id]: layer.id }))}>
+                {index + 1}. {layer.geometry.kind}
+              </button>
+              <button type="button" disabled={busy || index === 0} aria-label={`Move mask layer ${index + 1} up`}
+                title="Move up" onClick={() => moveMaskLayer(index, -1)}>↑</button>
+              <button type="button" disabled={busy || index === selectedMaskLayers.length - 1} aria-label={`Move mask layer ${index + 1} down`}
+                title="Move down" onClick={() => moveMaskLayer(index, 1)}>↓</button>
+              <button type="button" disabled={busy} aria-label={`Remove mask layer ${index + 1}`}
+                title="Remove layer" onClick={() => {
+                  const remaining = selectedMaskLayers.filter((item) => item.id !== layer.id);
+                  if (remaining.length) remaining[0] = { ...remaining[0], operation: "add" };
+                  update("layers", remaining);
+                  setMaskLayerSelection((current) => ({ ...current, [selectedNode.id]: remaining[0]?.id ?? "" }));
+                }}>×</button>
+            </div>)}
+          </div> : <p>No masks applied. Choose a shape to begin drawing.</p>}
+          {selectedMaskLayer && selectedMaskGeometry && <>
+            <label>Shape
+              <select disabled={busy} value={selectedMaskLayer.geometry.kind} onChange={(event) => {
+                const kind = event.target.value as MaskShapeKind;
+                updateMaskLayer({ ...selectedMaskLayer, geometry: convertMaskGeometry(selectedMaskGeometry, kind), keyframes: [] });
+              }}>
+                <option value="rectangle">Rectangle</option><option value="ellipse">Ellipse</option>
+                <option value="polygon">Polygon</option><option value="freehand">Freehand</option><option value="bezier">Bézier</option>
+              </select>
+            </label>
+            <label>Combine mode
+              <select disabled={busy || selectedMaskLayerIndex === 0} value={selectedMaskLayer.operation}
+                onChange={(event) => updateMaskLayer({ ...selectedMaskLayer, operation: event.target.value as MaskLayer["operation"] })}>
+                <option value="add">Add</option><option value="subtract">Subtract</option><option value="intersect">Intersect</option>
+              </select>
+            </label>
+            <label>Feather: {selectedMaskLayer.feather} px
+              <input type="range" min="0" max="80" step="1" disabled={busy} value={selectedMaskLayer.feather}
+                onChange={(event) => updateMaskLayer({ ...selectedMaskLayer, feather: Number(event.target.value) })} />
+            </label>
+            <div className="comp-mask-keyframes">
+              <button type="button" disabled={busy} onClick={() => updateMaskLayer(setMaskKeyframe(selectedMaskLayer, time))}>
+                Set keyframe at {time.toFixed(1)} s
+              </button>
+              <button type="button" disabled={busy || !selectedMaskHasKeyframe}
+                onClick={() => updateMaskLayer(removeMaskKeyframe(selectedMaskLayer, time))}>Remove current keyframe</button>
+              <small>{selectedMaskLayer.keyframes.length
+                ? `${selectedMaskLayer.keyframes.length} keyframe${selectedMaskLayer.keyframes.length === 1 ? "" : "s"} · edits create a keyframe at the playhead`
+                : "Static shape · set a keyframe to animate its points"}</small>
+              {selectedMaskLayer.keyframes.length > 0 && <div className="comp-mask-keyframe-list">
+                {[...selectedMaskLayer.keyframes].sort((a, b) => a.time - b.time).map((frame) =>
+                  <button type="button" key={frame.time} disabled={busy}
+                    aria-pressed={Math.abs(frame.time - time) <= 0.001} onClick={() => setTime(frame.time)}>
+                    {frame.time.toFixed(1)} s
+                  </button>)}
+              </div>}
+            </div>
+            <small>{selectedMaskLayer.keyframes.length
+              ? "Drag existing points to animate them. Changing shape clears its keyframes; point count edits are disabled while animated."
+              : selectedMaskLayer.geometry.kind === "freehand"
+              ? "Drag on the video to draw or redraw the outline."
+              : selectedMaskLayer.geometry.kind === "polygon" || selectedMaskLayer.geometry.kind === "bezier"
+                ? "Click on the video to add points. The outline closes automatically after three points. For Bézier curves, drag when placing a point or adjust its handles."
+                : "Drag on the video to draw the shape. Drag the shape to move it or its corners to resize."}</small>
+            {"x" in selectedMaskGeometry && <>
+                {(["x", "y", "width", "height"] as const).map((key) => <NumberField key={key}
+                  label={{ x: "Left", y: "Top", width: "Width", height: "Height" }[key]}
+                  value={selectedMaskGeometry[key]} min={key === "width" || key === "height" ? 0 : undefined}
+                  disabled={busy} onChange={(value) => updateMaskBounds(key, value)} />)}
+            </>}
+            {"points" in selectedMaskGeometry && <div className="comp-mask-outline-actions">
+              <button type="button" disabled={busy || Boolean(selectedMaskLayer.keyframes.length) || selectedMaskPoint === null || selectedMaskPoint >= selectedMaskGeometry.points.length}
+                onClick={() => {
+                  updateMaskLayer(updateMaskGeometry(selectedMaskLayer,
+                    { ...selectedMaskGeometry, points: selectedMaskGeometry.points.filter((_, index) => index !== selectedMaskPoint) }, time));
+                  setMaskPointSelection(null);
+                }}>Remove selected point</button>
+              <button type="button" disabled={busy || Boolean(selectedMaskLayer.keyframes.length) || !selectedMaskGeometry.points.length}
+                onClick={() => updateMaskLayer(updateMaskGeometry(selectedMaskLayer,
+                  { ...selectedMaskGeometry, points: selectedMaskGeometry.points.slice(0, -1) }, time))}>Undo point</button>
+              <button type="button" disabled={busy || Boolean(selectedMaskLayer.keyframes.length)} onClick={() => updateMaskLayer(updateMaskGeometry(selectedMaskLayer,
+                createMaskGeometry(selectedMaskLayer.geometry.kind), time))}>Reset shape</button>
+            </div>}
+          </>}
           <label><input type="checkbox" disabled={busy} checked={Boolean(params?.invert)} onChange={(event) => update("invert", event.target.checked)} /> Invert mask</label>
         </>}
         {selectedNode.data.kind === "color" && <>
@@ -830,19 +1056,88 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
         </>}
         {selectedNode.data.kind === "merge" && <NumberField label="Foreground opacity %" value={number(params ?? {}, "opacity", 0)} min={0} max={100} disabled={busy} onChange={(value) => update("opacity", value)} />}
         {selectedNode.data.kind === "tracker" && <>
-          <NumberField label="Feature X" value={number(params ?? {}, "x", 0)} min={10} max={630} disabled={busy} onChange={(value) => update("x", value)} />
-          <NumberField label="Feature Y" value={number(params ?? {}, "y", 0)} min={10} max={350} disabled={busy} onChange={(value) => update("y", value)} />
-          <small>Show the tracking source in the Viewer, pause at frame 0, then click a feature. Connect motion to a Transform or Mask.</small>
-          <button type="button" disabled={busy || selectedNode.data.disabled} onClick={() => void runTracking()}>Track video</button>
-          <small>{tracks[selectedNode.id]?.length ? `${tracks[selectedNode.id].length} tracking samples` : "Not tracked"}</small>
+          {!trackerInput && <small>Connect a video to the Tracker image input to position markers and track.</small>}
+          <label>Tracking mode
+            <select disabled={busy} value={trackerMode(selectedNode.data.params)} onChange={(event) => {
+              update("mode", event.target.value);
+              setActiveTrackingPoint(0); setTrackingRecovery(null); setTime(0);
+            }}>
+              <option value="point">Single point · position</option>
+              <option value="two-point">Two points · rotation and scale</option>
+              <option value="planar">Planar surface · perspective</option>
+            </select>
+          </label>
+          <label>Samples per second
+            <select disabled={busy} value={number(selectedNode.data.params, "sampleRate", 5)}
+              onChange={(event) => { setTrackingRecovery(null); update("sampleRate", Number(event.target.value)); }}>
+              <option value={5}>5</option><option value={10}>10</option><option value={15}>15</option>
+            </select>
+          </label>
+          <small>{recovery ? "Adjust the markers at the last valid frame, then resume."
+            : "At frame 0, drag the markers onto clear features in the Viewer. For planar tracking, outline a textured surface."}</small>
+          <div className="comp-mask-add">
+            {currentTrackerAnchors.map((_, index) => <button type="button" key={index}
+              disabled={!trackerEditable} aria-pressed={activeTrackingPoint === index}
+              onClick={() => setActiveTrackingPoint(index)}>Marker {index + 1}</button>)}
+          </div>
+          {currentTrackerAnchors[activeTrackingPoint] && <>
+            <NumberField label="Marker X" value={currentTrackerAnchors[activeTrackingPoint].x} min={10} max={630}
+              disabled={!trackerEditable} onChange={(value) => updateTrackerAnchor(activeTrackingPoint, { ...currentTrackerAnchors[activeTrackingPoint], x: value })} />
+            <NumberField label="Marker Y" value={currentTrackerAnchors[activeTrackingPoint].y} min={10} max={350}
+              disabled={!trackerEditable} onChange={(value) => updateTrackerAnchor(activeTrackingPoint, { ...currentTrackerAnchors[activeTrackingPoint], y: value })} />
+          </>}
+          <button type="button" disabled={busy || selectedNode.data.disabled} onClick={() => {
+            setTrackingRecovery(null); void runTracking();
+          }}>Track video from start</button>
+          {trackerData && !Array.isArray(trackerData) && !trackerData.complete && trackerData.samples.length > 0 && <>
+            {!recovery ? <button type="button" disabled={busy} onClick={() => {
+              const last = trackerData.samples[trackerData.samples.length - 1];
+              setTrackingRecovery({ id: selectedNode.id, anchors: last.anchors });
+              setTime(last.time); setPlaying(false); setError("");
+            }}>Correct interrupted track</button> : <>
+              <button type="button" disabled={busy} onClick={() => void runTracking(true)}>Resume tracking</button>
+              <button type="button" disabled={busy} onClick={() => setTrackingRecovery(null)}>Cancel correction</button>
+            </>}
+          </>}
+          {trackingProgress && <div>
+            <progress max={trackingProgress.end} value={trackingProgress.time} />
+            <small> {Math.round(trackingProgress.time / trackingProgress.end * 100)}% · {trackingProgress.time.toFixed(1)} / {trackingProgress.end.toFixed(1)} s</small>
+            <button type="button" onClick={() => { trackingCancelled.current = true; }}>Stop tracking</button>
+          </div>}
+          <small>{trackSamples.length ? `${trackSamples.length} samples · confidence ${Math.round((trackSamples[trackSamples.length - 1].confidence) * 100)}%`
+            : "Not tracked"}{trackerData && !Array.isArray(trackerData) && !trackerData.complete ? " · incomplete" : ""}</small>
         </>}
       </section>}
+      <section className="comp-templates" aria-labelledby="comp-templates-heading">
+        <h2 id="comp-templates-heading">Templates</h2>
+        <p>Add to canvas keeps existing nodes, media, and tracking. Its output becomes the Viewer input. Replace clears the current project; use Undo to restore either action.</p>
+        <p>Each template includes connected media inputs. Select a media input to upload your image or video.</p>
+        {COMPOSITOR_TEMPLATES.map((template) => <div key={template.id} className="comp-template">
+          <strong>{template.name}</strong>
+          <div className="comp-template-actions">
+            <button type="button" disabled={!ready || busy} onClick={() => void applyTemplate(template.id, "add")}>Add to canvas</button>
+            <button type="button" disabled={!ready || busy} onClick={() => void applyTemplate(template.id, "replace")}>Replace</button>
+          </div>
+          <small>{template.description}</small>
+        </div>)}
+        <details>
+          <summary>Tracking template steps</summary>
+          <small>Load a video into Background video and an image into Overlay image. Select Tracker, pause at frame 0, click a feature in the Viewer, and run Track video. Then select Merge and click Show in Viewer. Adjust the overlay with Transform.</small>
+        </details>
+      </section>
     </aside>
     <div className="comp-workspace">
       <section className="comp-viewer">
-        <div className="comp-viewer-header"><strong>Viewer</strong><span>640 × 360 · silent preview</span></div>
+        <div className="comp-viewer-header"><strong>Viewer</strong><span>{editingMask ? "Mask input · editing preview" : editingTracker && trackerInput ? "Tracker input · tracking preview" : "640 × 360 · silent preview"}</span></div>
         <div ref={viewportRef} className={`comp-viewer-viewport${panning ? " is-panning" : ""}`}
-          aria-label="Viewer navigation" onPointerDown={(event) => {
+          aria-label="Viewer navigation" onPointerDownCapture={(event) => {
+            if (event.button === 0 && event.target instanceof Element && event.target.closest(".comp-mask-editor, .comp-tracker-editor")) {
+              historyGroup.current = { recorded: false, type: "pointer", target: event.target };
+              setPlaying(false);
+            }
+          }} onPointerUpCapture={() => { if (historyGroup.current?.type === "pointer") historyGroup.current = null; }}
+          onPointerCancelCapture={() => { if (historyGroup.current?.type === "pointer") historyGroup.current = null; }}
+          onPointerDown={(event) => {
             if (event.button !== 1) return;
             event.preventDefault();
             event.currentTarget.setPointerCapture(event.pointerId);
@@ -869,12 +1164,6 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
             const y = Math.floor((event.clientY - rect.top) * HEIGHT / rect.height);
             if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) return;
             if (pickingKey === selected && selectedNode?.data.kind === "key") { void pickKeyColor(x, y); return; }
-            if (selectedNode?.data.kind !== "tracker") return;
-            if (playing || time !== 0) { setError("Pause at frame 0 before selecting a tracking feature."); return; }
-            updateParams({
-              x: Math.round((event.clientX - rect.left) * WIDTH / rect.width),
-              y: Math.round((event.clientY - rect.top) * HEIGHT / rect.height),
-            });
           }}>
         <canvas ref={previewRef} width={WIDTH} height={HEIGHT} aria-label="Composite viewer"
           style={{ transform: `translate(${viewerTransform.x}px, ${viewerTransform.y}px) scale(${viewerTransform.zoom})`,
@@ -884,8 +1173,22 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
           style={{ transform: `translate(${viewerTransform.x}px, ${viewerTransform.y}px) scale(${viewerTransform.zoom})`,
             display: viewChannel === "rgb" ? "none" : "block",
             ...(previewBackground === "color" ? { background: previewColor } : {}) }} />
+        {editingMask && !maskProjectionError && selectedMaskLayer && selectedMaskGeometry && <MaskEditor
+          key={`${selectedMaskLayer.id}:${selectedMaskGeometry.kind}:${historyRevision}`} geometry={selectedMaskGeometry}
+          disabled={busy} allowPointChanges={!selectedMaskLayer.keyframes.length} motion={maskMatrix}
+          transform={`translate(${viewerTransform.x}px, ${viewerTransform.y}px) scale(${viewerTransform.zoom})`}
+          selectedPoint={selectedMaskPoint}
+          onSelectPoint={(index) => setMaskPointSelection(index === null ? null : { layerId: selectedMaskLayer.id, index })}
+          onChange={(geometry) => updateMaskLayer(updateMaskGeometry(selectedMaskLayer, geometry, time))} />}
+        {editingTracker && trackerInput && <TrackerEditor anchors={currentTrackerAnchors} paths={trackerPaths} active={activeTrackingPoint}
+          editable={trackerEditable} transform={`translate(${viewerTransform.x}px, ${viewerTransform.y}px) scale(${viewerTransform.zoom})`}
+          onActive={setActiveTrackingPoint} onMove={updateTrackerAnchor} />}
         </div>
         <div className="comp-viewer-options">
+          {selectedNode?.data.kind === "mask" && !selectedNode.data.disabled && <label>
+            <input type="checkbox" checked={editMaskOnSource} onChange={(event) => setEditMaskOnSource(event.target.checked)} />
+            Edit mask on input (uncheck to preview result)
+          </label>}
           <label>View channel (preview only) <select value={viewChannel} onChange={(event) => setViewChannel(event.target.value)}>
             <option value="rgb">RGB</option><option value="red">Red</option><option value="green">Green</option><option value="blue">Blue</option><option value="alpha">Alpha</option>
           </select></label>
@@ -895,7 +1198,7 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
           {previewBackground === "color" && <label>Preview color <input type="color" value={previewColor} onChange={(event) => setPreviewColor(event.target.value)} /></label>}
         </div>
         <div className="comp-transport">
-          <button type="button" disabled={!duration || busy} onClick={() => {
+          <button type="button" disabled={!duration || busy || Boolean(recovery)} onClick={() => {
             if (!playing && (time < range.start || time >= range.end)) setTime(range.start);
             setPlaying(!playing);
           }}>{playing ? "Pause" : "Play"}</button>
@@ -903,7 +1206,7 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
             <div className="comp-timeline-range" aria-hidden="true">
               <span style={{ left: `${duration ? range.start / duration * 100 : 0}%`, right: `${duration ? (1 - range.end / duration) * 100 : 0}%` }} />
             </div>
-            <input aria-label="Playhead" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(time, duration)} disabled={!duration || busy}
+            <input aria-label="Playhead" type="range" min="0" max={duration || 0} step="0.1" value={Math.min(time, duration)} disabled={!duration || busy || Boolean(recovery)}
               onChange={(event) => setTime(Number(event.target.value))} />
           </div>
           <span>{time.toFixed(1)} / {duration.toFixed(1)} s</span>
@@ -927,6 +1230,8 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
               onChange={(event) => setMarker("outPoint", Number(event.target.value))} />
           </label>
         </div>
+        {editingMask && maskProjectionError && <p className="comp-error" role="alert">{maskProjectionError}</p>}
+        {editingTracker && !recovery && trackerPreview.error && <p className="comp-error" role="alert">{trackerPreview.error}</p>}
         {error && <p className="comp-error" role="alert">{error}</p>}
         {renderError && <p className="comp-error" role="alert">{renderError}</p>}
       </section>

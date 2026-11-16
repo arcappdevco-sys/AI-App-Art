@@ -11,9 +11,106 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const { trackPatch, interpolateTrack, reachesCompositorNode, zoomViewerAt, compositorMediaSource, compositorBypassInput, compositorRange, nextCompositorTime, COMPOSITOR_INPUTS } = require(path.join(__dirname, "..", "src", "lib", "compositor.ts"));
 const { applyColorCorrection, curveTable, getCurve } = require(path.join(__dirname, "..", "src", "lib", "compositor-color.ts"));
-const { COMPOSITOR_NODE_OPTIONS, COMPOSITOR_TEMPLATES, createCompositorNode, createCompositorTemplate } = require(path.join(__dirname, "..", "src", "lib", "compositor-templates.ts"));
+const { COMPOSITOR_NODE_OPTIONS, COMPOSITOR_TEMPLATES, appendCompositorTemplate, createCompositorNode, createCompositorTemplate } = require(path.join(__dirname, "..", "src", "lib", "compositor-templates.ts"));
+const { applyCompositorMask, combineMaskAlpha, convertMaskGeometry, createMaskGeometry, createMaskLayer, getMaskLayers, maskGeometryAt, maskGeometryPath, removeMaskKeyframe, setMaskKeyframe, updateMaskGeometry, validateMaskProjection } = require(path.join(__dirname, "..", "src", "lib", "compositor-mask.ts"));
 const { applyCompositorKeyer } = require(path.join(__dirname, "..", "src", "lib", "compositor-keyer.ts"));
 const { CompositorHistory, compositorHistoryShortcut } = require(path.join(__dirname, "..", "src", "lib", "compositor-history.ts"));
+const { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, invertTrackingMatrix, multiplyTrackingMatrices, planarTrackingMatrix, similarityTrackingMatrix, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingPixels } = require(path.join(__dirname, "..", "src", "lib", "compositor-tracking.ts"));
+
+test("two-point tracking maps both points with rotation and scale", () => {
+  const start = [{ x: 10, y: 20 }, { x: 30, y: 20 }];
+  const end = [{ x: 50, y: 60 }, { x: 50, y: 100 }];
+  const matrix = similarityTrackingMatrix(start, end);
+  for (let i = 0; i < start.length; i++) {
+    const mapped = transformTrackingPoint(matrix, start[i]);
+    assert.ok(Math.hypot(mapped.x - end[i].x, mapped.y - end[i].y) < 1e-8);
+  }
+  assert.throws(() => similarityTrackingMatrix([start[0], start[0]], end), /separated/);
+});
+
+test("planar tracking maps perspective, inverts, and interpolates anchor positions", () => {
+  const start = [{ x: 30, y: 30 }, { x: 200, y: 30 }, { x: 200, y: 160 }, { x: 30, y: 160 }];
+  const end = [{ x: 40, y: 20 }, { x: 220, y: 45 }, { x: 190, y: 180 }, { x: 50, y: 145 }];
+  const matrix = planarTrackingMatrix(start, end);
+  const inverse = invertTrackingMatrix(matrix);
+  for (let i = 0; i < start.length; i++) {
+    const mapped = transformTrackingPoint(matrix, start[i]);
+    assert.ok(Math.hypot(mapped.x - end[i].x, mapped.y - end[i].y) < 1e-6);
+    const restored = transformTrackingPoint(inverse, mapped);
+    assert.ok(Math.hypot(restored.x - start[i].x, restored.y - start[i].y) < 1e-6);
+  }
+  const identity = multiplyTrackingMatrices(inverse, matrix);
+  assert.ok(identity.every((value, i) => Math.abs(value - IDENTITY_TRACKING_MATRIX[i]) < 1e-6));
+  const data = { mode: "planar", complete: false, endTime: 3, samples: [
+    { time: 0, matrix: IDENTITY_TRACKING_MATRIX, anchors: start, confidence: 1 },
+    { time: 2, matrix, anchors: end, confidence: 0.9 },
+  ] };
+  const middle = trackingAt(data, 1);
+  const mapped = transformTrackingPoint(middle.matrix, start[0]);
+  assert.ok(Math.abs(mapped.x - 35) < 1e-6 && Math.abs(mapped.y - 25) < 1e-6);
+  assert.throws(() => trackingAt(data, 2.5), /incomplete/);
+  assert.throws(() => planarTrackingMatrix(start.map(() => start[0]), end), /usable surface/);
+  assert.throws(() => validateTrackingSurface([start[0], start[2], start[1], start[3]]), /convex/);
+  assert.throws(() => validateTrackingProjection([1, 0, 0, 0, 1, 0, -0.01, 0, 1]), /horizon/);
+  assert.throws(() => validateMaskProjection({ kind: "rectangle", x: 900, y: 0, width: 200, height: 20 },
+    [1, 0, 0, 0, 1, 0, -0.001, 0, 1]), /horizon/);
+});
+
+test("planar tracking estimates motion from textured surface features", () => {
+  const width = 100, height = 80;
+  const before = new Uint8ClampedArray(width * height * 4), after = new Uint8ClampedArray(before.length);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const v = ((x * 47 + y * 101 + x * y * 13) ^ (x * 17 + y * 31)) & 255;
+    const i = (y * width + x) * 4;
+    before[i] = before[i + 1] = before[i + 2] = v; before[i + 3] = 255;
+    if (x + 2 < width && y + 1 < height) {
+      const j = ((y + 1) * width + x + 2) * 4;
+      after[j] = after[j + 1] = after[j + 2] = v; after[j + 3] = 255;
+    }
+  }
+  const polygon = [{ x: 10, y: 10 }, { x: 90, y: 10 }, { x: 90, y: 70 }, { x: 10, y: 70 }];
+  const features = detectPlanarFeatures(before, width, height, polygon);
+  const result = trackPlanarFeatures(before, after, width, height, features);
+  const point = transformTrackingPoint(result.matrix, { x: 50, y: 40 });
+  assert.ok(Math.abs(point.x - 52) < 0.5 && Math.abs(point.y - 41) < 0.5);
+  assert.throws(() => detectPlanarFeatures(new Uint8ClampedArray(before.length), width, height, polygon), /texture/);
+});
+
+test("planar features follow a perspective-warped surface over multiple frames", () => {
+  const width = 160, height = 120, source = new Uint8ClampedArray(width * height * 4);
+  let seed = 123456;
+  for (let i = 0; i < width * height; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    source[i * 4] = source[i * 4 + 1] = source[i * 4 + 2] = seed >>> 24;
+    source[i * 4 + 3] = 255;
+  }
+  const corners = [{ x: 20, y: 20 }, { x: 140, y: 20 }, { x: 140, y: 100 }, { x: 20, y: 100 }];
+  let features = detectPlanarFeatures(source, width, height, corners);
+  let previous = source, estimate = IDENTITY_TRACKING_MATRIX;
+  for (let frame = 1; frame <= 4; frame++) {
+    const actual = [1, -0.01 * frame, 2 * frame, 0.008 * frame, 1, frame, 0.00006 * frame, -0.00004 * frame, 1];
+    const current = warpTrackingPixels(source, width, height, actual);
+    const tracked = trackPlanarFeatures(previous, current, width, height, features);
+    estimate = multiplyTrackingMatrices(tracked.matrix, estimate);
+    features = tracked.features; previous = current;
+    for (const point of corners) {
+      const expected = transformTrackingPoint(actual, point), observed = transformTrackingPoint(estimate, point);
+      assert.ok(Math.hypot(expected.x - observed.x, expected.y - observed.y) < 2);
+    }
+  }
+});
+
+test("tracked image warp preserves alpha and saved single-point tracks", () => {
+  const source = new Uint8ClampedArray(5 * 5 * 4);
+  source.set([250, 50, 20, 128], (2 * 5 + 2) * 4);
+  const matrix = [1, 0, 1, 0, 1, 0, 0, 0, 1];
+  const warped = warpTrackingPixels(source, 5, 5, matrix);
+  assert.deepEqual([...warped.slice((2 * 5 + 3) * 4, (2 * 5 + 4) * 4)], [250, 50, 20, 128]);
+  assert.equal(warped[(2 * 5 + 2) * 4 + 3], 0);
+  const oldTrack = [{ time: 0, x: 10, y: 20, confidence: 1 }, { time: 2, x: 30, y: 30, confidence: 0.9 }];
+  const interpolated = trackingAt(oldTrack, 1);
+  assert.deepEqual(interpolated.matrix, [1, 0, 10, 0, 1, 5, 0, 0, 1]);
+});
 
 test("timeline ranges default, clamp and recover from an unusable range", () => {
   const empty = { inPoint: null, outPoint: null };
@@ -104,6 +201,54 @@ test("keyer clip, refinement and spill preserve input transparency", () => {
   assert.throws(() => applyCompositorKeyer(edge, 1, 1, { clipBlack: 80, clipWhite: 30 }), /Clip white/);
 });
 
+test("mask shapes support legacy rectangles, shape conversion and closed Bézier paths", () => {
+  const [legacy] = getMaskLayers({ x: 300, y: 120, width: 100, height: 80 });
+  assert.deepEqual(legacy.geometry, { kind: "rectangle", x: 250, y: 80, width: 100, height: 80 });
+  const ellipse = convertMaskGeometry(legacy.geometry, "ellipse");
+  assert.deepEqual(ellipse, { kind: "ellipse", x: 250, y: 80, width: 100, height: 80 });
+  const bezier = convertMaskGeometry(legacy.geometry, "bezier");
+  assert.match(maskGeometryPath(bezier), / C /);
+  assert.equal(maskGeometryPath(createMaskGeometry("polygon")), "");
+  assert.match(maskGeometryPath(convertMaskGeometry(legacy.geometry, "polygon")), / Z$/);
+  assert.throws(() => getMaskLayers({ layers: [{ id: "invalid" }] }), /invalid mask layer data/);
+});
+
+test("new mask nodes start empty and incomplete shapes pass the source through", () => {
+  let id = 0;
+  const mask = createCompositorTemplate("mask", () => `${++id}`).nodes.find((node) => node.data.kind === "mask");
+  assert.deepEqual(getMaskLayers(mask.data.params), []);
+  const source = {};
+  assert.equal(applyCompositorMask(source, [], 0, false), source);
+  assert.equal(applyCompositorMask(source, [], 0, true), source);
+  for (const kind of ["rectangle", "ellipse", "polygon", "freehand", "bezier"]) {
+    const layer = createMaskLayer(kind, kind);
+    assert.equal(applyCompositorMask(source, [layer], 0, false), source);
+  }
+  const point = { x: 10, y: 20, inX: 0, inY: 0, outX: 0, outY: 0 };
+  const unfinished = { ...createMaskLayer("bezier", "draft"), geometry: { kind: "bezier", points: [point, { ...point, x: 30 }] } };
+  assert.equal(applyCompositorMask(source, [unfinished], 0, true), source);
+  assert.doesNotMatch(maskGeometryPath(unfinished.geometry), / Z$/);
+});
+
+test("mask layers combine alpha and animate Bézier points between keyframes", () => {
+  assert.equal(combineMaskAlpha(0.5, 0.5, "add"), 0.75);
+  assert.equal(combineMaskAlpha(0.5, 0.5, "subtract"), 0.25);
+  assert.equal(combineMaskAlpha(0.5, 0.5, "intersect"), 0.25);
+  let layer = createMaskLayer("bezier", "animated");
+  layer = { ...layer, geometry: convertMaskGeometry(createMaskGeometry("ellipse"), "bezier") };
+  layer = setMaskKeyframe(layer, 0);
+  const end = { ...layer.geometry, points: layer.geometry.points.map((point) => ({
+    ...point, x: point.x + 100, outX: point.outX + 20,
+  })) };
+  layer = updateMaskGeometry(layer, end, 10);
+  const middle = maskGeometryAt(layer, 5);
+  assert.equal(middle.kind, "bezier");
+  assert.equal(middle.points[0].x, layer.keyframes[0].geometry.points[0].x + 50);
+  assert.equal(middle.points[0].outX, layer.keyframes[0].geometry.points[0].outX + 10);
+  layer = removeMaskKeyframe(layer, 10);
+  assert.equal(layer.keyframes.length, 1);
+});
+
 test("keyer clipping, choke, expansion and feather change the matte", () => {
   const partial = new Uint8ClampedArray([0, 155, 0, 255]);
   applyCompositorKeyer(partial, 1, 1, { tolerance: 0, softness: 200, clipBlack: 60 });
@@ -180,6 +325,41 @@ test("templates create connected, typed, independent node graphs", () => {
     next.nodes[0].data.params.test = 1;
     assert.equal(graph.nodes[0].data.params.test, undefined);
   }
+});
+
+test("adding a template preserves the canvas and routes its output to the existing Viewer", () => {
+  let id = 0;
+  const current = createCompositorTemplate("color", () => `current-${++id}`);
+  const template = createCompositorTemplate("key", () => `template-${++id}`);
+  const oldViewer = current.nodes.find((node) => node.data.kind === "viewer");
+  const oldViewerInput = current.edges.find((edge) => edge.target === oldViewer.id);
+  const preservedEdges = current.edges.filter((edge) => edge.id !== oldViewerInput.id);
+  const templateViewer = template.nodes.find((node) => node.data.kind === "viewer");
+  const templateViewerInput = template.edges.find((edge) => edge.target === templateViewer.id);
+
+  const result = appendCompositorTemplate(current.nodes, current.edges, template);
+  const addedNodes = result.nodes.filter((node) => node.id.startsWith("template-"));
+  const addedEdges = result.edges.filter((edge) => edge.id.startsWith("template-"));
+
+  assert.equal(result.nodes.length, current.nodes.length + template.nodes.length - 1);
+  assert.ok(current.nodes.every((node) => result.nodes.some((added) => added.id === node.id)));
+  assert.ok(addedNodes.every((node) => node.position.x > Math.max(...current.nodes.map((item) => item.position.x))));
+  assert.ok(preservedEdges.every((edge) => result.edges.some((added) => added.id === edge.id)));
+  assert.equal(result.edges.some((edge) => edge.id === oldViewerInput.id), false);
+  assert.ok(addedEdges.some((edge) => edge.source === templateViewerInput.source && edge.target === oldViewer.id));
+  assert.equal(result.nodes.filter((node) => node.data.kind === "viewer").length, 1);
+  assert.equal(result.selectedId, templateViewerInput.source);
+  assert.ok(result.nodes.find((node) => node.id === result.selectedId).selected);
+  assert.equal(result.edges.filter((edge) => edge.target === oldViewer.id && edge.targetHandle === "image").length, 1);
+});
+
+test("adding a template to a canvas without a Viewer keeps the template Viewer", () => {
+  let id = 0;
+  const template = createCompositorTemplate("mask", () => `template-${++id}`);
+  const result = appendCompositorTemplate([], [], template);
+  assert.deepEqual(result.nodes, template.nodes.map((node) =>
+    node.id === result.selectedId ? { ...node, selected: true } : { ...node, selected: false }));
+  assert.deepEqual(result.edges, template.edges.map((edge) => ({ ...edge, selected: false })));
 });
 
 test("tracking template shows background until the track is ready", () => {
@@ -297,6 +477,7 @@ test("tracks a detailed feature including near the edge", () => {
 test("rejects low-contrast features", () => {
   const flat = new Uint8ClampedArray(64 * 48 * 4);
   assert.throws(() => trackPatch(flat, flat, 64, 48, 20, 20), /too little contrast/);
+  assert.throws(() => trackPatch(frame(64, 48, 20, 20), flat, 64, 48, 20, 20), /current frame/);
 });
 
 test("interpolates offsets relative to the first frame and clamps at endpoints", () => {

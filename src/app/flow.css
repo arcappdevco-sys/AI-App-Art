@@ -1429,11 +1429,40 @@ body {
 .comp-templates p { margin: 0; }
 .comp-template { display: grid; gap: 3px; }
 .comp-history { display: flex; gap: 6px; margin-bottom: 10px; }
-.comp-template button { text-align: left; }
+.comp-template-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+.comp-template-actions button { text-align: left; }
 .comp-templates summary { color: var(--text); font-size: 12px; cursor: pointer; }
 .comp-inspector { display: grid; gap: 9px; margin-top: 20px; border-top: 1px solid var(--line); padding-top: 10px; }
 .comp-inspector h2 { font-size: 14px; margin: 0; }
 .comp-inspector h3 { font-size: 13px; margin: 8px 0 0; }
+.comp-mask-add, .comp-mask-keyframes, .comp-mask-outline-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.comp-mask-add button, .comp-mask-keyframes button, .comp-mask-outline-actions button { padding: 5px; font-size: 11px; }
+.comp-mask-layers { display: grid; gap: 4px; }
+.comp-mask-layer-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px; }
+.comp-mask-layer-row button { padding: 4px 6px; font-size: 11px; }
+.comp-mask-layer-row .comp-mask-layer-select { text-align: left; }
+.comp-mask-layer-select[aria-pressed="true"] { border-color: var(--accent); }
+.comp-mask-keyframes { grid-template-columns: 1fr 1fr; }
+.comp-mask-keyframes small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+.comp-mask-keyframe-list { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; }
+.comp-mask-keyframe-list button[aria-pressed="true"] { border-color: var(--accent); }
+.comp-mask-editor { grid-area: 1 / 1; display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; aspect-ratio: 16 / 9; touch-action: none; cursor: crosshair; }
+.comp-mask-editor-bg { fill: transparent; }
+.comp-mask-shape { fill: var(--accent); fill-opacity: .22; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; cursor: move; }
+.comp-mask-shape.is-outline { pointer-events: stroke; }
+.comp-mask-point { fill: var(--text); stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; cursor: move; }
+.comp-mask-point.selected { fill: var(--accent); }
+.comp-mask-corner { fill: var(--accent); }
+.comp-mask-handle-line { stroke: var(--muted); stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.comp-mask-handle { fill: var(--surface-deep); stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; cursor: crosshair; }
+.comp-tracker-editor { grid-area: 1 / 1; display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; aspect-ratio: 16 / 9; touch-action: none; cursor: crosshair; }
+.comp-tracker-path, .comp-tracker-surface { fill: none; stroke: #ffd35a; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+.comp-tracker-surface { fill: #ffd35a; fill-opacity: .08; stroke-dasharray: 6 4; }
+.comp-tracker-anchor { cursor: move; }
+.comp-tracker-anchor circle { fill: #111; fill-opacity: .55; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.comp-tracker-anchor circle.selected { stroke: #ffd35a; }
+.comp-tracker-anchor path { stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.comp-tracker-anchor text { fill: #fff; stroke: #111; stroke-width: 3px; paint-order: stroke; font-size: 15px; font-weight: bold; pointer-events: none; }
 .comp-curves { display: grid; gap: 8px; }
 .comp-curves select { width: 100%; color: var(--text); background: var(--surface-deep); border: 1px solid var(--line-control); border-radius: 4px; padding: 5px; }
 .comp-curve-graph { width: 100%; aspect-ratio: 1; background: var(--surface-deep); border: 1px solid var(--line-control); touch-action: none; cursor: crosshair; }

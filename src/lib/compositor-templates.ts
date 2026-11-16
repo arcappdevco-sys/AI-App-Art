@@ -26,7 +26,7 @@ export const COMPOSITOR_TEMPLATES: Template[] = [
       { from: "background", to: "merge", input: "background" }, { from: "merge", to: "viewer", input: "image" }],
   },
   {
-    id: "mask", name: "Masking", description: "Apply a rectangular mask to an image or video.",
+    id: "mask", name: "Masking", description: "Combine and animate editable masks on an image or video.",
     nodes: [{ key: "source", kind: "media", x: 0, y: 100 }, { key: "mask", kind: "mask", x: 250, y: 100 }, { key: "viewer", kind: "viewer", x: 500, y: 100 }],
     edges: [{ from: "source", to: "mask", input: "image" }, { from: "mask", to: "viewer", input: "image" }],
   },
@@ -76,4 +76,45 @@ export function createCompositorTemplate(id: TemplateId, createId: () => string)
     id: createId(), source: ids.get(edge.from)!, target: ids.get(edge.to)!, sourceHandle: "output", targetHandle: edge.input,
   }));
   return { nodes, edges };
+}
+
+export function appendCompositorTemplate(
+  currentNodes: CompositorNode[],
+  currentEdges: Edge[],
+  templateGraph: { nodes: CompositorNode[]; edges: Edge[] },
+): { nodes: CompositorNode[]; edges: Edge[]; selectedId: string } {
+  const currentViewer = currentNodes.find((node) => node.data.kind === "viewer");
+  const templateViewer = templateGraph.nodes.find((node) => node.data.kind === "viewer");
+  if (!templateViewer) throw new Error("The compositor template has no Viewer.");
+  const viewerInput = templateGraph.edges.find((edge) => edge.target === templateViewer.id && edge.targetHandle === "image");
+  if (!viewerInput) throw new Error("The compositor template is not connected to its Viewer.");
+
+  const offsetX = currentNodes.length
+    ? Math.max(...currentNodes.map((node) => node.position.x)) + 250
+      - Math.min(...templateGraph.nodes.map((node) => node.position.x))
+    : 0;
+  const nodes = [
+    ...currentNodes.map((node) => ({ ...node, selected: false })),
+    ...templateGraph.nodes
+      .filter((node) => !currentViewer || node.id !== templateViewer.id)
+      .map((node) => ({
+        ...node, position: { ...node.position, x: node.position.x + offsetX }, selected: false,
+      })),
+  ];
+  const edges = [
+    ...currentEdges
+      .filter((edge) => !currentViewer || edge.target !== currentViewer.id || edge.targetHandle !== "image")
+      .map((edge) => ({ ...edge, selected: false })),
+    ...templateGraph.edges.map((edge) => ({
+      ...edge,
+      target: currentViewer && edge.target === templateViewer.id ? currentViewer.id : edge.target,
+      selected: false,
+    })),
+  ];
+  const selectedId = viewerInput.source;
+  return {
+    nodes: nodes.map((node) => node.id === selectedId ? { ...node, selected: true } : node),
+    edges,
+    selectedId,
+  };
 }

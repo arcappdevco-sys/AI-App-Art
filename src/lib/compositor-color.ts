@@ -6,11 +6,15 @@ export type CurveChannel = "master" | "red" | "green" | "blue";
 export const CURVE_CHANNELS: CurveChannel[] = ["master", "red", "green", "blue"];
 export const IDENTITY_CURVE: CurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
 
+function isCurvePointArray(value: unknown): value is CurvePoint[] {
+  return Array.isArray(value) && value.every((point) => point && typeof point.x === "number" && typeof point.y === "number");
+}
+
 export function getCurve(params: CompositorParams, channel: CurveChannel): CurvePoint[] {
   const value = params[`curve_${channel}`];
   if (value === undefined) return IDENTITY_CURVE;
-  if (!Array.isArray(value) || value.length < 2 || value.length > 12 ||
-      value.some((point, index) => !point || !Number.isFinite(point.x) || !Number.isFinite(point.y) ||
+  if (!isCurvePointArray(value) || value.length < 2 || value.length > 12 ||
+      value.some((point, index) => !Number.isFinite(point.x) || !Number.isFinite(point.y) ||
         point.x < 0 || point.x > 255 || point.y < 0 || point.y > 255 ||
         (index > 0 && point.x <= value[index - 1].x)) ||
       value[0].x !== 0 || value[value.length - 1].x !== 255) {

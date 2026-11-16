@@ -1,7 +1,9 @@
 import type { CurvePoint } from "./compositor-color";
+import type { MaskLayer } from "./compositor-mask";
 
 export type CompositorKind = "media" | "transform" | "key" | "mask" | "color" | "merge" | "tracker" | "viewer";
-export type CompositorParams = Record<string, string | number | boolean | CurvePoint[]>;
+export type CompositorParamValue = string | number | boolean | CurvePoint[] | MaskLayer[];
+export type CompositorParams = Record<string, CompositorParamValue>;
 export type TrackPoint = { time: number; x: number; y: number; confidence: number };
 export type CompositorMarks = { inPoint: number | null; outPoint: number | null };
 export const EMPTY_COMPOSITOR_MARKS: CompositorMarks = { inPoint: null, outPoint: null };
@@ -41,7 +43,7 @@ export const COMPOSITOR_LABELS: Record<CompositorKind, string> = {
 
 export const COMPOSITOR_DEFAULTS: Record<CompositorKind, CompositorParams> = {
   media: {}, transform: { x: 0, y: 0, scale: 100 }, key: { color: "#00ff00", tolerance: 100, softness: 35 },
-  mask: { x: 320, y: 180, width: 240, height: 180, invert: false },
+  mask: { layers: [], invert: false },
   color: { brightness: 0, contrast: 100, saturation: 100 }, merge: { opacity: 100 },
   tracker: { x: 320, y: 180 }, viewer: {},
 };
@@ -101,6 +103,15 @@ export function trackPatch(
       }
     }
   }
+  min = 255; max = 0;
+  for (let py = -radius; py <= radius; py++) {
+    for (let px = -radius; px <= radius; px++) {
+      const i = ((bestY + py) * width + bestX + px) * 4;
+      const value = (frame[i] + frame[i + 1] + frame[i + 2]) / 3;
+      min = Math.min(min, value); max = Math.max(max, value);
+    }
+  }
+  if (max - min < 20) throw new Error("Tracking feature has too little contrast in the current frame.");
   return { x: bestX, y: bestY, confidence: 1 - best / ((radius * 2 + 1) ** 2 * 3 * 255) };
 }
 
