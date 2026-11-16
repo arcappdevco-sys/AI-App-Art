@@ -1374,6 +1374,32 @@ body {
   }
 }
 
+@media (max-width: 2000px) and (min-width: 901px) {
+  .ff-app {
+    grid-template-rows: 108px minmax(0, 1fr);
+  }
+
+  .ff-toolbar {
+    grid-template-columns: 292px minmax(0, 1fr);
+    grid-template-rows: 64px 44px;
+  }
+
+  .ff-workflow-name {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .ff-toolbar-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+    border-top: 1px solid var(--line);
+    background: var(--toolbar-surface);
+  }
+}
+
 .ff-editor-layout {
   display: grid;
   grid-column: 1 / -1;

@@ -52,13 +52,15 @@ Use **Chat** in the toolbar for general conversation with a locally installed Ol
 
 The chat uses the Ollama installation on the computer running the fal flow server, not a remote visitor's computer. Run the application only in a trusted environment: anyone able to access the app can use that server's local model.
 
-Add provider API keys to `.env.local` as needed. Keep these keys private and do not expose them in client-side code.
+On the first local development launch, fal flow opens an API key setup screen. You can reopen it from **API keys** in the toolbar. Enter only the providers you plan to use; keys are saved in the git-ignored `.env.local` file and are never sent back to the browser. Restart the development server after saving. Setup is limited to local development and is not available on production deployments.
+
+The setup screen supports `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ATLASCLOUD_API_KEY`, and `FAL_KEY`. Keep these keys private and do not expose them in client-side code.
 
 The **ChatGPT Image** node uses `OPENAI_API_KEY` and OpenAI's GPT Image models. OpenAI API usage is billed separately and is not included in Nano Banana's free tier.
 
 When Prompt Assistant is enabled on a Prompt node, it uses the model and task of connected supported model nodes to tailor the prompt. With multiple targets, it uses the smallest known length limit and avoids introducing model-specific reference tags. Existing tags are preserved, and an over-limit or invalid assistant response is rejected rather than applied. Any notice is shown separately from the generated prompt. If no connected model has a profile, the existing target selector remains in effect. Kling V3 avoidances are written in the main prompt because the current Atlas Pro and Std APIs do not expose a negative-prompt field.
 
-Video generation uses the server-side `ATLASCLOUD_API_KEY`. The Wan 3.0 and MiniMax H3 nodes send supported text-to-video, image-to-video, and reference-to-video requests through `/api/atlas/wan`; set `ATLASCLOUD_API_KEY` in `.env.local` before using **Generate**. The browser never receives the key. Wan documents are kept in this browser's IndexedDB, and uploaded media URLs are temporary generation inputs.
+Video generation uses the server-side `ATLASCLOUD_API_KEY`. The Wan 3.0 and MiniMax H3 nodes send supported text-to-video, image-to-video, and reference-to-video requests through `/api/atlas/wan`; configure Atlas Cloud in the app's **API keys** setup before using **Generate**. The browser never receives the key. Wan documents are kept in this browser's IndexedDB, and uploaded media URLs are temporary generation inputs.
 
 For Wan image-to-video, connect a non-empty Prompt node and an image to **First frame**. You can also connect the same generated image to **Last frame** to return to it at the end. Local images, including Nano Banana free-tier outputs, are checked and uploaded when generation starts.
 

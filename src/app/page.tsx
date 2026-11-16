@@ -7,6 +7,8 @@ import "./example-drag.css";
 import "./ollama-chat.css";
 import "../components/StoryboardTab.css";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useRouter } from "next/navigation";
+import ApiKeySetupRedirect from "@/components/ApiKeySetupRedirect";
 import {
   ReactFlow, Background, Controls, MiniMap, addEdge,
   useNodesState, useEdgesState, type Connection, type Edge, type Node, type ReactFlowInstance,
@@ -258,6 +260,7 @@ function formatRunCost(total: number, withoutEstimate: number) {
 }
 
 export default function Page() {
+  const router = useRouter();
   const [activeView, setActiveView] = useState<"storyboard" | "workflow" | "editor" | "compositor">("workflow");
   const [uiTheme, setUiTheme] = useState<UiTheme>("midnight");
   const [uiButtonColor, setUiButtonColor] = useState<UiButtonColor>("blue");
@@ -963,6 +966,7 @@ export default function Page() {
 
   return (
     <div className="ff-app" data-theme={uiTheme} data-button-color={uiButtonColor}>
+      <ApiKeySetupRedirect />
       <header className="ff-toolbar">
         <div className="ff-brand">
           <span className="ff-brand-mark" aria-hidden="true">F</span>
@@ -1018,6 +1022,11 @@ export default function Page() {
         </div>
         <div className="ff-toolbar-actions">
           <OllamaChat />
+          {process.env.NODE_ENV === "development" && (
+            <button type="button" className="ff-toolbar-button" onClick={() => router.push("/setup")}>
+              API keys
+            </button>
+          )}
           {activeView === "workflow" ? (
             <>
           <button className="ff-toolbar-button" onClick={createWorkflow} disabled={!storageReady || isRunning}>New</button>

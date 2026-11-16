@@ -2102,7 +2102,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
             </button>
           </div>
           <div className="ff-prompt-assistant-note">
-            Add <strong>OPENAI_API_KEY</strong> to .env.local and restart the app. OpenAI usage is billed separately from Atlas.
+            Configure OpenAI in the app&apos;s <strong>API keys</strong> setup, then restart the app. OpenAI usage is billed separately from Atlas.
             Connect this node’s <strong>text</strong> output to the target prompt input. Image files are never sent to OpenAI.
           </div>
         </section>

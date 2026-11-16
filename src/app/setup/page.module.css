@@ -1,0 +1,221 @@
+.page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 18px;
+  color: #e7efec;
+  background:
+    radial-gradient(ellipse at 50% 0%, #1a2c2a 0, transparent 48%),
+    #0c1112;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+.card {
+  width: min(100%, 620px);
+  padding: 34px;
+  border: 1px solid #283435;
+  border-radius: 14px;
+  background: #111819;
+  box-shadow: 0 24px 80px #0006;
+}
+
+.brand {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 10px;
+  color: #15200d;
+  background: #c6f36b;
+  font-size: 21px;
+  font-weight: 800;
+}
+
+.eyebrow {
+  margin: 22px 0 8px;
+  color: #91a19e;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.card h1 {
+  margin: 0;
+  color: #dce8e2;
+  font-size: clamp(24px, 5vw, 32px);
+  letter-spacing: -0.035em;
+}
+
+.intro {
+  margin: 12px 0 24px;
+  color: #cbd6d2;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.intro code {
+  color: #dce8e2;
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.keyList {
+  display: grid;
+  gap: 14px;
+}
+
+.keyField {
+  display: grid;
+  gap: 7px;
+}
+
+.keyFieldConfigured {
+  padding: 10px;
+  border: 1px solid #50643d;
+  border-radius: 8px;
+  background: #c6f36b0d;
+}
+
+.fieldHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #dce8e2;
+  font-size: 13px;
+}
+
+.fieldHeading span,
+.description {
+  color: #91a19e;
+  font-size: 11px;
+}
+
+.fieldHeading .configuredBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #c6f36b;
+  background: #c6f36b1a;
+  font-weight: 700;
+}
+
+.fieldHeading .optionalBadge {
+  color: #91a19e;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.configuredNote {
+  color: #c6f36b;
+  font-size: 11px;
+}
+
+.description {
+  line-height: 1.4;
+}
+
+.keyField input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #3b4a45;
+  border-radius: 6px;
+  outline: none;
+  color: #e7efec;
+  background: #0c1213;
+  font: inherit;
+}
+
+.keyField input:focus-visible {
+  border-color: #c6f36b;
+  box-shadow: 0 0 0 2px #c6f36b33;
+}
+
+.keyField input::placeholder {
+  color: #75817e;
+}
+
+.notice,
+.status {
+  margin: 18px 0;
+  color: #91a19e;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.error,
+.success {
+  margin: 16px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.error {
+  color: #ff9a91;
+}
+
+.success {
+  color: #c6f36b;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.primaryButton,
+.secondaryButton {
+  min-height: 40px;
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.primaryButton {
+  color: #15200d;
+  background: #c6f36b;
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: #d7ff8b;
+}
+
+.primaryButton:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.secondaryButton {
+  border-color: #3b4a45;
+  color: #cbd6d2;
+  background: transparent;
+}
+
+.secondaryButton:hover {
+  background: #182122;
+}
+
+.primaryButton:focus-visible,
+.secondaryButton:focus-visible {
+  outline: 2px solid #c6f36b;
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .card {
+    padding: 24px 18px;
+  }
+
+  .fieldHeading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
