@@ -14,6 +14,7 @@ const {
   addMediaToProjectFolder,
   loadProjectVideoEditorState,
   PROJECT_MANIFEST_FILE_NAME,
+  chooseProjectMediaFiles,
   readProjectMediaAssetFile,
   readProjectMediaFile,
   readOrCreateProjectManifest,
@@ -101,6 +102,38 @@ test("creates a manifest in a new project folder", async () => {
   assert.equal(JSON.parse(handle.files.get(PROJECT_MANIFEST_FILE_NAME)).id, result.manifest.id);
 });
 
+test("starts the media picker in the project folder and returns selected files", async () => {
+  const projectFolder = { name: "Test Project" };
+  const selectedFile = new File(["video"], "clip.mp4", { type: "video/mp4" });
+  const previousWindow = global.window;
+  let pickerOptions;
+  global.window = {
+    showOpenFilePicker: async (options) => {
+      pickerOptions = options;
+      return [{ getFile: async () => selectedFile }];
+    },
+  };
+  try {
+    assert.deepEqual(await chooseProjectMediaFiles(projectFolder), [selectedFile]);
+    assert.equal(pickerOptions.multiple, true);
+    assert.equal(pickerOptions.startIn, projectFolder);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+});
+
+test("reports when the project-aware picker is unavailable for input fallback", async () => {
+  const previousWindow = global.window;
+  global.window = {};
+  try {
+    assert.equal(await chooseProjectMediaFiles({ name: "Test Project" }), null);
+  } finally {
+    if (previousWindow === undefined) delete global.window;
+    else global.window = previousWindow;
+  }
+});
+
 test("opens and validates an existing manifest without overwriting it", async () => {
   const handle = createDirectoryHandle();
   const created = await readOrCreateProjectManifest(handle);
@@ -153,6 +186,24 @@ test("copies shared media into the project and restores it using the manifest pa
 
   const reopened = await readOrCreateProjectManifest(handle);
   assert.deepEqual(reopened.manifest.assets, updated.assets);
+});
+
+test("preserves all media copied sequentially into a project", async () => {
+  const handle = createMemoryDirectoryHandle();
+  let { manifest } = await readOrCreateProjectManifest(handle);
+  for (const id of ["media-first", "media-second"]) {
+    manifest = await addMediaToProjectFolder(handle, manifest, {
+      id,
+      name: `${id}.mp4`,
+      mediaKind: "video",
+      mimeType: "video/mp4",
+      source: { kind: "storage", storageKey: id },
+      metadata: {},
+    }, new File([id], `${id}.mp4`, { type: "video/mp4" }));
+  }
+  assert.deepEqual(manifest.assets.map((asset) => asset.id), ["media-first", "media-second"]);
+  assert.equal(await (await readProjectMediaFile(handle, manifest.assets[0])).text(), "media-first");
+  assert.equal(await (await readProjectMediaFile(handle, manifest.assets[1])).text(), "media-second");
 });
 
 test("reports project media files that are missing from disk", async () => {

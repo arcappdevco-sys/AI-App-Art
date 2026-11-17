@@ -19,6 +19,7 @@ type ProjectFolderControlProps = {
   assets: ProjectMediaAsset[];
   onProjectMediaChange: () => Promise<void>;
   onProjectSessionChange: (session: ProjectFolderSession | null) => void;
+  projectSessionEpoch: number;
 };
 
 async function restoreProjectMedia(
@@ -46,6 +47,7 @@ export default function ProjectFolderControl({
   assets,
   onProjectMediaChange,
   onProjectSessionChange,
+  projectSessionEpoch,
 }: ProjectFolderControlProps) {
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [status, setStatus] = useState("No project folder open");
@@ -103,6 +105,22 @@ export default function ProjectFolderControl({
     })();
     return () => { active = false; };
   }, [onProjectMediaChange, onProjectSessionChange]);
+
+  useEffect(() => {
+    if (!activeSession) return;
+    let active = true;
+    void readOrCreateProjectManifest(activeSession.handle).then(({ manifest: refreshedManifest }) => {
+      if (!active) return;
+      if (refreshedManifest.id !== activeSession.projectId) {
+        throw new Error("The selected project folder changed.");
+      }
+      setManifest(refreshedManifest);
+      setStatus(`Project: ${refreshedManifest.name} · ${refreshedManifest.assets.length} media`);
+    }).catch((caught: unknown) => {
+      if (active) setError(caught instanceof Error ? caught.message : "Could not refresh the project manifest.");
+    });
+    return () => { active = false; };
+  }, [activeSession, projectSessionEpoch]);
 
   const openProjectFolder = async () => {
     setBusyAction("opening");

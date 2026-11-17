@@ -1176,6 +1176,7 @@ export default function Page() {
             assets={projectMediaAssets}
             onProjectMediaChange={refreshProjectMediaAssets}
             onProjectSessionChange={updateProjectSession}
+            projectSessionEpoch={projectSessionEpoch}
           />
           <OllamaChat />
           <WorkspaceHelp activeView={activeView} />
@@ -1551,6 +1552,7 @@ export default function Page() {
         key={projectSession?.sessionKey ?? "local"}
         assets={videoAssets}
         onProjectMediaChange={refreshProjectMediaAssets}
+        onProjectSessionChange={updateProjectSession}
         projectSession={projectSession}
         projectSessionReady={projectSessionReady}
         projectSessionEpoch={projectSessionEpoch}

@@ -20,6 +20,10 @@ import type { StoredVideoEditorState } from "./video-editor-storage";
 declare global {
   interface Window {
     showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
+    showOpenFilePicker?: (options?: {
+      multiple?: boolean;
+      startIn?: FileSystemHandle;
+    }) => Promise<FileSystemFileHandle[]>;
   }
 
   interface FileSystemHandle {
@@ -321,4 +325,15 @@ export async function chooseProjectFolder(): Promise<FileSystemDirectoryHandle> 
     throw new Error("Opening project folders requires a browser with the File System Access API, such as Chrome or Edge.");
   }
   return window.showDirectoryPicker({ mode: "readwrite" });
+}
+
+export async function chooseProjectMediaFiles(
+  projectFolder: FileSystemDirectoryHandle,
+): Promise<File[] | null> {
+  if (!window.showOpenFilePicker) return null;
+  const handles = await window.showOpenFilePicker({
+    multiple: true,
+    startIn: projectFolder,
+  });
+  return Promise.all(handles.map((handle) => handle.getFile()));
 }

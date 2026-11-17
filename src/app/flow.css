@@ -1435,8 +1435,7 @@ body {
 
 .ff-mode-tabs button:focus-visible,
 .ff-editor-layout button:focus-visible,
-.ff-editor-layout input:focus-visible,
-.ff-editor-upload:focus-within {
+.ff-editor-layout input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -1838,16 +1837,6 @@ body {
 
 .ff-editor-upload:hover {
   border-color: var(--accent);
-}
-
-.ff-editor-upload input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  clip-path: inset(50%);
 }
 
 .ff-editor-sidebar-note {

@@ -3,13 +3,17 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { registerEditorUploadBridge } from "@/lib/editor-upload-bridge";
 import { prepareEditorVideoSource } from "@/lib/editor-video-source";
-import { normalizeMediaAssetMetadata, type MediaAssetMetadata } from "@/lib/project-media";
+import { normalizeMediaAssetMetadata, type MediaAssetMetadata, type ProjectMediaAsset } from "@/lib/project-media";
 import {
+  addMediaToProjectFolder,
+  chooseProjectMediaFiles,
   loadProjectVideoEditorState,
   readProjectMediaAssetFile,
+  readOrCreateProjectManifest,
   saveProjectVideoEditorState,
   type ProjectFolderSession,
 } from "@/lib/project-folder-storage";
+import type { ProjectManifest } from "@/lib/project-manifest";
 import { inspectMediaAssetMetadata } from "@/lib/project-media-browser";
 import { registerProjectMediaAsset, loadProjectMediaFile } from "@/lib/project-media-storage";
 import { applyMatteClip, getKeyColorChroma, refineMatte, RGB_LUMA_WEIGHTS } from "@/lib/chroma-key";
@@ -358,6 +362,7 @@ export default function VideoEditor({
   assets,
   hidden = false,
   onProjectMediaChange,
+  onProjectSessionChange,
   projectSession = null,
   projectSessionReady = true,
   projectSessionEpoch = 0,
@@ -365,6 +370,7 @@ export default function VideoEditor({
   assets: VideoAsset[];
   hidden?: boolean;
   onProjectMediaChange?: () => void;
+  onProjectSessionChange?: (session: ProjectFolderSession) => void;
   projectSession?: ProjectFolderSession | null;
   projectSessionReady?: boolean;
   projectSessionEpoch?: number;
@@ -405,6 +411,7 @@ export default function VideoEditor({
   const [isRestoringHistory, setIsRestoringHistory] = useState(false);
   const [error, setError] = useState("");
   const previewRef = useRef<HTMLVideoElement>(null);
+  const uploadInputRef = useRef<HTMLInputElement>(null);
   const workflowClipUrls = useRef(new Set<string>());
   const previewContainerRef = useRef<HTMLDivElement>(null);
   const keyerCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -1975,15 +1982,26 @@ export default function VideoEditor({
     removeClip(selectedClip.id);
   };
 
-  const addUploads = useCallback(async (files: FileList | File | null, includeImages = false) => {
+  const addUploads = useCallback(async (files: FileList | File | File[] | null, includeImages = false) => {
     if (!files) return false;
     const selectedFiles = files instanceof File ? [files] : Array.from(files);
     const accepted = selectedFiles.filter((file) => file.type.startsWith("video/")
       || file.type.startsWith("audio/")
       || (includeImages && file.type.startsWith("image/")));
     if (accepted.length !== selectedFiles.length) setError("Only video and audio files can be added to Footage.");
+    const nextAssets: VideoAsset[] = [];
+    let registeredMedia = false;
     try {
-      const nextAssets = await Promise.all(accepted.map(async (file) => {
+      let projectManifest: ProjectManifest | null = null;
+      if (projectSession) {
+        const result = await readOrCreateProjectManifest(projectSession.handle);
+        if (result.manifest.id !== projectSession.projectId) {
+          throw new Error("The project folder changed before media could be added.");
+        }
+        projectManifest = result.manifest;
+      }
+
+      for (const file of accepted) {
         if (file.size > 512 * 1024 * 1024) {
           throw new Error(`"${file.name}" is larger than the 512 MB editor-storage limit.`);
         }
@@ -1991,24 +2009,35 @@ export default function VideoEditor({
         const id = `upload-${crypto.randomUUID()}`;
         const mediaKind = file.type.startsWith("video/") ? "video" as const
           : file.type.startsWith("audio/") ? "audio" as const : "image" as const;
-        await registerProjectMediaAsset({
+        const mediaAsset: ProjectMediaAsset = {
           id,
           name: file.name,
           mediaKind,
           mimeType: file.type || null,
           source: { kind: "storage", storageKey: id },
           metadata,
-        }, file);
-        return {
+        };
+        const registeredAsset = await registerProjectMediaAsset(mediaAsset, file);
+        registeredMedia = true;
+        if (projectManifest && projectSession) {
+          projectManifest = await addMediaToProjectFolder(
+            projectSession.handle,
+            projectManifest,
+            mediaAsset,
+            file,
+          );
+        }
+        nextAssets.push({
           id,
           name: file.name,
           src: URL.createObjectURL(file),
           file,
           mediaId: id,
-          projectAssetId: id,
+          projectAssetId: projectSession ? (projectManifest ? id : undefined) : id,
+          projectAssetRevision: registeredAsset.revision,
           metadata,
-        };
-      }));
+        });
+      }
       if (nextAssets.length > 0) recordHistory();
       setUploadedAssets((current) => [...current, ...nextAssets]);
       if (nextAssets.length > 0 && onProjectMediaChange) {
@@ -2017,15 +2046,45 @@ export default function VideoEditor({
           setPersistenceStatus("Shared media unavailable");
         });
       }
+      if (nextAssets.length > 0 && projectSession) onProjectSessionChange?.(projectSession);
       setPersistenceError("");
       return accepted.length === selectedFiles.length && accepted.length > 0;
     } catch (caught) {
+      if (nextAssets.length > 0) {
+        recordHistory();
+        setUploadedAssets((current) => [...current, ...nextAssets]);
+        if (projectSession) onProjectSessionChange?.(projectSession);
+      }
+      if (registeredMedia && onProjectMediaChange) {
+        void Promise.resolve(onProjectMediaChange()).catch((refreshError: unknown) => {
+          setPersistenceError(refreshError instanceof Error ? refreshError.message : "Could not refresh shared media.");
+          setPersistenceStatus("Shared media unavailable");
+        });
+      }
       const message = caught instanceof Error ? caught.message : "Could not save uploaded media.";
       setPersistenceError(message);
       setPersistenceStatus("Editor save failed");
       throw caught;
     }
-  }, [onProjectMediaChange, recordHistory]);
+  }, [onProjectMediaChange, onProjectSessionChange, projectSession, recordHistory]);
+
+  const chooseUploads = useCallback(async () => {
+    if (!projectSession) {
+      uploadInputRef.current?.click();
+      return;
+    }
+    try {
+      const files = await chooseProjectMediaFiles(projectSession.handle);
+      if (files === null) {
+        uploadInputRef.current?.click();
+      } else if (files.length > 0) {
+        if (await addUploads(files)) setError("");
+      }
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") return;
+      setError(caught instanceof Error ? caught.message : "Could not add media to the project.");
+    }
+  }, [addUploads, projectSession]);
 
   const removeUploadedAsset = async (asset: VideoAsset) => {
     if (removingFootageId || isRestoringHistory) return;
@@ -2484,21 +2543,30 @@ export default function VideoEditor({
         <section className="ff-editor-media">
           <div className="ff-editor-section-heading">
             <h2 ref={uploadsHeadingRef} tabIndex={-1}>Footage</h2>
-            <label className="ff-editor-upload">
+            <button
+              type="button"
+              className="ff-editor-upload"
+              onClick={() => void chooseUploads()}
+              disabled={Boolean(removingFootageId) || isRestoringHistory}
+              title={projectSession
+                ? "Choose files from this project folder and copy them into Media/Originals."
+                : "Add video or audio files from this device."}
+            >
               Add files
-              <input
-                type="file"
-                accept="video/*,audio/*"
-                multiple
-                disabled={Boolean(removingFootageId) || isRestoringHistory}
-                onChange={(event) => {
-                  void addUploads(event.target.files).catch((caught: unknown) => {
-                    setError(caught instanceof Error ? caught.message : "Could not save uploaded media.");
-                  });
-                  event.target.value = "";
-                }}
-              />
-            </label>
+            </button>
+            <input
+              ref={uploadInputRef}
+              type="file"
+              accept="video/*,audio/*"
+              multiple
+              hidden
+              onChange={(event) => {
+                void addUploads(event.target.files).catch((caught: unknown) => {
+                  setError(caught instanceof Error ? caught.message : "Could not save uploaded media.");
+                });
+                event.target.value = "";
+              }}
+            />
           </div>
           {uploadedAssets.map((asset) => (
             <div className="ff-editor-asset-row" key={asset.id}>
@@ -2548,7 +2616,7 @@ export default function VideoEditor({
 
         <p className="ff-editor-sidebar-note">
           {projectId
-            ? "Sequences and timeline edits are saved in the project folder. Add media to the project before using it in a portable timeline."
+            ? "Sequences, timeline edits, and media added here are saved in the project folder."
             : "Footage, sequences, and timeline edits are saved in this browser."}
           {" "}Transitions and audio tracks are included in MOV and MP4 exports.
         </p>
