@@ -331,6 +331,26 @@ body {
   padding: 0 18px;
 }
 
+.ff-project-folder-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ff-project-folder-status {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-project-folder-status[role="alert"] {
+  color: #ef9b84;
+}
+
 .ff-workspace-help {
   flex: 0 0 auto;
 }

@@ -37,6 +37,7 @@ import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 import Compositor from "@/components/Compositor";
 import StoryboardTab from "@/components/StoryboardTab";
 import WorkspaceHelp from "@/components/WorkspaceHelp";
+import ProjectFolderControl from "@/components/ProjectFolderControl";
 import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
 import { rebindStoryboardWorkflowReferences, resolveWorkflowStoryboardFrames } from "@/lib/storyboard-workflow";
 import {
@@ -1162,6 +1163,7 @@ export default function Page() {
             )}
         </div>
         <div className="ff-toolbar-actions">
+          <ProjectFolderControl />
           <OllamaChat />
           <WorkspaceHelp activeView={activeView} />
           {process.env.NODE_ENV === "development" && (
