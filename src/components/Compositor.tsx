@@ -16,10 +16,29 @@ import TrackerEditor from "@/components/TrackerEditor";
 import { applyCompositorKeyer } from "@/lib/compositor-keyer";
 import { CompositorHistory, compositorHistoryShortcut } from "@/lib/compositor-history";
 import { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, planarTrackingMatrix, similarityTrackingMatrix, trackerAnchors, trackerMode, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingCanvas, type TrackingData, type TrackingMatrix, type TrackingPoint, type TrackingResult, type TrackingSample } from "@/lib/compositor-tracking";
+import { createUnknownMediaAssetMetadata, normalizeMediaAssetMetadata, normalizeMediaAssetMetadataMap, type MediaAssetMetadata, type ProjectMediaAsset } from "@/lib/project-media";
+import { loadProjectMediaFile } from "@/lib/project-media-storage";
 
 type CompNode = CompositorNode;
-type Project = { nodes: CompNode[]; edges: Edge[]; media: Record<string, File>; tracks?: Record<string, TrackingData>; marks?: CompositorMarks };
-type HistorySnapshot = { nodes: CompNode[]; edges: Edge[]; files: Record<string, File>; tracks: Record<string, TrackingData>; selected: string; marks: CompositorMarks };
+type Project = {
+  nodes: CompNode[];
+  edges: Edge[];
+  media: Record<string, File>;
+  mediaRefs?: Record<string, string>;
+  mediaMetadata?: Record<string, MediaAssetMetadata>;
+  tracks?: Record<string, TrackingData>;
+  marks?: CompositorMarks;
+};
+type HistorySnapshot = {
+  nodes: CompNode[];
+  edges: Edge[];
+  files: Record<string, File>;
+  mediaRefs: Record<string, string>;
+  mediaMetadata: Record<string, MediaAssetMetadata>;
+  tracks: Record<string, TrackingData>;
+  selected: string;
+  marks: CompositorMarks;
+};
 const HISTORY_LIMIT = 50;
 const WIDTH = 640, HEIGHT = 360;
 const labels = COMPOSITOR_LABELS;
@@ -129,7 +148,13 @@ async function seek(video: HTMLVideoElement, time: number) {
   });
 }
 
-type Media = { element: HTMLImageElement | HTMLVideoElement; url: string; duration: number };
+type Media = {
+  element: HTMLImageElement | HTMLVideoElement;
+  url: string;
+  duration: number;
+  metadata: MediaAssetMetadata;
+  projectAssetId?: string;
+};
 async function createMedia(file: File): Promise<Media> {
   const url = URL.createObjectURL(file);
   try {
@@ -138,7 +163,12 @@ async function createMedia(file: File): Promise<Media> {
       await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve(); image.onerror = () => reject(new Error(`Could not load ${file.name}.`)); image.src = url;
       });
-      return { element: image, url, duration: 0 };
+      return {
+        element: image,
+        url,
+        duration: 0,
+        metadata: { ...createUnknownMediaAssetMetadata(), width: image.naturalWidth, height: image.naturalHeight },
+      };
     }
     if (!file.type.startsWith("video/")) throw new Error("Choose an image or video file.");
     const video = document.createElement("video");
@@ -147,7 +177,17 @@ async function createMedia(file: File): Promise<Media> {
       video.onloadeddata = () => resolve(); video.onerror = () => reject(new Error(`Could not load ${file.name}.`));
     });
     if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error("Video duration could not be determined.");
-    return { element: video, url, duration: video.duration };
+    return {
+      element: video,
+      url,
+      duration: video.duration,
+      metadata: {
+        ...createUnknownMediaAssetMetadata(),
+        width: video.videoWidth,
+        height: video.videoHeight,
+        durationSeconds: video.duration,
+      },
+    };
   } catch (error) { URL.revokeObjectURL(url); throw error; }
 }
 
@@ -246,10 +286,15 @@ async function renderVideoFrames(start: number, duration: number, draw: (time: n
   if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
 }
 
-export default function Compositor({ hidden }: { hidden: boolean }) {
+export default function Compositor({ hidden, sharedMediaAssets = [] }: {
+  hidden: boolean;
+  sharedMediaAssets?: ProjectMediaAsset[];
+}) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CompNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [files, setFiles] = useState<Record<string, File>>({});
+  const [mediaReferences, setMediaReferences] = useState<Record<string, string>>({});
+  const [mediaMetadata, setMediaMetadata] = useState<Record<string, MediaAssetMetadata>>({});
   const [tracks, setTracks] = useState<Record<string, TrackingData>>({});
   const [selected, setSelected] = useState("");
   const [time, setTime] = useState(0);
@@ -368,9 +413,20 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
     let active = true;
     loadProject().then((project) => {
       if (!active) return;
-      if (project) { setNodes(project.nodes); setEdges(project.edges); setFiles(project.media); setTracks(project.tracks ?? {}); setMarks(project.marks ?? EMPTY_COMPOSITOR_MARKS); }
-      else setNodes([{ id: crypto.randomUUID(), type: "comp", position: { x: 700, y: 120 },
-        data: { kind: "viewer", label: labels.viewer, params: {} } }]);
+      if (project) {
+        setNodes(project.nodes);
+        setEdges(project.edges);
+        setFiles(project.media);
+        setMediaReferences(project.mediaRefs ?? {});
+        setMediaMetadata(normalizeMediaAssetMetadataMap(project.mediaMetadata));
+        setTracks(project.tracks ?? {});
+        setMarks(project.marks ?? EMPTY_COMPOSITOR_MARKS);
+      } else {
+        setMediaMetadata({});
+        setMediaReferences({});
+        setNodes([{ id: crypto.randomUUID(), type: "comp", position: { x: 700, y: 120 },
+          data: { kind: "viewer", label: labels.viewer, params: {} } }]);
+      }
       setReady(true); setStatus("Project loaded");
     }).catch((caught) => { if (active) { setError(caught instanceof Error ? caught.message : String(caught)); setStatus("Project could not be loaded"); } });
     return () => { active = false; };
@@ -380,28 +436,77 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
     if (!ready) return;
     const timer = window.setTimeout(() => {
       setStatus("Saving...");
-      const project = { nodes, edges, media: files, tracks, marks };
+      const localMedia = Object.fromEntries(Object.entries(files).filter(([id]) => !mediaReferences[id]));
+      const project = {
+        nodes,
+        edges,
+        media: localMedia,
+        mediaRefs: mediaReferences,
+        mediaMetadata,
+        tracks,
+        marks,
+      };
       saveQueue.current = saveQueue.current.catch(() => {}).then(() => saveProject(project));
       saveQueue.current.then(() => setStatus("Saved locally")).catch((caught) => {
         setStatus("Save failed"); setError(caught instanceof Error ? caught.message : String(caught));
       });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [ready, nodes, edges, files, tracks, marks]);
+  }, [ready, nodes, edges, files, mediaReferences, mediaMetadata, mediaVersion, tracks, marks]);
 
   useEffect(() => {
     let active = true;
     const pending = Object.entries(files).map(async ([id, file]) => {
-      if (mediaRef.current[id]) return;
+      if (mediaRef.current[id] && !mediaRef.current[id].projectAssetId) return;
       const loaded = await createMedia(file);
       if (!active) { URL.revokeObjectURL(loaded.url); return; }
       mediaRef.current[id] = loaded;
       setMediaDurations((current) => ({ ...current, [id]: loaded.duration }));
       setMediaVersion((value) => value + 1);
+      setMediaMetadata((current) => {
+        const saved = normalizeMediaAssetMetadata(current[id]);
+        return {
+          ...current,
+          [id]: {
+            ...saved,
+            width: loaded.metadata.width ?? saved.width,
+            height: loaded.metadata.height ?? saved.height,
+            durationSeconds: loaded.metadata.durationSeconds ?? saved.durationSeconds,
+          },
+        };
+      });
     });
     Promise.all(pending).catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : String(caught)); });
     return () => { active = false; };
   }, [files]);
+  useEffect(() => {
+    let active = true;
+    const pending = Object.entries(mediaReferences).map(async ([id, assetId]) => {
+      if (mediaRef.current[id]?.projectAssetId === assetId) return;
+      const file = await loadProjectMediaFile(assetId);
+      const loaded = await createMedia(file);
+      if (!active) { URL.revokeObjectURL(loaded.url); return; }
+      const previous = mediaRef.current[id];
+      if (previous) URL.revokeObjectURL(previous.url);
+      mediaRef.current[id] = { ...loaded, projectAssetId: assetId };
+      setMediaDurations((current) => ({ ...current, [id]: loaded.duration }));
+      setMediaVersion((value) => value + 1);
+      const asset = sharedMediaAssets.find((candidate) => candidate.id === assetId);
+      setMediaMetadata((current) => ({
+        ...current,
+        [id]: {
+          ...normalizeMediaAssetMetadata(asset?.metadata),
+          width: loaded.metadata.width,
+          height: loaded.metadata.height,
+          durationSeconds: loaded.metadata.durationSeconds,
+        },
+      }));
+    });
+    Promise.all(pending).catch((caught) => {
+      if (active) setError(caught instanceof Error ? caught.message : String(caught));
+    });
+    return () => { active = false; };
+  }, [mediaReferences, sharedMediaAssets]);
   useEffect(() => () => {
     Object.values(mediaRef.current).forEach((item) => URL.revokeObjectURL(item.url));
     mediaRef.current = {};
@@ -455,7 +560,16 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
     return () => window.clearTimeout(timer);
   }, [hidden]);
 
-  const snapshot = (): HistorySnapshot => ({ nodes, edges, files, tracks, selected, marks });
+  const snapshot = (): HistorySnapshot => ({
+    nodes,
+    edges,
+    files,
+    mediaRefs: mediaReferences,
+    mediaMetadata,
+    tracks,
+    selected,
+    marks,
+  });
   const updateHistoryAvailability = () => setHistoryAvailability({ undo: history.current.canUndo, redo: history.current.canRedo });
   const recordHistory = () => {
     if (historyGroup.current?.recorded) return;
@@ -473,11 +587,17 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
     const loaded: Record<string, Media> = {};
     try {
       for (const [id, file] of Object.entries(next.files)) {
-        if (files[id] !== file || !mediaRef.current[id]) loaded[id] = await createMedia(file);
+        const current = mediaRef.current[id];
+        if (files[id] !== file || !current || current.projectAssetId) loaded[id] = await createMedia(file);
+      }
+      for (const [id, assetId] of Object.entries(next.mediaRefs)) {
+        if (mediaRef.current[id]?.projectAssetId !== assetId) {
+          loaded[id] = { ...await createMedia(await loadProjectMediaFile(assetId)), projectAssetId: assetId };
+        }
       }
       await drawing.current;
       for (const [id, item] of Object.entries(mediaRef.current)) {
-        if (!next.files[id] || loaded[id]) {
+        if ((!next.files[id] && !next.mediaRefs[id]) || loaded[id]) {
           URL.revokeObjectURL(item.url);
           delete mediaRef.current[id];
         }
@@ -485,7 +605,9 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
       Object.assign(mediaRef.current, loaded);
       const current = snapshot();
       history.current.complete(direction, current);
-      setNodes(next.nodes); setEdges(next.edges); setFiles(next.files); setTracks(next.tracks); setMarks(next.marks);
+      setNodes(next.nodes); setEdges(next.edges); setFiles(next.files); setMediaReferences(next.mediaRefs);
+      setMediaMetadata(next.mediaMetadata);
+      setTracks(next.tracks); setMarks(next.marks);
       const durations = Object.fromEntries(Object.entries(mediaRef.current).map(([id, item]) => [id, item.duration]));
       setMediaDurations(durations);
       setSelected(next.nodes.some((node) => node.id === next.selected) ? next.selected : "");
@@ -524,7 +646,7 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
       } else {
         Object.values(mediaRef.current).forEach((item) => URL.revokeObjectURL(item.url));
         mediaRef.current = {};
-        setFiles({}); setMediaDurations({}); setTracks({}); setMarks(EMPTY_COMPOSITOR_MARKS);
+        setFiles({}); setMediaReferences({}); setMediaMetadata({}); setMediaDurations({}); setTracks({}); setMarks(EMPTY_COMPOSITOR_MARKS);
         setNodes(graph.nodes); setEdges(graph.edges); setSelected(graph.nodes[0].id); setTime(0);
       }
       setError(""); setRenderError("");
@@ -702,10 +824,49 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
       if (old) URL.revokeObjectURL(old.url);
       mediaRef.current[selectedNode.id] = loaded;
       setMediaDurations((current) => ({ ...current, [selectedNode.id]: loaded.duration }));
+      setMediaMetadata((current) => ({ ...current, [selectedNode.id]: loaded.metadata }));
+      setMediaReferences((current) => {
+        const next = { ...current };
+        delete next[selectedNode.id];
+        return next;
+      });
       setFiles((current) => ({ ...current, [selectedNode.id]: file }));
       setMediaVersion((current) => current + 1); setTracks({}); setTime(0); setError("");
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(false); }
+  };
+  const chooseSharedAsset = async (assetId: string) => {
+    if (!selectedNode || selectedNode.data.kind !== "media" || !assetId) return;
+    const asset = sharedMediaAssets.find((candidate) => candidate.id === assetId);
+    if (!asset) { setError("The selected shared media asset is unavailable."); return; }
+    setBusy(true);
+    try {
+      const loaded = await createMedia(await loadProjectMediaFile(assetId));
+      await drawing.current;
+      recordHistory();
+      const old = mediaRef.current[selectedNode.id];
+      if (old) URL.revokeObjectURL(old.url);
+      mediaRef.current[selectedNode.id] = { ...loaded, projectAssetId: assetId };
+      setMediaDurations((current) => ({ ...current, [selectedNode.id]: loaded.duration }));
+      setMediaMetadata((current) => ({
+        ...current,
+        [selectedNode.id]: {
+          ...normalizeMediaAssetMetadata(asset.metadata),
+          width: loaded.metadata.width,
+          height: loaded.metadata.height,
+          durationSeconds: loaded.metadata.durationSeconds,
+        },
+      }));
+      setMediaReferences((current) => ({ ...current, [selectedNode.id]: assetId }));
+      setFiles((current) => {
+        const next = { ...current };
+        delete next[selectedNode.id];
+        return next;
+      });
+      setMediaVersion((current) => current + 1); setTracks({}); setTime(0); setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally { setBusy(false); }
   };
   const runTracking = async (resume = false) => {
     if (!selectedNode || selectedNode.data.kind !== "tracker") return;
@@ -930,8 +1091,22 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
             <input type="color" disabled={busy} value={String(params.solidColor ?? "#ffffff")} onChange={(event) => update("solidColor", event.target.value)} />
           </label> : params?.sourceMode === "transparent" ? <small>Checkerboard indicates transparency in the Viewer. PNG preserves transparency; WebM does not preserve alpha.</small> : <label key="file">Image or video
             <input type="file" accept="image/*,video/*" disabled={busy} onChange={(event) => void chooseFile(event.target.files?.[0])} />
-            <small>{files[selectedNode.id]?.name ?? "No file selected"}</small>
+            <small>{files[selectedNode.id]?.name
+              ?? sharedMediaAssets.find((asset) => asset.id === mediaReferences[selectedNode.id])?.name
+              ?? "No file selected"}</small>
           </label>}
+          {params?.sourceMode !== "solid" && params?.sourceMode !== "transparent"
+            && sharedMediaAssets.some((asset) => asset.mediaKind === "image" || asset.mediaKind === "video") && (
+              <label>Shared project media
+                <select disabled={busy} value={mediaReferences[selectedNode.id] ?? ""}
+                  onChange={(event) => void chooseSharedAsset(event.target.value)}>
+                  <option value="">Choose a shared asset…</option>
+                  {sharedMediaAssets.filter((asset) => asset.mediaKind === "image" || asset.mediaKind === "video")
+                    .map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
+                </select>
+                <small>The compositor saves the asset ID, not another copy of the media file.</small>
+              </label>
+            )}
         </>}
         {selectedNode.data.kind === "transform" && <>{([
           ["x", "X", undefined, undefined], ["y", "Y", undefined, undefined], ["scale", "Scale %", 1, 1000],
@@ -1242,6 +1417,12 @@ export default function Compositor({ hidden }: { hidden: boolean }) {
           const removed = changes.filter((change) => change.type === "remove").map((change) => change.id);
           if (removed.length) {
             setFiles((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !removed.includes(id))));
+            setMediaReferences((current) => Object.fromEntries(
+              Object.entries(current).filter(([id]) => !removed.includes(id)),
+            ));
+            setMediaMetadata((current) => Object.fromEntries(Object.entries(current)
+              .filter(([id]) => !removed.includes(id))
+              .map(([id, value]) => [id, normalizeMediaAssetMetadata(value)])));
             setMediaDurations((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !removed.includes(id))));
             for (const id of removed) {
               const media = mediaRef.current[id];

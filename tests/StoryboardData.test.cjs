@@ -38,10 +38,48 @@ test("valid storyboard content survives normalization and JSON round trips", () 
         durationSeconds: 4.5,
         notes: "Blue hour.",
         frame: "data:image/png;base64,ZmFrZQ==",
+        frameMetadata: {
+          width: 2048,
+          height: 1152,
+          durationSeconds: null,
+          frameRate: null,
+          color: { space: null, ocioConfig: null, sceneLinear: null },
+          alphaMode: "unknown",
+        },
       }],
     }],
   };
   assert.deepEqual(normalizeStoryboard(JSON.parse(JSON.stringify(storyboard))), storyboard);
+});
+
+test("legacy storyboard frames receive unknown metadata and known metadata survives round trips", () => {
+  const shots = normalizeStoryboard({
+    version: 1,
+    scenes: [{ id: "scene", shots: [
+      { id: "legacy", frame: "data:image/png;base64,ZmFrZQ==" },
+      {
+        id: "known",
+        frame: "data:image/png;base64,ZmFrZQ==",
+        frameMetadata: {
+          width: 1920,
+          height: 1080,
+          frameRate: { numerator: 24000, denominator: 1001 },
+          color: { space: "ACEScg", ocioConfig: "studio-v1", sceneLinear: true },
+          alphaMode: "straight",
+        },
+      },
+    ] }],
+  }).scenes[0].shots;
+  assert.deepEqual(shots[0].frameMetadata, {
+    width: null,
+    height: null,
+    durationSeconds: null,
+    frameRate: null,
+    color: { space: null, ocioConfig: null, sceneLinear: null },
+    alphaMode: "unknown",
+  });
+  assert.equal(shots[1].frameMetadata.color.space, "ACEScg");
+  assert.deepEqual(shots[1].frameMetadata.frameRate, { numerator: 24000, denominator: 1001 });
 });
 
 test("malformed fields are ignored and all scene and shot IDs are unique", () => {

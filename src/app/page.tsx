@@ -37,6 +37,13 @@ import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 import Compositor from "@/components/Compositor";
 import StoryboardTab from "@/components/StoryboardTab";
 import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
+import { rebindStoryboardWorkflowReferences, resolveWorkflowStoryboardFrames } from "@/lib/storyboard-workflow";
+import {
+  createUnknownMediaAssetMetadata,
+  workflowOutputMediaId,
+  type ProjectMediaAsset,
+} from "@/lib/project-media";
+import { listProjectMediaAssets, registerProjectMediaAsset } from "@/lib/project-media-storage";
 import CanvasGroups from "@/components/CanvasGroups";
 import { ExampleDragPreview, useExampleDrag } from "@/components/ExampleDrag";
 import OllamaChat from "@/components/OllamaChat";
@@ -272,6 +279,7 @@ export default function Page() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const [storyboard, setStoryboard] = useState<StoryboardData>(() => createEmptyStoryboard());
+  const [projectMediaAssets, setProjectMediaAssets] = useState<ProjectMediaAsset[]>([]);
   const groupCanvasRef = useRef<HTMLElement>(null);
   const groupFlowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
@@ -295,6 +303,23 @@ export default function Page() {
   const lastSavedPayload = useRef("");
   const workflowsRef = useRef<SavedWorkflow[]>([]);
   const activeWorkflowIdRef = useRef("");
+  const registeredMediaUrls = useRef(new Map<string, string>());
+
+  const refreshProjectMediaAssets = useCallback(async () => {
+    setProjectMediaAssets(await listProjectMediaAssets());
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    listProjectMediaAssets().then((assets) => {
+      if (active) setProjectMediaAssets(assets);
+    }).catch((error: unknown) => {
+      if (!active) return;
+      setStorageError(error instanceof Error ? error.message : "Could not load shared media.");
+      setStorageStatus("Unable to load shared media");
+    });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -356,23 +381,64 @@ export default function Page() {
     document.addEventListener("pointerdown", closeOnOutsideClick);
     return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
   }, [runModeMenuOpen]);
-  const videoAssets = useMemo<VideoAsset[]>(() => nodes.flatMap((node) => {
-    const data = node.data as {
-      type?: string;
-      title?: string;
-      params?: { title?: string };
-      outputs?: Record<string, unknown>;
-    };
-    if (!data.type?.startsWith("video/")) return [];
-    const label = data.params?.title || data.title || registry[data.type]?.label || "Video";
-    return Object.entries(data.outputs ?? {})
-      .filter(([, value]) => typeof value === "string" && /^https?:\/\//i.test(value))
-      .map(([port, src]) => ({
-        id: `${node.id}:${port}`,
-        name: port === "video" ? label : `${label} · ${port.replaceAll("_", " ")}`,
-        src: src as string,
-      }));
-  }), [nodes]);
+  const videoAssets = useMemo<VideoAsset[]>(() => projectMediaAssets
+    .filter((asset) => asset.mediaKind === "video" && asset.id.startsWith("workflow-output:"))
+    .map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      src: asset.source.kind === "url" ? asset.source.url : "",
+      mediaId: asset.id,
+      projectAssetId: asset.id,
+      metadata: asset.metadata,
+    })), [projectMediaAssets]);
+
+  useEffect(() => {
+    if (!storageReady || !activeWorkflowId) return;
+    const pending: Promise<ProjectMediaAsset>[] = [];
+    for (const node of nodes) {
+      const data = node.data as {
+        type?: string;
+        title?: string;
+        params?: { title?: string };
+        outputs?: Record<string, unknown>;
+      };
+      const definition = data.type ? registry[data.type] : undefined;
+      if (!data.type || !definition || ["Input", "Output", "Assistant"].includes(definition.category)) continue;
+      for (const [port, value] of Object.entries(data.outputs ?? {})) {
+        const mediaKind = definition.outputs[port];
+        if ((mediaKind !== "video" && mediaKind !== "image")
+          || typeof value !== "string" || !/^https?:\/\//i.test(value)) continue;
+        const id = workflowOutputMediaId(activeWorkflowId, node.id, port);
+        if (registeredMediaUrls.current.get(id) === value) continue;
+        registeredMediaUrls.current.set(id, value);
+        const name = data.params?.title || data.title || definition.label || "Generated video";
+        const asset: ProjectMediaAsset = {
+          id,
+          name: port === "video" ? name : `${name} · ${port.replaceAll("_", " ")}`,
+          mediaKind,
+          mimeType: null,
+          source: { kind: "url", url: value },
+          metadata: createUnknownMediaAssetMetadata(),
+        };
+        pending.push(registerProjectMediaAsset(asset).catch((error: unknown) => {
+          if (registeredMediaUrls.current.get(id) === value) registeredMediaUrls.current.delete(id);
+          throw error;
+        }));
+      }
+    }
+    if (!pending.length) return;
+    void Promise.allSettled(pending).then(async (results) => {
+      await refreshProjectMediaAssets();
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) {
+        setStorageError(failure.reason instanceof Error ? failure.reason.message : "Could not register generated media.");
+        setStorageStatus("Unable to register shared media");
+      }
+    }).catch((error: unknown) => {
+      setStorageError(error instanceof Error ? error.message : "Could not refresh shared media.");
+      setStorageStatus("Unable to refresh shared media");
+    });
+  }, [activeWorkflowId, nodes, refreshProjectMediaAssets, storageReady]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -715,15 +781,24 @@ export default function Page() {
   const executeGraph = async (targetIds?: string[], lowSettings = false) => {
     if (runInProgress.current) return;
     const shouldUseLowSettings = lowSettings && !targetIds;
-    const graph: Graph = {
-      nodes: nodes.map((n) => {
-        const data = n.data as { type: string; params: Record<string, unknown> };
-        return { id: n.id, type: data.type, params: data.params };
-      }),
-      edges: edges.map((e) => ({
-        source: e.source, sourceHandle: e.sourceHandle!, target: e.target, targetHandle: e.targetHandle!,
-      })),
-    };
+    let graph: Graph;
+    try {
+      const sourceWorkflows = workflowsRef.current.map((workflow) => workflow.id === activeWorkflowIdRef.current
+        ? { ...workflow, storyboard }
+        : workflow);
+      graph = {
+        nodes: resolveWorkflowStoryboardFrames(nodes.map((n) => {
+          const data = n.data as { type: string; params: Record<string, unknown> };
+          return { id: n.id, type: data.type, params: data.params };
+        }), sourceWorkflows),
+        edges: edges.map((e) => ({
+          source: e.source, sourceHandle: e.sourceHandle!, target: e.target, targetHandle: e.targetHandle!,
+        })),
+      };
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not resolve a storyboard frame.");
+      return;
+    }
     const issues = validateWorkflow(graph, targetIds);
     setValidationIssues(issues);
     setShowValidation(issues.length > 0);
@@ -796,6 +871,38 @@ export default function Page() {
   };
   const run = () => { void executeGraph(undefined, runMode === "low"); };
   const runNode = (nodeId: string) => { void executeGraph([nodeId]); };
+  const addStoryboardFrameToWorkflow = (sceneId: string, shotId: string) => {
+    const workflowId = activeWorkflowIdRef.current;
+    const scene = storyboard.scenes.find((candidate) => candidate.id === sceneId);
+    const shot = scene?.shots.find((candidate) => candidate.id === shotId);
+    if (!storageReady || !workflowId || !scene || !shot?.frame) return;
+    const shotIndex = scene.shots.findIndex((candidate) => candidate.id === shotId);
+    const shotName = shot.title.trim() || `Shot ${shotIndex + 1}`;
+    setNodes((current) => {
+      const imageInputCount = current.filter((node) =>
+        (node.data as { type?: string }).type === "input/image").length;
+      return [...current, {
+        id: `input/image-${crypto.randomUUID()}`,
+        type: "workflow",
+        position: { x: 80, y: 80 + imageInputCount * 150 },
+        data: {
+          type: "input/image",
+          params: {
+            url: "",
+            storyboardFrameRef: { kind: "storyboard-frame", workflowId, sceneId, shotId },
+          },
+          status: "idle",
+          outputs: {},
+          log: "",
+          title: `Storyboard guide · ${scene.title} / ${shotName}`,
+          paramLabels: { url: "Image (upload or paste URL)" },
+        },
+      } as Node];
+    });
+    setActiveView("workflow");
+    setStorageError("");
+    setStorageStatus("Storyboard frame added as a workflow image input");
+  };
 
   const persistWorkflowList = (nextWorkflows: SavedWorkflow[], nextActiveId: string) => {
     const serialized = JSON.stringify({ version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows });
@@ -885,6 +992,7 @@ export default function Page() {
     }));
     const blob = new Blob([JSON.stringify({
       version: 1,
+      id: activeWorkflowIdRef.current,
       name: workflowName.trim() || DEFAULT_WORKFLOW_NAME,
       nodes: savedNodes,
       edges,
@@ -905,11 +1013,26 @@ export default function Page() {
   const importWorkflow = async (file?: File) => {
     if (!file) return;
     try {
-      const imported = normalizeWorkflow(JSON.parse(await file.text()));
+      const raw: unknown = JSON.parse(await file.text());
+      const imported = normalizeWorkflow(raw);
       if (!saveWorkflowLocally()) return;
+      const workflowId = crypto.randomUUID();
+      const sourceWorkflowId = isRecord(raw) && typeof raw.id === "string" ? raw.id : "";
       const workflow: SavedWorkflow = {
-        id: crypto.randomUUID(),
+        id: workflowId,
         ...imported,
+        nodes: sourceWorkflowId
+          ? rebindStoryboardWorkflowReferences(imported.nodes.map((node) => {
+            const data = node.data as { type: string; params: Record<string, unknown> };
+            return { id: node.id, type: data.type, params: data.params };
+          }), sourceWorkflowId, workflowId).map((resolved, index) => ({
+            ...imported.nodes[index],
+            data: {
+              ...imported.nodes[index].data,
+              params: resolved.params,
+            },
+          }))
+          : imported.nodes,
         updatedAt: Date.now(),
       };
       const next = [...workflowsRef.current, workflow];
@@ -1390,9 +1513,11 @@ export default function Page() {
         )}
       </main>
       </div>
-      <VideoEditor assets={videoAssets} hidden={activeView !== "editor"} />
-      <Compositor hidden={activeView !== "compositor"} />
-      <StoryboardTab storyboard={storyboard} onChange={setStoryboard} hidden={activeView !== "storyboard"}
+      <VideoEditor assets={videoAssets} onProjectMediaChange={refreshProjectMediaAssets}
+        hidden={activeView !== "editor"} />
+      <Compositor hidden={activeView !== "compositor"} sharedMediaAssets={projectMediaAssets} />
+      <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
+        hidden={activeView !== "storyboard"}
         saveError={storageStatus.startsWith("Unable to") ? storageError : ""} />
       <ExampleDragPreview preview={exampleDrag.preview} />
     </div>

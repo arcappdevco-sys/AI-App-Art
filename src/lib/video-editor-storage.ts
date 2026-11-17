@@ -1,5 +1,7 @@
 "use client";
 
+import type { MediaAssetMetadata } from "./project-media";
+
 export type StoredEditorClip = {
   id: string;
   name: string;
@@ -9,6 +11,8 @@ export type StoredEditorClip = {
   trimEnd: number;
   audioWaveform?: number[] | null;
   keyer?: StoredEditorKeyer;
+  metadata?: MediaAssetMetadata;
+  projectAssetId?: string;
 };
 
 export type StoredEditorKeyer = {
@@ -32,6 +36,8 @@ export type StoredEditorAudioClip = {
   trimStart: number;
   trimEnd: number;
   volume: number;
+  metadata?: MediaAssetMetadata;
+  projectAssetId?: string;
 };
 
 export type StoredEditorTransition = {
@@ -54,6 +60,8 @@ export type StoredEditorAsset = {
   id: string;
   name: string;
   mediaId: string;
+  metadata?: MediaAssetMetadata;
+  projectAssetId?: string;
 };
 
 export type StoredVideoEditorState = {

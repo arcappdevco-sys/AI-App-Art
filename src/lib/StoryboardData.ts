@@ -1,3 +1,5 @@
+import { normalizeMediaAssetMetadata, type MediaAssetMetadata } from "./project-media";
+
 export const STORYBOARD_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "21:9"] as const;
 export const STORYBOARD_SHOT_TYPES = [
   "Extreme wide",
@@ -39,6 +41,7 @@ export type StoryboardShot = {
   durationSeconds: number | null;
   notes: string;
   frame: string | null;
+  frameMetadata?: MediaAssetMetadata;
 };
 
 export type StoryboardScene = {
@@ -106,6 +109,7 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     && /^data:image\/(?:png|jpeg|webp);base64,/i.test(value.frame)
     ? value.frame
     : null;
+  const frameMetadata = frame ? normalizeMediaAssetMetadata(value.frameMetadata) : undefined;
   return {
     id,
     title: typeof value.title === "string" ? value.title : "",
@@ -119,6 +123,7 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     durationSeconds,
     notes: typeof value.notes === "string" ? value.notes : "",
     frame,
+    ...(frameMetadata ? { frameMetadata } : {}),
   };
 }
 

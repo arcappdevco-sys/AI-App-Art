@@ -14,6 +14,7 @@ import {
 } from "@/lib/StoryboardData";
 import { STORYBOARD_FRAME_MODELS, buildStoryboardFramePrompt, generateStoryboardFrame, type StoryboardFrameModelId } from "@/lib/StoryboardFrameGeneration";
 import { storyboardImageDataUrl } from "@/lib/StoryboardImages";
+import { inspectImageDataUrlMetadata } from "@/lib/project-media-browser";
 import { normalizeGeneratedStoryboard } from "@/lib/StoryboardScript";
 
 type ShotLocation = { sceneId: string; shotId: string; sceneIndex: number; shotIndex: number };
@@ -55,11 +56,13 @@ function nextSceneNumber(scenes: StoryboardScene[]) {
 export default function StoryboardTab({
   storyboard,
   onChange,
+  onSendFrame,
   hidden,
   saveError,
 }: {
   storyboard: StoryboardData;
   onChange: (value: SetStateAction<StoryboardData>) => void;
+  onSendFrame: (sceneId: string, shotId: string) => void;
   hidden: boolean;
   saveError: string;
 }) {
@@ -142,11 +145,14 @@ export default function StoryboardTab({
     try {
       const prompt = buildStoryboardFramePrompt(scene, shot, storyboard.aspectRatio);
       const frame = await generateStoryboardFrame(frameModel, prompt, storyboard.aspectRatio);
+      const frameMetadata = await inspectImageDataUrlMetadata(frame);
       onChange((current) => ({
         ...current,
         scenes: current.scenes.map((item) => ({
           ...item,
-          shots: item.shots.map((candidate) => candidate.id === shot.id ? { ...candidate, frame } : candidate),
+          shots: item.shots.map((candidate) => candidate.id === shot.id
+            ? { ...candidate, frame, frameMetadata }
+            : candidate),
         })),
       }));
     } catch (error) {
@@ -296,7 +302,8 @@ export default function StoryboardTab({
     if (!file) return;
     try {
       const frame = await storyboardImageDataUrl(file);
-      updateShot(sceneId, shotId, { frame });
+      const frameMetadata = await inspectImageDataUrlMetadata(frame);
+      updateShot(sceneId, shotId, { frame, frameMetadata });
       setImageErrors((current) => ({ ...current, [shotId]: "" }));
     } catch (error) {
       setImageErrors((current) => ({
@@ -506,6 +513,9 @@ export default function StoryboardTab({
                                   }),
                                 }));
                               }}>Duplicate</button>
+                            {shot.frame && <button type="button" title="Add this frame to the workflow"
+                              aria-label={`Use Shot ${number} frame in workflow`}
+                              onClick={() => onSendFrame(scene.id, shot.id)}>To workflow</button>}
                             <button type="button" className="storyboard-delete-action"
                               aria-label={`Delete Shot ${number}`} title="Delete shot" onClick={() => {
                                 if (shotHasContent(shot)
@@ -554,7 +564,7 @@ export default function StoryboardTab({
                               <button type="button" className="storyboard-remove-image"
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  updateShot(scene.id, shot.id, { frame: null });
+                                  updateShot(scene.id, shot.id, { frame: null, frameMetadata: undefined });
                                   setImageErrors((current) => ({ ...current, [shot.id]: "" }));
                                 }}>Remove image</button>
                             </>

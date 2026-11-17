@@ -332,6 +332,12 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   );
 
   const setParam = (key: string, value: any) => {
+    if (d.type === "input/image" && key === "url") {
+      const params = { ...d.params, [key]: value };
+      delete params.storyboardFrameRef;
+      updateNodeData(id, { params });
+      return;
+    }
     if ((isPromptAssistant || isPromptNode) && ["model", "target"].includes(key)) {
       updateNodeData(id, (n: any) => ({
         params: {
@@ -1506,6 +1512,11 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           </button>
         )}
       </div>
+      {d.type === "input/image" && d.params.storyboardFrameRef && (
+        <div className="ff-node-hint">
+          This storyboard frame resolves when the workflow runs. Connect it to an image input; Google Gemini Image supports inline reference frames.
+        </div>
+      )}
       {def.integration === "pending" && (
         <div className="ff-node-notice">API setup required before this model can run.</div>
       )}
