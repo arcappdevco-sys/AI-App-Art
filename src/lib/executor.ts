@@ -1,5 +1,6 @@
 import { registry } from "./registry";
 import { getLowSettingsProfile } from "./runModeLowSettings";
+import { formatCameraTrackGuide } from "./camera-guide";
 import type { Graph, NodeStatus } from "./types";
 
 type Outputs = Record<string, unknown>;
@@ -112,6 +113,18 @@ export async function runGraph(graph: Graph, o: RunOpts) {
       } catch (err) {
         o.onStatus(id, "idle", "Skipped: an upstream node failed");
         throw err;
+      }
+
+      const cameraTrackJson = params.camera_track_json;
+      if (def.category === "Video" && typeof cameraTrackJson === "string" && cameraTrackJson.trim()) {
+        try {
+          const guide = formatCameraTrackGuide(cameraTrackJson);
+          const prompt = typeof inputs.prompt === "string" ? inputs.prompt.trim() : "";
+          inputs.prompt = prompt ? `${prompt}\n\n${guide}` : guide;
+        } catch (error) {
+          o.onStatus(id, "error", error instanceof Error ? error.message : "Camera track is invalid.");
+          throw error;
+        }
       }
 
       const key = JSON.stringify([node.type, params, inputs]);

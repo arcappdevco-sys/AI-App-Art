@@ -15,6 +15,7 @@ const {
   normalizeMediaAssetMetadata,
   normalizeProjectMediaAsset,
   workflowOutputMediaId,
+  workflowOutputMediaSource,
 } = require(path.join(__dirname, "..", "src", "lib", "project-media.ts"));
 
 test("legacy assets receive explicit unknown metadata", () => {
@@ -59,4 +60,35 @@ test("workflow output asset IDs are stable and require all source identifiers", 
   assert.equal(workflowOutputMediaId("workflow-1", "node-1", "video"),
     "workflow-output:workflow-1:node-1:video");
   assert.throws(() => workflowOutputMediaId("", "node-1", "video"), /requires workflow, node, and port IDs/);
+});
+
+test("workflow image outputs support remote and inline sources", () => {
+  assert.deepEqual(workflowOutputMediaSource("image", "https://cdn.example/image.png"), {
+    kind: "url",
+    url: "https://cdn.example/image.png",
+  });
+  assert.deepEqual(workflowOutputMediaSource("image", "data:image/png;base64,ZmFrZQ=="), {
+    kind: "data-url",
+    dataUrl: "data:image/png;base64,ZmFrZQ==",
+  });
+  assert.equal(workflowOutputMediaSource("video", "data:video/mp4;base64,ZmFrZQ=="), null);
+  assert.equal(workflowOutputMediaSource("audio", "https://cdn.example/audio.mp3"), null);
+});
+
+test("shared asset revisions are normalized and validated", () => {
+  const asset = normalizeProjectMediaAsset({
+    id: "versioned-asset",
+    name: "Versioned asset",
+    mediaKind: "image",
+    source: { kind: "storage", storageKey: "versioned-asset" },
+    revision: 3,
+  });
+  assert.equal(asset.revision, 3);
+  assert.throws(() => normalizeProjectMediaAsset({
+    id: "invalid-revision",
+    name: "Invalid revision",
+    mediaKind: "image",
+    source: { kind: "storage", storageKey: "invalid-revision" },
+    revision: -1,
+  }), /non-negative safe integer/);
 });

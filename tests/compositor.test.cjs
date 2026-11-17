@@ -9,13 +9,20 @@ require.extensions[".ts"] = (module, filename) => {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, filename);
 };
-const { trackPatch, interpolateTrack, reachesCompositorNode, zoomViewerAt, compositorMediaSource, compositorBypassInput, compositorRange, nextCompositorTime, COMPOSITOR_INPUTS } = require(path.join(__dirname, "..", "src", "lib", "compositor.ts"));
+const { trackPatch, interpolateTrack, reachesCompositorNode, zoomViewerAt, compositorImageFit, compositorMediaSource, compositorBypassInput, compositorRange, nextCompositorTime, COMPOSITOR_INPUTS } = require(path.join(__dirname, "..", "src", "lib", "compositor.ts"));
 const { applyColorCorrection, curveTable, getCurve } = require(path.join(__dirname, "..", "src", "lib", "compositor-color.ts"));
 const { COMPOSITOR_NODE_OPTIONS, COMPOSITOR_TEMPLATES, appendCompositorTemplate, createCompositorNode, createCompositorTemplate } = require(path.join(__dirname, "..", "src", "lib", "compositor-templates.ts"));
 const { applyCompositorMask, combineMaskAlpha, convertMaskGeometry, createMaskGeometry, createMaskLayer, getMaskLayers, maskGeometryAt, maskGeometryPath, removeMaskKeyframe, setMaskKeyframe, updateMaskGeometry, validateMaskProjection } = require(path.join(__dirname, "..", "src", "lib", "compositor-mask.ts"));
 const { applyCompositorKeyer } = require(path.join(__dirname, "..", "src", "lib", "compositor-keyer.ts"));
 const { CompositorHistory, compositorHistoryShortcut } = require(path.join(__dirname, "..", "src", "lib", "compositor-history.ts"));
 const { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, invertTrackingMatrix, multiplyTrackingMatrices, planarTrackingMatrix, similarityTrackingMatrix, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingPixels } = require(path.join(__dirname, "..", "src", "lib", "compositor-tracking.ts"));
+
+test("compositor media fit preserves source aspect ratio and centers letterboxed footage", () => {
+  assert.deepEqual(compositorImageFit(1920, 1080, 640, 360), { x: 0, y: 0, width: 640, height: 360 });
+  assert.deepEqual(compositorImageFit(1000, 1000, 640, 360), { x: 140, y: 0, width: 360, height: 360 });
+  assert.deepEqual(compositorImageFit(1080, 1920, 640, 360), { x: 218.75, y: 0, width: 202.5, height: 360 });
+  assert.throws(() => compositorImageFit(0, 1080, 640, 360), /positive finite/);
+});
 
 test("two-point tracking maps both points with rotation and scale", () => {
   const start = [{ x: 10, y: 20 }, { x: 30, y: 20 }];

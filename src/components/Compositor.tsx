@@ -5,7 +5,7 @@ import {
   ReactFlow, Background, Controls, Handle, Position, addEdge, useEdgesState, useNodesState,
   type Connection, type Edge, type NodeProps, type ReactFlowInstance,
 } from "@xyflow/react";
-import { COMPOSITOR_INPUTS, COMPOSITOR_LABELS, DEFAULT_VIEWER_TRANSFORM, EMPTY_COMPOSITOR_MARKS, compositorBypassInput, compositorMediaSource, compositorRange, nextCompositorTime, reachesCompositorNode, trackPatch, zoomViewerAt, type CompositorMarks, type CompositorParamValue, type CompositorParams } from "@/lib/compositor";
+import { COMPOSITOR_DESCRIPTIONS, COMPOSITOR_INPUTS, COMPOSITOR_LABELS, DEFAULT_VIEWER_TRANSFORM, EMPTY_COMPOSITOR_MARKS, compositorBypassInput, compositorImageFit, compositorMediaSource, compositorRange, nextCompositorTime, reachesCompositorNode, trackPatch, zoomViewerAt, type CompositorMarks, type CompositorParamValue, type CompositorParams } from "@/lib/compositor";
 import { COMPOSITOR_NODE_OPTIONS, COMPOSITOR_TEMPLATES, appendCompositorTemplate, createCompositorNode, createCompositorTemplate, type CompositorNode, type CompositorNodeOption, type TemplateId } from "@/lib/compositor-templates";
 import { applyCompositorMask, convertMaskGeometry, createMaskGeometry, createMaskLayer, getMaskLayers, hasMaskKeyframeAt, maskGeometryAt, removeMaskKeyframe, setMaskKeyframe, updateMaskGeometry, validateMaskProjection, type MaskGeometry, type MaskLayer, type MaskShapeKind } from "@/lib/compositor-mask";
 import { applyColorCorrection } from "@/lib/compositor-color";
@@ -45,7 +45,8 @@ const labels = COMPOSITOR_LABELS;
 
 function CompNodeView({ data }: NodeProps<CompNode>) {
   const inputs = COMPOSITOR_INPUTS[data.kind];
-  return <div className={`comp-node${data.disabled ? " is-disabled" : ""}`}>
+  return <div className={`comp-node${data.disabled ? " is-disabled" : ""}`}
+    title={`${data.label}: ${COMPOSITOR_DESCRIPTIONS[data.kind]}`}>
     <strong>{data.label}</strong>
     {data.disabled && <div className="comp-node-disabled">Disabled</div>}
     {data.kind === "media" && <div className="comp-node-hint">{data.params.sourceMode === "solid" ? "Solid color" :
@@ -154,6 +155,7 @@ type Media = {
   duration: number;
   metadata: MediaAssetMetadata;
   projectAssetId?: string;
+  projectAssetRevision?: number;
 };
 async function createMedia(file: File): Promise<Media> {
   const url = URL.createObjectURL(file);
@@ -225,7 +227,8 @@ async function renderGraph(
         const item = media[id];
         if (!item) throw new Error(`${node.data.label}: choose a media file.`);
         if (item.element instanceof HTMLVideoElement) await seek(item.element, time);
-        ctx.drawImage(item.element, 0, 0, WIDTH, HEIGHT);
+        const fit = compositorImageFit(item.metadata.width ?? 0, item.metadata.height ?? 0, WIDTH, HEIGHT);
+        ctx.drawImage(item.element, fit.x, fit.y, fit.width, fit.height);
       } else if (node.data.kind === "tracker") {
         throw new Error("Tracker outputs motion only. Connect it to a Transform or Mask motion input.");
       } else if (node.data.kind === "merge") {
@@ -482,16 +485,18 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
   useEffect(() => {
     let active = true;
     const pending = Object.entries(mediaReferences).map(async ([id, assetId]) => {
-      if (mediaRef.current[id]?.projectAssetId === assetId) return;
-      const file = await loadProjectMediaFile(assetId);
+      const asset = sharedMediaAssets.find((candidate) => candidate.id === assetId);
+      const revision = asset?.revision ?? 0;
+      if (mediaRef.current[id]?.projectAssetId === assetId
+        && mediaRef.current[id]?.projectAssetRevision === revision) return;
+      const file = await loadProjectMediaFile(assetId, revision);
       const loaded = await createMedia(file);
       if (!active) { URL.revokeObjectURL(loaded.url); return; }
       const previous = mediaRef.current[id];
       if (previous) URL.revokeObjectURL(previous.url);
-      mediaRef.current[id] = { ...loaded, projectAssetId: assetId };
+      mediaRef.current[id] = { ...loaded, projectAssetId: assetId, projectAssetRevision: revision };
       setMediaDurations((current) => ({ ...current, [id]: loaded.duration }));
       setMediaVersion((value) => value + 1);
-      const asset = sharedMediaAssets.find((candidate) => candidate.id === assetId);
       setMediaMetadata((current) => ({
         ...current,
         [id]: {
@@ -591,8 +596,14 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
         if (files[id] !== file || !current || current.projectAssetId) loaded[id] = await createMedia(file);
       }
       for (const [id, assetId] of Object.entries(next.mediaRefs)) {
-        if (mediaRef.current[id]?.projectAssetId !== assetId) {
-          loaded[id] = { ...await createMedia(await loadProjectMediaFile(assetId)), projectAssetId: assetId };
+        const revision = sharedMediaAssets.find((asset) => asset.id === assetId)?.revision ?? 0;
+        if (mediaRef.current[id]?.projectAssetId !== assetId
+          || mediaRef.current[id]?.projectAssetRevision !== revision) {
+          loaded[id] = {
+            ...await createMedia(await loadProjectMediaFile(assetId, revision)),
+            projectAssetId: assetId,
+            projectAssetRevision: revision,
+          };
         }
       }
       await drawing.current;
@@ -841,12 +852,16 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
     if (!asset) { setError("The selected shared media asset is unavailable."); return; }
     setBusy(true);
     try {
-      const loaded = await createMedia(await loadProjectMediaFile(assetId));
+      const loaded = await createMedia(await loadProjectMediaFile(assetId, asset.revision ?? 0));
       await drawing.current;
       recordHistory();
       const old = mediaRef.current[selectedNode.id];
       if (old) URL.revokeObjectURL(old.url);
-      mediaRef.current[selectedNode.id] = { ...loaded, projectAssetId: assetId };
+      mediaRef.current[selectedNode.id] = {
+        ...loaded,
+        projectAssetId: assetId,
+        projectAssetRevision: asset.revision ?? 0,
+      };
       setMediaDurations((current) => ({ ...current, [selectedNode.id]: loaded.duration }));
       setMediaMetadata((current) => ({
         ...current,

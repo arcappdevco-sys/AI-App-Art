@@ -334,3 +334,45 @@ test("workflow rejects Wan images with transparency before upload or generation"
     global.createImageBitmap = originalBitmap;
   }
 });
+
+test("video camera tracks are validated and appended to the prompt before execution", async () => {
+  const cameraTrack = JSON.stringify({
+    version: 1,
+    frameRate: 24,
+    keyframes: [
+      { frame: 0, position: [0, 1, 0], rotationDegrees: [0, 0, 0] },
+      { frame: 24, position: [0, 1, -2], rotationDegrees: [0, 10, 0] },
+    ],
+  });
+  const graph = {
+    nodes: [
+      { id: "prompt", type: "input/prompt", params: { text: "A slow tracking shot." } },
+      {
+        id: "veo", type: "video/veo",
+        params: { model: "google/veo3.1", task: "text-to-video", camera_track_json: cameraTrack },
+      },
+    ],
+    edges: [{ source: "prompt", sourceHandle: "text", target: "veo", targetHandle: "prompt" }],
+  };
+  const originalExecute = registry["video/veo"].execute;
+  const receivedPrompts = [];
+  registry["video/veo"].execute = async ({ inputs }) => {
+    receivedPrompts.push(inputs.prompt);
+    return { video: "https://example.com/output.mp4" };
+  };
+  try {
+    const issues = validateWorkflow(graph);
+    assert.equal(issues.filter((issue) => issue.severity === "error").length, 0);
+    await runGraph(graph, { cache: new Map(), fresh: true, onStatus: () => {}, onOutput: () => {} });
+    assert.match(receivedPrompts[0], /^A slow tracking shot\./);
+    assert.match(receivedPrompts[0], /frame 24: position \[0, 1, -2\]/);
+    assert.match(receivedPrompts[0], /not a hard 3D constraint/);
+
+    const invalidGraph = structuredClone(graph);
+    invalidGraph.nodes[1].params.camera_track_json = "{";
+    assert.ok(validateWorkflow(invalidGraph).some((issue) =>
+      issue.severity === "error" && /Camera track must be valid JSON/.test(issue.message)));
+  } finally {
+    registry["video/veo"].execute = originalExecute;
+  }
+});

@@ -189,6 +189,7 @@ body {
 }
 
 .ff-app {
+  --ff-toolbar-height: 64px;
   color-scheme: dark;
   color: var(--text);
   display: grid;
@@ -328,6 +329,77 @@ body {
   align-items: center;
   gap: 8px;
   padding: 0 18px;
+}
+
+.ff-workspace-help {
+  flex: 0 0 auto;
+}
+
+.ff-workspace-help summary {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.ff-workspace-help summary::-webkit-details-marker {
+  display: none;
+}
+
+.ff-workspace-help summary::after {
+  content: "▾";
+  color: var(--muted);
+}
+
+.ff-workspace-help[open] summary,
+.ff-workspace-help summary:hover {
+  border-color: var(--line-hover);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.ff-workspace-help summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ff-workspace-help-panel {
+  position: fixed;
+  z-index: 20;
+  top: calc(var(--ff-toolbar-height) + 8px);
+  right: 12px;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(460px, calc(100dvh - var(--ff-toolbar-height) - 24px));
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--line-control);
+  border-radius: 10px;
+  background: var(--panel-raised);
+  box-shadow: 0 12px 36px #0008;
+  color: var(--text);
+}
+
+.ff-workspace-help-panel h2 {
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.ff-workspace-help-panel ol {
+  display: grid;
+  gap: 9px;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .ff-theme-control {
@@ -1376,6 +1448,7 @@ body {
 
 @media (max-width: 2000px) and (min-width: 901px) {
   .ff-app {
+    --ff-toolbar-height: 108px;
     grid-template-rows: 108px minmax(0, 1fr);
   }
 
@@ -3007,6 +3080,7 @@ body {
 
 @media (max-width: 900px) {
   .ff-app {
+    --ff-toolbar-height: 108px;
     grid-template-rows: 108px minmax(0, 1fr);
     grid-template-columns: 252px minmax(0, 1fr);
   }
@@ -3064,6 +3138,7 @@ body {
 
 @media (max-width: 680px) {
   .ff-app {
+    --ff-toolbar-height: 142px;
     grid-template-rows: auto minmax(280px, 1fr);
     grid-template-columns: minmax(0, 1fr);
     height: 100dvh;

@@ -61,7 +61,12 @@ async function getStoredAsset(id: string): Promise<StoredProjectMediaAsset | und
   }
 }
 
-async function cacheDownloadedBlob(id: string, expectedSource: ProjectMediaAsset["source"], blob: Blob): Promise<boolean> {
+async function cacheDownloadedBlob(
+  id: string,
+  expectedSource: ProjectMediaAsset["source"],
+  expectedRevision: number,
+  blob: Blob,
+): Promise<boolean> {
   const database = await openDatabase();
   try {
     const transaction = database.transaction(ASSET_STORE, "readwrite");
@@ -71,7 +76,8 @@ async function cacheDownloadedBlob(id: string, expectedSource: ProjectMediaAsset
     let cached = false;
     request.onsuccess = () => {
       const current = request.result;
-      if (!current || JSON.stringify(current.source) !== JSON.stringify(expectedSource)) return;
+      if (!current || (current.revision ?? 0) !== expectedRevision
+        || JSON.stringify(current.source) !== JSON.stringify(expectedSource)) return;
       const source = current.source.kind === "data-url"
         ? { kind: "storage" as const, storageKey: current.id }
         : current.source;
@@ -94,24 +100,30 @@ export async function registerProjectMediaAsset(assetValue: ProjectMediaAsset, b
   if (blob && (blob.size <= 0 || blob.size > MAX_MEDIA_BYTES)) {
     throw new Error(`"${asset.name}" must be between 1 byte and 512 MB.`);
   }
+  const registeredAsset: ProjectMediaAsset = asset.source.kind === "data-url" && blob
+    ? { ...asset, source: { kind: "storage", storageKey: asset.id } }
+    : asset;
   const database = await openDatabase();
   try {
     const transaction = database.transaction(ASSET_STORE, "readwrite");
     const store = transaction.objectStore(ASSET_STORE);
     const done = transactionDone(transaction);
     const request = store.get(asset.id) as IDBRequest<StoredProjectMediaAsset | undefined>;
+    let revision = 0;
     request.onsuccess = () => {
       const previous = request.result;
-      const sameSource = previous && JSON.stringify(previous.source) === JSON.stringify(asset.source);
+      revision = (previous?.revision ?? 0) + 1;
+      const sameSource = previous && JSON.stringify(previous.source) === JSON.stringify(registeredAsset.source);
       store.put({
-        ...asset,
+        ...registeredAsset,
+        revision,
         ...(blob ? { blob } : sameSource && previous.blob ? { blob: previous.blob } : {}),
         updatedAt: Date.now(),
       } satisfies StoredProjectMediaAsset);
     };
     request.onerror = () => transaction.abort();
     await done;
-    return asset;
+    return { ...registeredAsset, revision };
   } finally {
     database.close();
   }
@@ -128,8 +140,8 @@ export async function listProjectMediaAssets(): Promise<ProjectMediaAsset[]> {
     ]);
     return stored
       .sort((left, right) => right.updatedAt - left.updatedAt)
-      .map(({ id, name, mediaKind, mimeType, source, metadata }) =>
-        normalizeProjectMediaAsset({ id, name, mediaKind, mimeType, source, metadata }));
+      .map(({ id, name, mediaKind, mimeType, source, metadata, revision }) =>
+        normalizeProjectMediaAsset({ id, name, mediaKind, mimeType, source, metadata, revision }));
   } finally {
     database.close();
   }
@@ -162,8 +174,9 @@ async function fetchAssetSource(asset: ProjectMediaAsset): Promise<Blob> {
   return response.blob();
 }
 
-export async function loadProjectMediaFile(id: string): Promise<File> {
-  const pending = pendingLoads.get(id);
+export async function loadProjectMediaFile(id: string, expectedRevision?: number): Promise<File> {
+  const loadKey = `${id}:${expectedRevision ?? "latest"}`;
+  const pending = pendingLoads.get(loadKey);
   if (pending) return pending;
   const loading = (async () => {
     while (true) {
@@ -182,17 +195,17 @@ export async function loadProjectMediaFile(id: string): Promise<File> {
       if (blob.size <= 0 || blob.size > MAX_MEDIA_BYTES) {
         throw new Error(`"${asset.name}" must be between 1 byte and 512 MB.`);
       }
-      if (!await cacheDownloadedBlob(id, asset.source, blob)) continue;
+      if (!await cacheDownloadedBlob(id, asset.source, stored.revision ?? 0, blob)) continue;
       const fallbackType = asset.mediaKind === "video" ? "video/mp4"
         : asset.mediaKind === "image" ? "image/png"
           : asset.mediaKind === "audio" ? "audio/mpeg" : "";
       return new File([blob], asset.name, { type: blob.type || asset.mimeType || fallbackType });
     }
   })();
-  pendingLoads.set(id, loading);
+  pendingLoads.set(loadKey, loading);
   try {
     return await loading;
   } finally {
-    pendingLoads.delete(id);
+    pendingLoads.delete(loadKey);
   }
 }

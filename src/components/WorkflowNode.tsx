@@ -31,6 +31,7 @@ import {
   type PromptAssistantTarget,
 } from "@/lib/prompt-assistant";
 import { findPromptAssistantTargets, promptAssistantTargetContext } from "@/lib/prompt-assistant-profiles";
+import { CAMERA_TRACK_JSON_EXAMPLE } from "@/lib/camera-guide";
 
 export const WorkflowRunContext = createContext<{
   runNode: (nodeId: string) => void;
@@ -1517,6 +1518,16 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           This storyboard frame resolves when the workflow runs. Connect it to an image input; Google Gemini Image supports inline reference frames.
         </div>
       )}
+      {d.type === "input/image" && (
+        <div className="ff-node-hint">
+          Use a proxy layout, gray playblast frame, or reference image. Connect it to a generation node&apos;s first-frame or reference-image input; this is visual conditioning, not a hard geometry constraint.
+        </div>
+      )}
+      {d.type === "input/video" && (
+        <div className="ff-node-hint">
+          A playblast can be used where the selected generation task accepts a reference or source video. The model may not reproduce its camera path exactly.
+        </div>
+      )}
       {def.integration === "pending" && (
         <div className="ff-node-notice">API setup required before this model can run.</div>
       )}
@@ -2040,6 +2051,23 @@ export default function WorkflowNode({ id, data }: NodeProps) {
           )}
         </label>
       ))}
+
+      {def.category === "Video" && (
+        <label className="ff-param">
+          <span>Camera track JSON (optional)</span>
+          <textarea
+            className="nodrag nowheel"
+            rows={5}
+            value={typeof d.params.camera_track_json === "string" ? d.params.camera_track_json : ""}
+            placeholder={CAMERA_TRACK_JSON_EXAMPLE}
+            disabled={Boolean(runControl?.isRunning)}
+            onChange={(event) => setParam("camera_track_json", event.target.value)}
+          />
+          <small className="ff-param-help">
+            JSON v1 keyframes are appended to the prompt as approximate camera guidance, not a hard 3D constraint. Connect a proxy image or playblast too for visual staging.
+          </small>
+        </label>
+      )}
 
       {isAssistantEnabled && (
         <section className="ff-prompt-assistant">

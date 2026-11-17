@@ -36,11 +36,13 @@ import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
 import VideoEditor, { type VideoAsset } from "@/components/VideoEditor";
 import Compositor from "@/components/Compositor";
 import StoryboardTab from "@/components/StoryboardTab";
+import WorkspaceHelp from "@/components/WorkspaceHelp";
 import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
 import { rebindStoryboardWorkflowReferences, resolveWorkflowStoryboardFrames } from "@/lib/storyboard-workflow";
 import {
   createUnknownMediaAssetMetadata,
   workflowOutputMediaId,
+  workflowOutputMediaSource,
   type ProjectMediaAsset,
 } from "@/lib/project-media";
 import { listProjectMediaAssets, registerProjectMediaAsset } from "@/lib/project-media-storage";
@@ -389,6 +391,7 @@ export default function Page() {
       src: asset.source.kind === "url" ? asset.source.url : "",
       mediaId: asset.id,
       projectAssetId: asset.id,
+      projectAssetRevision: asset.revision ?? 0,
       metadata: asset.metadata,
     })), [projectMediaAssets]);
 
@@ -407,20 +410,35 @@ export default function Page() {
       for (const [port, value] of Object.entries(data.outputs ?? {})) {
         const mediaKind = definition.outputs[port];
         if ((mediaKind !== "video" && mediaKind !== "image")
-          || typeof value !== "string" || !/^https?:\/\//i.test(value)) continue;
+          || typeof value !== "string") continue;
+        const source = workflowOutputMediaSource(mediaKind, value);
+        if (!source) continue;
         const id = workflowOutputMediaId(activeWorkflowId, node.id, port);
         if (registeredMediaUrls.current.get(id) === value) continue;
         registeredMediaUrls.current.set(id, value);
-        const name = data.params?.title || data.title || definition.label || "Generated video";
+        const name = data.params?.title || data.title || definition.label || "Generated media";
         const asset: ProjectMediaAsset = {
           id,
           name: port === "video" ? name : `${name} · ${port.replaceAll("_", " ")}`,
           mediaKind,
           mimeType: null,
-          source: { kind: "url", url: value },
+          source: source.kind === "data-url" ? { kind: "storage", storageKey: id } : source,
           metadata: createUnknownMediaAssetMetadata(),
         };
-        pending.push(registerProjectMediaAsset(asset).catch((error: unknown) => {
+        const registration = (async () => {
+          if (source.kind !== "data-url") return registerProjectMediaAsset(asset);
+          const response = await fetch(source.dataUrl);
+          if (!response.ok) throw new Error(`Could not read inline workflow image "${name}".`);
+          const downloaded = await response.blob();
+          const declaredMime = /^data:([^;,]+)/i.exec(source.dataUrl)?.[1] ?? "";
+          const mimeType = downloaded.type || declaredMime;
+          if (!mimeType.startsWith("image/") || (downloaded.type && !downloaded.type.startsWith("image/"))) {
+            throw new Error(`Inline workflow output "${name}" is not a supported image.`);
+          }
+          asset.mimeType = mimeType;
+          return registerProjectMediaAsset(asset, new Blob([downloaded], { type: mimeType }));
+        })();
+        pending.push(registration.catch((error: unknown) => {
           if (registeredMediaUrls.current.get(id) === value) registeredMediaUrls.current.delete(id);
           throw error;
         }));
@@ -1145,6 +1163,7 @@ export default function Page() {
         </div>
         <div className="ff-toolbar-actions">
           <OllamaChat />
+          <WorkspaceHelp activeView={activeView} />
           {process.env.NODE_ENV === "development" && (
             <button type="button" className="ff-toolbar-button" onClick={() => router.push("/setup")}>
               API keys

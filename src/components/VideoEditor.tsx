@@ -26,6 +26,7 @@ export type VideoAsset = {
   file?: File;
   mediaId?: string;
   projectAssetId?: string;
+  projectAssetRevision?: number;
   metadata?: MediaAssetMetadata;
 };
 
@@ -162,6 +163,38 @@ function getSequenceTimelineDuration(clips: TimelineClip[], transitions: Timelin
     }, 0);
 }
 
+function updateSequenceClips(sequence: VideoSequence, clips: TimelineClip[]): VideoSequence {
+  const transitions: TimelineTransition[] = [];
+  for (let index = 0; index < clips.length - 1; index += 1) {
+    const left = clips[index];
+    const right = clips[index + 1];
+    const transition = sequence.transitions.find((item) => item.leftClipId === left.id
+      && item.rightClipId === right.id);
+    if (!transition) continue;
+    const incoming = transitions.find((item) => item.rightClipId === left.id);
+    const maxDuration = Math.min(
+      left.trimEnd - left.trimStart - (incoming?.duration ?? 0),
+      right.trimEnd - right.trimStart,
+    ) - 0.1;
+    if (maxDuration >= 0.1) {
+      transitions.push({ ...transition, duration: Math.min(transition.duration, maxDuration) });
+    }
+  }
+  const duration = getSequenceTimelineDuration(clips, transitions);
+  const audioClips = duration < 0.1 ? [] : sequence.audioClips.flatMap((clip) => {
+    const start = Math.min(clip.start, Math.max(0, duration - 0.1));
+    const trimEnd = Math.min(clip.trimEnd, clip.trimStart + duration - start);
+    return trimEnd - clip.trimStart >= 0.1 ? [{ ...clip, start, trimEnd }] : [];
+  });
+  return {
+    ...sequence,
+    clips,
+    audioClips,
+    transitions,
+    playheadTime: Math.min(sequence.playheadTime, Math.max(0, duration)),
+  };
+}
+
 function getSnapshotMedia(snapshot: EditorHistorySnapshot) {
     const media = new Map<string, File>();
     const addMedia = (asset: VideoAsset) => {
@@ -200,6 +233,39 @@ function loadMedia(video: HTMLVideoElement, src: string) {
     video.src = src;
     video.load();
   });
+}
+
+async function createSharedVideoPreview(file: File) {
+  const probe = document.createElement("video");
+  probe.preload = "metadata";
+  let src = URL.createObjectURL(file);
+  try {
+    try {
+      await loadMedia(probe, src);
+    } catch {
+      const formData = new FormData();
+      formData.append("clip", file, file.name);
+      const response = await fetch("/api/video/normalize", { method: "POST", body: formData });
+      if (!response.ok) {
+        throw new Error(`Could not prepare "${file.name}" for preview (${response.status}).`);
+      }
+      const normalized = await response.blob();
+      if (normalized.size === 0) throw new Error(`Could not prepare "${file.name}" for preview.`);
+      URL.revokeObjectURL(src);
+      src = URL.createObjectURL(new Blob([normalized], { type: normalized.type || "video/mp4" }));
+      await loadMedia(probe, src);
+    }
+    if (!Number.isFinite(probe.duration) || probe.duration <= 0) {
+      throw new Error(`"${file.name}" does not have a supported duration.`);
+    }
+    return { src, duration: probe.duration, width: probe.videoWidth, height: probe.videoHeight };
+  } catch (caught) {
+    URL.revokeObjectURL(src);
+    throw caught;
+  } finally {
+    probe.removeAttribute("src");
+    probe.load();
+  }
 }
 
 async function getSourceAudioWaveform(file: File): Promise<number[] | null> {
@@ -355,6 +421,10 @@ export default function VideoEditor({
   const audioEditStart = useRef<EditorHistorySnapshot | null>(null);
   const keyerEditStart = useRef<EditorHistorySnapshot | null>(null);
   const matteEditViewChannel = useRef<KeyerViewChannel | null>(null);
+  const pauseAudio = () => {
+    transitionPreviewRef.current?.pause();
+    audioElements.current.forEach((audio) => audio.pause());
+  };
   useEffect(() => {
     if (!compositeBackgroundImageUrl) return;
     return () => URL.revokeObjectURL(compositeBackgroundImageUrl);
@@ -500,12 +570,13 @@ export default function VideoEditor({
         ];
         const mediaSources = new Map(savedAssets.map((asset) => {
           const projectAssetId = "projectAssetId" in asset ? asset.projectAssetId : undefined;
+          const projectAssetRevision = "projectAssetRevision" in asset ? asset.projectAssetRevision : undefined;
           const mediaId = projectAssetId || asset.mediaId;
-          return [mediaId, { mediaId: asset.mediaId, projectAssetId }] as const;
+          return [mediaId, { mediaId: asset.mediaId, projectAssetId, projectAssetRevision }] as const;
         }));
         await Promise.all([...mediaSources].map(async ([sourceId, source]) => {
           mediaFiles.set(sourceId, source.projectAssetId
-            ? await loadProjectMediaFile(source.projectAssetId)
+            ? await loadProjectMediaFile(source.projectAssetId, source.projectAssetRevision)
             : await loadEditorMedia(source.mediaId));
         }));
 
@@ -515,6 +586,7 @@ export default function VideoEditor({
           mediaId: string,
           metadata?: MediaAssetMetadata,
           projectAssetId?: string,
+          projectAssetRevision?: number,
         ): VideoAsset => {
           const file = mediaFiles.get(projectAssetId || mediaId);
           if (!file) throw new Error(`Saved media "${name}" could not be restored.`);
@@ -528,15 +600,20 @@ export default function VideoEditor({
             src,
             file,
             metadata: normalizeMediaAssetMetadata(metadata),
+            projectAssetRevision,
           };
         };
         const nextAssets = saved.uploadedAssets.map((asset) =>
-          createAsset(asset.id, asset.name, asset.mediaId, asset.metadata, asset.projectAssetId));
+          createAsset(
+            asset.id, asset.name, asset.mediaId, asset.metadata, asset.projectAssetId, asset.projectAssetRevision,
+          ));
         const nextSequences: VideoSequence[] = saved.sequences.map((sequence) => ({
           ...sequence,
           transitions: sequence.transitions ?? [],
           clips: sequence.clips.map((clip) => ({
-            ...createAsset(clip.id, clip.name, clip.mediaId, clip.metadata, clip.projectAssetId),
+            ...createAsset(
+              clip.id, clip.name, clip.mediaId, clip.metadata, clip.projectAssetId, clip.projectAssetRevision,
+            ),
             duration: clip.duration,
             trimStart: clip.trimStart,
             trimEnd: clip.trimEnd,
@@ -544,7 +621,9 @@ export default function VideoEditor({
             keyer: clip.keyer,
           })),
           audioClips: (sequence.audioClips ?? []).map((clip) => ({
-            ...createAsset(clip.id, clip.name, clip.mediaId, clip.metadata, clip.projectAssetId),
+            ...createAsset(
+              clip.id, clip.name, clip.mediaId, clip.metadata, clip.projectAssetId, clip.projectAssetRevision,
+            ),
             duration: clip.duration,
             start: clip.start,
             trimStart: clip.trimStart,
@@ -593,6 +672,126 @@ export default function VideoEditor({
 
   useEffect(() => {
     if (!persistenceReady) return;
+    const sharedAssets = new Map(assets
+      .filter((asset) => asset.projectAssetId)
+      .map((asset) => [asset.projectAssetId!, asset]));
+    const staleAssets = new Map<string, VideoAsset>();
+    for (const sequence of editorSnapshotRef.current.sequences) {
+      for (const clip of sequence.clips) {
+        const latest = clip.projectAssetId ? sharedAssets.get(clip.projectAssetId) : undefined;
+        if (latest && (clip.projectAssetRevision ?? 0) < (latest.projectAssetRevision ?? 0)) {
+          staleAssets.set(latest.projectAssetId!, latest);
+        }
+      }
+    }
+    if (!staleAssets.size) return;
+
+    let active = true;
+    const createdUrls = new Set<string>();
+    void (async () => {
+      const updates = new Map<string, {
+        asset: VideoAsset;
+        file: File;
+        src: string;
+        duration: number;
+        width: number;
+        height: number;
+        waveform: number[] | null;
+      }>();
+      const failures: string[] = [];
+      await Promise.all([...staleAssets].map(async ([assetId, asset]) => {
+        try {
+          const file = await loadProjectMediaFile(assetId, asset.projectAssetRevision);
+          const preview = await createSharedVideoPreview(file);
+          createdUrls.add(preview.src);
+          let waveform: number[] | null = null;
+          try {
+            waveform = await getSourceAudioWaveform(file);
+          } catch (caught) {
+            failures.push(caught instanceof Error ? caught.message : `Could not analyze "${asset.name}".`);
+          }
+          updates.set(assetId, { asset, file, ...preview, waveform });
+        } catch (caught) {
+          failures.push(caught instanceof Error ? caught.message : `Could not refresh "${asset.name}".`);
+        }
+      }));
+      if (!active) {
+        createdUrls.forEach((url) => URL.revokeObjectURL(url));
+        return;
+      }
+      const current = editorSnapshotRef.current;
+      let replaced = false;
+      const sequences = current.sequences.map((sequence) => {
+        const clips = sequence.clips.map((clip) => {
+          const update = clip.projectAssetId ? updates.get(clip.projectAssetId) : undefined;
+          if (!update || (clip.projectAssetRevision ?? 0) >= (update.asset.projectAssetRevision ?? 0)) return clip;
+          replaced = true;
+          const trimStart = Math.min(clip.trimStart, Math.max(0, update.duration - 0.001));
+          const trimEnd = Math.min(Math.max(clip.trimEnd, trimStart + 0.001), update.duration);
+          const sourceMetadata = normalizeMediaAssetMetadata(update.asset.metadata);
+          return {
+            ...clip,
+            name: update.asset.name,
+            src: update.src,
+            file: update.file,
+            duration: update.duration,
+            trimStart,
+            trimEnd,
+            audioWaveform: update.waveform,
+            metadata: {
+              ...sourceMetadata,
+              width: update.width > 0 ? update.width : sourceMetadata.width,
+              height: update.height > 0 ? update.height : sourceMetadata.height,
+              durationSeconds: update.duration,
+            },
+            projectAssetRevision: update.asset.projectAssetRevision ?? 0,
+          };
+        });
+        return clips.some((clip, index) => clip !== sequence.clips[index])
+          ? updateSequenceClips(sequence, clips)
+          : sequence;
+      });
+      if (replaced) {
+        const activeSequence = sequences.find((sequence) => sequence.id === current.activeSequenceId);
+        const selectedClip = activeSequence?.clips.find((clip) => clip.id === activeSequence.selectedId);
+        if (activeSequence && selectedClip) {
+          const offset = getClipTimelineOffset(activeSequence.clips, activeSequence.transitions, selectedClip.id);
+          const elapsed = Math.min(
+            Math.max(0, activeSequence.playheadTime - offset),
+            selectedClip.trimEnd - selectedClip.trimStart,
+          );
+          pendingSeek.current = { id: selectedClip.id, time: selectedClip.trimStart + elapsed };
+        }
+        recordHistory(current);
+        editorSnapshotRef.current = { ...current, sequences };
+        playbackWanted.current = false;
+        previewRef.current?.pause();
+        pauseAudio();
+        setIsPlaying(false);
+        setSequences(sequences);
+      }
+      const retainedUrls = new Set(sequences.flatMap((sequence) => sequence.clips.map((clip) => clip.src)));
+      createdUrls.forEach((url) => {
+        if (!retainedUrls.has(url)) {
+          URL.revokeObjectURL(url);
+          createdUrls.delete(url);
+        } else {
+          workflowClipUrls.current.add(url);
+          createdUrls.delete(url);
+        }
+      });
+      if (failures.length > 0) setError(failures.join(" "));
+    })().catch((caught: unknown) => {
+      if (active) setError(caught instanceof Error ? caught.message : "Could not refresh shared workflow media.");
+    });
+    return () => {
+      active = false;
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [assets, persistenceReady, recordHistory]);
+
+  useEffect(() => {
+    if (!persistenceReady) return;
     if (persistenceValidationError) return;
     const state: StoredVideoEditorState = {
       version: 4,
@@ -610,6 +809,7 @@ export default function VideoEditor({
           keyer: clip.keyer,
           metadata: clip.metadata,
           projectAssetId: clip.projectAssetId,
+          projectAssetRevision: clip.projectAssetRevision,
         })),
         audioClips: sequence.audioClips.map((clip) => ({
           id: clip.id,
@@ -622,6 +822,7 @@ export default function VideoEditor({
           volume: clip.volume,
           metadata: clip.metadata,
           projectAssetId: clip.projectAssetId,
+          projectAssetRevision: clip.projectAssetRevision,
         })),
       })),
       uploadedAssets: uploadedAssets.map((asset) => ({
@@ -630,6 +831,7 @@ export default function VideoEditor({
         mediaId: asset.mediaId ?? "",
         metadata: asset.metadata,
         projectAssetId: asset.projectAssetId,
+        projectAssetRevision: asset.projectAssetRevision,
       })),
       activeSequenceId,
       activeTool,
@@ -667,36 +869,7 @@ export default function VideoEditor({
     setSequences((current) => current.map((sequence) => {
       if (sequence.id !== activeSequenceId) return sequence;
       const clips = typeof next === "function" ? next(sequence.clips) : next;
-      const transitions: TimelineTransition[] = [];
-      for (let index = 0; index < clips.length - 1; index += 1) {
-        const left = clips[index];
-        const right = clips[index + 1];
-        const transition = sequence.transitions.find((item) => item.leftClipId === left.id
-          && item.rightClipId === right.id);
-        if (!transition) continue;
-        const incoming = transitions.find((item) => item.rightClipId === left.id);
-        const maxDuration = Math.min(
-          left.trimEnd - left.trimStart - (incoming?.duration ?? 0),
-          right.trimEnd - right.trimStart,
-        ) - 0.1;
-        if (maxDuration >= 0.1) {
-          transitions.push({ ...transition, duration: Math.min(transition.duration, maxDuration) });
-        }
-      }
-      const duration = clips.reduce((total, clip) => total + clip.trimEnd - clip.trimStart, 0)
-        - transitions.reduce((total, transition) => total + transition.duration, 0);
-      const audioClips = duration < 0.1 ? [] : sequence.audioClips.flatMap((clip) => {
-        const start = Math.min(clip.start, Math.max(0, duration - 0.1));
-        const trimEnd = Math.min(clip.trimEnd, clip.trimStart + duration - start);
-        return trimEnd - clip.trimStart >= 0.1 ? [{ ...clip, start, trimEnd }] : [];
-      });
-      return {
-        ...sequence,
-        clips,
-        audioClips,
-        transitions,
-        playheadTime: Math.min(sequence.playheadTime, Math.max(0, duration)),
-      };
+      return updateSequenceClips(sequence, clips);
     }));
   };
   const setTransitions = (next: TimelineTransition[]) => {
@@ -1091,11 +1264,6 @@ export default function VideoEditor({
     keyerViewChannel,
   ]);
 
-  const pauseAudio = () => {
-    transitionPreviewRef.current?.pause();
-    audioElements.current.forEach((audio) => audio.pause());
-  };
-
   const syncAudioPlayback = (timelineTime: number, shouldPlay: boolean) => {
     for (const clip of audioClips) {
       const audio = audioElements.current.get(clip.id);
@@ -1246,7 +1414,7 @@ export default function VideoEditor({
     try {
       const prepared = asset.projectAssetId
         ? await (async () => {
-          const file = await loadProjectMediaFile(asset.projectAssetId!);
+          const file = await loadProjectMediaFile(asset.projectAssetId!, asset.projectAssetRevision);
           const src = URL.createObjectURL(file);
           return { file, src, ownedUrl: src };
         })()
@@ -1258,6 +1426,7 @@ export default function VideoEditor({
         src: prepared.src,
         mediaId: asset.projectAssetId ?? asset.mediaId ?? `clip-media-${crypto.randomUUID()}`,
         projectAssetId: asset.projectAssetId,
+        projectAssetRevision: asset.projectAssetRevision,
         file: prepared.file,
         metadata: asset.metadata,
       };
@@ -1290,6 +1459,7 @@ export default function VideoEditor({
           file: normalizedFile,
           mediaId: `clip-media-${crypto.randomUUID()}`,
           projectAssetId: undefined,
+          projectAssetRevision: undefined,
         };
         await loadMedia(probe, normalizedUrl);
       }

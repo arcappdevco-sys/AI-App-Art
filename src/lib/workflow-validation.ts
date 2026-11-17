@@ -4,6 +4,7 @@ import { normalizeOmniParams, OMNI_MODELS, OMNI_TASKS } from "./omni";
 import { SEEDANCE_MODELS } from "./seedance";
 import { VEO_MODELS } from "./veo";
 import { hasCycle, isEmptyOptionalOmniImage } from "./executor";
+import { parseCameraTrack } from "./camera-guide";
 import type { Graph, GraphNode } from "./types";
 import { MINIMAX_NODE_TYPE } from "./minimax";
 import { FLUX3_NODE_TYPE } from "./flux3";
@@ -214,6 +215,17 @@ export function validateWorkflow(graph: Graph, targetIds?: string[]): WorkflowVa
     }
     if (node.type === "input/video" && !String(node.params.url ?? "").trim()) {
       addIssue("error", node, "Choose a video or enter a video URL.");
+    }
+    if (definition.category === "Video" && node.params.camera_track_json !== undefined) {
+      if (typeof node.params.camera_track_json !== "string") {
+        addIssue("error", node, "Camera track must be JSON text.");
+      } else if (node.params.camera_track_json.trim()) {
+        try {
+          parseCameraTrack(node.params.camera_track_json);
+        } catch (error) {
+          addIssue("error", node, error instanceof Error ? error.message : "Camera track is invalid.");
+        }
+      }
     }
     if (node.type === "assistant/prompt" && !String(node.params.refined_prompt ?? "").trim()) {
       addIssue("error", node, "Send a message to the Prompt Assistant to create prompt text.");

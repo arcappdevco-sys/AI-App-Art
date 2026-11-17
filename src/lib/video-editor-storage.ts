@@ -13,6 +13,7 @@ export type StoredEditorClip = {
   keyer?: StoredEditorKeyer;
   metadata?: MediaAssetMetadata;
   projectAssetId?: string;
+  projectAssetRevision?: number;
 };
 
 export type StoredEditorKeyer = {
@@ -38,6 +39,7 @@ export type StoredEditorAudioClip = {
   volume: number;
   metadata?: MediaAssetMetadata;
   projectAssetId?: string;
+  projectAssetRevision?: number;
 };
 
 export type StoredEditorTransition = {
@@ -62,6 +64,7 @@ export type StoredEditorAsset = {
   mediaId: string;
   metadata?: MediaAssetMetadata;
   projectAssetId?: string;
+  projectAssetRevision?: number;
 };
 
 export type StoredVideoEditorState = {

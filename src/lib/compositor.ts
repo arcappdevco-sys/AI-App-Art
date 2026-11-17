@@ -41,6 +41,33 @@ export const COMPOSITOR_LABELS: Record<CompositorKind, string> = {
   color: "Color correction", merge: "Merge", tracker: "Tracker", viewer: "Viewer",
 };
 
+export function compositorImageFit(
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+) {
+  if ([sourceWidth, sourceHeight, targetWidth, targetHeight].some((value) =>
+    !Number.isFinite(value) || value <= 0)) {
+    throw new Error("Image dimensions must be positive finite numbers.");
+  }
+  const scale = Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  return { x: (targetWidth - width) / 2, y: (targetHeight - height) / 2, width, height };
+}
+
+export const COMPOSITOR_DESCRIPTIONS: Record<CompositorKind, string> = {
+  media: "Load an image or video, or use a solid or transparent source.",
+  transform: "Move and scale an image; it can also use connected tracker motion.",
+  key: "Remove a selected color from an image to create transparency.",
+  mask: "Create soft masks and animate them, optionally using connected motion.",
+  color: "Adjust brightness, contrast, saturation, and color curves.",
+  merge: "Composite a foreground over a background and control its opacity.",
+  tracker: "Track image features and send motion data to a Mask or Transform node.",
+  viewer: "Preview the output of the connected node graph.",
+};
+
 export const COMPOSITOR_DEFAULTS: Record<CompositorKind, CompositorParams> = {
   media: {}, transform: { x: 0, y: 0, scale: 100 }, key: { color: "#00ff00", tolerance: 100, softness: 35 },
   mask: { layers: [], invert: false },

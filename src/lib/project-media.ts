@@ -32,6 +32,7 @@ export type ProjectMediaAsset = {
   mimeType: string | null;
   source: ProjectMediaSource;
   metadata: MediaAssetMetadata;
+  revision?: number;
 };
 
 export function workflowOutputMediaId(workflowId: string, nodeId: string, port: string): string {
@@ -39,6 +40,18 @@ export function workflowOutputMediaId(workflowId: string, nodeId: string, port: 
     throw new Error("Workflow output media requires workflow, node, and port IDs.");
   }
   return `workflow-output:${workflowId}:${nodeId}:${port}`;
+}
+
+export function workflowOutputMediaSource(
+  mediaKind: ProjectMediaKind,
+  value: string,
+): ProjectMediaSource | null {
+  if (mediaKind !== "image" && mediaKind !== "video") return null;
+  if (/^https?:\/\//i.test(value)) return normalizeSource({ kind: "url", url: value });
+  if (mediaKind === "image" && value.startsWith("data:image/")) {
+    return normalizeSource({ kind: "data-url", dataUrl: value });
+  }
+  return null;
 }
 
 const MEDIA_KINDS: ProjectMediaKind[] = ["image", "video", "audio", "image-sequence"];
@@ -173,6 +186,11 @@ export function normalizeProjectMediaAsset(value: unknown): ProjectMediaAsset {
   if (mimeType !== undefined && mimeType !== null && (typeof mimeType !== "string" || !mimeType.trim())) {
     throw new Error("Media asset MIME type must be a non-empty string or null.");
   }
+  const revision = value.revision;
+  if (revision !== undefined && revision !== null
+    && (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0)) {
+    throw new Error("Media asset revision must be a non-negative safe integer.");
+  }
   return {
     id: value.id,
     name: value.name,
@@ -180,5 +198,6 @@ export function normalizeProjectMediaAsset(value: unknown): ProjectMediaAsset {
     mimeType: typeof mimeType === "string" ? mimeType.trim() : null,
     source: normalizeSource(value.source),
     metadata: normalizeMediaAssetMetadata(value.metadata),
+    revision: typeof revision === "number" ? revision : 0,
   };
 }
