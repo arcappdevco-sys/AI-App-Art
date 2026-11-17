@@ -54,7 +54,7 @@ function normalizeTimestamp(value: unknown, label: string): string {
   return new Date(milliseconds).toISOString();
 }
 
-function normalizeRelativePath(value: unknown, label: string): string {
+export function normalizeProjectRelativePath(value: unknown, label = "Project path"): string {
   const path = requiredText(value, label).replace(/\\/g, "/");
   if (path.startsWith("/") || /^[a-z]:/i.test(path) || path.includes("\0")) {
     throw new Error(`${label} must be a safe path relative to the project folder.`);
@@ -88,10 +88,10 @@ function normalizeAsset(value: unknown, index: number): ProjectManifestAsset {
     name: requiredText(value.name, `${label} name`),
     mediaKind: value.mediaKind as ProjectMediaKind,
     mimeType,
-    relativePath: normalizeRelativePath(value.relativePath, `${label} path`),
+    relativePath: normalizeProjectRelativePath(value.relativePath, `${label} path`),
     proxyPath: value.proxyPath === undefined || value.proxyPath === null
       ? null
-      : normalizeRelativePath(value.proxyPath, `${label} proxy path`),
+      : normalizeProjectRelativePath(value.proxyPath, `${label} proxy path`),
     sizeBytes: typeof sizeBytes === "number" ? sizeBytes : null,
     sha256: sha256?.toLowerCase() ?? null,
     metadata: normalizeMediaAssetMetadata(value.metadata),

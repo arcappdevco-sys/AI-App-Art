@@ -4,6 +4,12 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSPro
 import { registerEditorUploadBridge } from "@/lib/editor-upload-bridge";
 import { prepareEditorVideoSource } from "@/lib/editor-video-source";
 import { normalizeMediaAssetMetadata, type MediaAssetMetadata } from "@/lib/project-media";
+import {
+  loadProjectVideoEditorState,
+  readProjectMediaAssetFile,
+  saveProjectVideoEditorState,
+  type ProjectFolderSession,
+} from "@/lib/project-folder-storage";
 import { inspectMediaAssetMetadata } from "@/lib/project-media-browser";
 import { registerProjectMediaAsset, loadProjectMediaFile } from "@/lib/project-media-storage";
 import { applyMatteClip, getKeyColorChroma, refineMatte, RGB_LUMA_WEIGHTS } from "@/lib/chroma-key";
@@ -352,11 +358,19 @@ export default function VideoEditor({
   assets,
   hidden = false,
   onProjectMediaChange,
+  projectSession = null,
+  projectSessionReady = true,
+  projectSessionEpoch = 0,
 }: {
   assets: VideoAsset[];
   hidden?: boolean;
   onProjectMediaChange?: () => void;
+  projectSession?: ProjectFolderSession | null;
+  projectSessionReady?: boolean;
+  projectSessionEpoch?: number;
 }) {
+  const projectHandle = projectSession?.handle ?? null;
+  const projectId = projectSession?.projectId ?? null;
   const [uploadedAssets, setUploadedAssets] = useState<VideoAsset[]>([]);
   const [sequences, setSequences] = useState<VideoSequence[]>([
     { id: "sequence-1", name: "Sequence 1", clips: [], audioClips: [], transitions: [], selectedId: "", playheadTime: 0 },
@@ -549,12 +563,15 @@ export default function VideoEditor({
   };
 
   useEffect(() => {
+    if (!projectSessionReady) return;
     let cancelled = false;
     const restoredUrls: string[] = [];
 
     void (async () => {
       try {
-        const saved = await loadVideoEditorState();
+        const saved = projectHandle && projectId
+          ? await loadProjectVideoEditorState(projectHandle, projectId)
+          : await loadVideoEditorState();
         if (!saved) {
           if (!cancelled) {
             setPersistenceStatus("Saved on this device");
@@ -575,9 +592,12 @@ export default function VideoEditor({
           return [mediaId, { mediaId: asset.mediaId, projectAssetId, projectAssetRevision }] as const;
         }));
         await Promise.all([...mediaSources].map(async ([sourceId, source]) => {
-          mediaFiles.set(sourceId, source.projectAssetId
-            ? await loadProjectMediaFile(source.projectAssetId, source.projectAssetRevision)
-            : await loadEditorMedia(source.mediaId));
+          const file = source.projectAssetId && projectHandle && projectId
+            ? await readProjectMediaAssetFile(projectHandle, projectId, source.projectAssetId)
+            : source.projectAssetId
+              ? await loadProjectMediaFile(source.projectAssetId, source.projectAssetRevision)
+              : await loadEditorMedia(source.mediaId);
+          mediaFiles.set(sourceId, file);
         }));
 
         const createAsset = (
@@ -654,7 +674,7 @@ export default function VideoEditor({
         setUploadedAssets(nextAssets);
         setActiveSequenceId(nextActiveSequenceId);
         setActiveTool(saved.activeTool === "razor" || saved.activeTool === "transition" ? saved.activeTool : "select");
-        setPersistenceStatus("Restored from this device");
+        setPersistenceStatus(projectId ? "Restored from project folder" : "Restored from this device");
         setPersistenceReady(true);
       } catch (caught) {
         restoredUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -668,7 +688,7 @@ export default function VideoEditor({
       cancelled = true;
       restoredUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, []);
+  }, [projectHandle, projectId, projectSessionReady]);
 
   useEffect(() => {
     if (!persistenceReady) return;
@@ -838,17 +858,22 @@ export default function VideoEditor({
     };
 
     let cancelled = false;
-    const persist = () => {
+    const persist = async () => {
       setPersistenceStatus("Saving editor…");
-      void saveVideoEditorState(state).then(() => {
+      try {
+        if (projectHandle && projectId) {
+          await saveProjectVideoEditorState(projectHandle, projectId, state);
+        } else {
+          await saveVideoEditorState(state);
+        }
         if (cancelled) return;
         setPersistenceError("");
-        setPersistenceStatus("Saved on this device");
-      }).catch((caught: unknown) => {
+        setPersistenceStatus(projectId ? "Saved to project folder" : "Saved on this device");
+      } catch (caught) {
         if (cancelled) return;
         setPersistenceError(caught instanceof Error ? caught.message : "Could not save the video editor.");
         setPersistenceStatus("Editor save failed");
-      });
+      }
     };
     const timeout = window.setTimeout(persist, 250);
     window.addEventListener("pagehide", persist);
@@ -857,7 +882,17 @@ export default function VideoEditor({
       window.clearTimeout(timeout);
       window.removeEventListener("pagehide", persist);
     };
-  }, [activeSequenceId, activeTool, persistenceReady, persistenceValidationError, sequences, uploadedAssets]);
+  }, [
+    activeSequenceId,
+    activeTool,
+    persistenceReady,
+    persistenceValidationError,
+    projectHandle,
+    projectId,
+    projectSessionEpoch,
+    sequences,
+    uploadedAssets,
+  ]);
 
   const activeSequence = sequences.find((sequence) => sequence.id === activeSequenceId) ?? sequences[0];
   const clips = activeSequence?.clips ?? [];
@@ -2511,7 +2546,12 @@ export default function VideoEditor({
           {uploadedAssets.length === 0 && <p className="ff-editor-empty">Upload video or audio files from this device.</p>}
         </section>
 
-        <p className="ff-editor-sidebar-note">Footage, sequences, and timeline edits are saved in this browser. Transitions and audio tracks are included in MOV and MP4 exports.</p>
+        <p className="ff-editor-sidebar-note">
+          {projectId
+            ? "Sequences and timeline edits are saved in the project folder. Add media to the project before using it in a portable timeline."
+            : "Footage, sequences, and timeline edits are saved in this browser."}
+          {" "}Transitions and audio tracks are included in MOV and MP4 exports.
+        </p>
       </aside>
 
       <div className="ff-editor-workspace">

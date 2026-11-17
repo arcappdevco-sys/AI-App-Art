@@ -38,6 +38,7 @@ import Compositor from "@/components/Compositor";
 import StoryboardTab from "@/components/StoryboardTab";
 import WorkspaceHelp from "@/components/WorkspaceHelp";
 import ProjectFolderControl from "@/components/ProjectFolderControl";
+import type { ProjectFolderSession } from "@/lib/project-folder-storage";
 import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
 import { rebindStoryboardWorkflowReferences, resolveWorkflowStoryboardFrames } from "@/lib/storyboard-workflow";
 import {
@@ -283,6 +284,9 @@ export default function Page() {
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const [storyboard, setStoryboard] = useState<StoryboardData>(() => createEmptyStoryboard());
   const [projectMediaAssets, setProjectMediaAssets] = useState<ProjectMediaAsset[]>([]);
+  const [projectSession, setProjectSession] = useState<ProjectFolderSession | null>(null);
+  const [projectSessionReady, setProjectSessionReady] = useState(false);
+  const [projectSessionEpoch, setProjectSessionEpoch] = useState(0);
   const groupCanvasRef = useRef<HTMLElement>(null);
   const groupFlowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
@@ -310,6 +314,11 @@ export default function Page() {
 
   const refreshProjectMediaAssets = useCallback(async () => {
     setProjectMediaAssets(await listProjectMediaAssets());
+  }, []);
+  const updateProjectSession = useCallback((session: ProjectFolderSession | null) => {
+    setProjectSession(session);
+    setProjectSessionReady(true);
+    setProjectSessionEpoch((current) => current + 1);
   }, []);
 
   useEffect(() => {
@@ -1163,7 +1172,11 @@ export default function Page() {
             )}
         </div>
         <div className="ff-toolbar-actions">
-          <ProjectFolderControl />
+          <ProjectFolderControl
+            assets={projectMediaAssets}
+            onProjectMediaChange={refreshProjectMediaAssets}
+            onProjectSessionChange={updateProjectSession}
+          />
           <OllamaChat />
           <WorkspaceHelp activeView={activeView} />
           {process.env.NODE_ENV === "development" && (
@@ -1534,8 +1547,15 @@ export default function Page() {
         )}
       </main>
       </div>
-      <VideoEditor assets={videoAssets} onProjectMediaChange={refreshProjectMediaAssets}
-        hidden={activeView !== "editor"} />
+      <VideoEditor
+        key={projectSession?.sessionKey ?? "local"}
+        assets={videoAssets}
+        onProjectMediaChange={refreshProjectMediaAssets}
+        projectSession={projectSession}
+        projectSessionReady={projectSessionReady}
+        projectSessionEpoch={projectSessionEpoch}
+        hidden={activeView !== "editor"}
+      />
       <Compositor hidden={activeView !== "compositor"} sharedMediaAssets={projectMediaAssets} />
       <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
         hidden={activeView !== "storyboard"}

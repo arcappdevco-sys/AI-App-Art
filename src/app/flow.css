@@ -351,6 +351,19 @@ body {
   color: #ef9b84;
 }
 
+.ff-project-folder-select {
+  width: 150px;
+  min-width: 90px;
+  max-width: 180px;
+  height: 34px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
 .ff-workspace-help {
   flex: 0 0 auto;
 }
