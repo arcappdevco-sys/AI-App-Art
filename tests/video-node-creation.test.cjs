@@ -17,6 +17,7 @@ const {
   createWorkflowNodes,
   getFirstLastFrameModelOptions,
   getImageToVideoModelOptions,
+  getStoryboardVideoParamOverrides,
   videoModelTypes,
 } = lib("workflow-node-factory");
 
@@ -115,4 +116,35 @@ test("every video model can create a connected first-and-last-frame workflow", (
       .nodes.find((node) => node.data.type === "video/google-omni").data.params.model,
     "google/gemini-omni-1.2-flash",
   );
+});
+
+test("storyboard duration and aspect ratio map to supported video-model settings", () => {
+  const options = getFirstLastFrameModelOptions(registry);
+  const settings = { aspectRatio: "4:3", durationSeconds: 7, hasLastFrame: true };
+  const expectedDurations = {
+    "video/wan-3.0": 7,
+    "video/minimax-h3": 7,
+    "video/flux-3": 7,
+    "video/seedance": "7",
+    "video/kling": "7",
+    "video/veo": "6",
+    "video/google-omni": "7",
+  };
+  for (const option of options) {
+    const overrides = getStoryboardVideoParamOverrides(option.type, registry, option.params, settings);
+    assert.equal(overrides.duration, expectedDurations[option.type]);
+    if (["video/flux-3", "video/veo", "video/google-omni"].includes(option.type)) {
+      assert.equal(overrides.aspect_ratio, option.type === "video/flux-3" ? "4:3" : "16:9");
+    } else {
+      assert.equal("aspect_ratio" in overrides, false);
+    }
+  }
+
+  const omni = options.find((option) => option.type === "video/google-omni");
+  assert.equal(getStoryboardVideoParamOverrides(
+    "video/google-omni",
+    registry,
+    omni.params,
+    { ...settings, durationSeconds: 12 },
+  ).duration, "10");
 });

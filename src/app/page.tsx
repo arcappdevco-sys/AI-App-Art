@@ -35,6 +35,7 @@ import {
   createWorkflowNodes,
   getFirstLastFrameModelOptions,
   getImageToVideoModelOptions,
+  getStoryboardVideoParamOverrides,
   videoModelTypes,
 } from "@/lib/workflow-node-factory";
 import { validateWorkflow, type WorkflowValidationIssue } from "@/lib/workflow-validation";
@@ -52,7 +53,12 @@ import {
 } from "@/lib/project-folder-storage";
 import { hasValidWorkflowEdgeReferences, stripInvalidWorkflowConnections } from "@/lib/workflow-storage";
 import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
-import { rebindStoryboardWorkflowReferences, resolveWorkflowStoryboardFrames } from "@/lib/storyboard-workflow";
+import {
+  buildStoryboardVideoPrompt,
+  collectStoryboardVideoCandidates,
+  rebindStoryboardWorkflowReferences,
+  resolveWorkflowStoryboardFrames,
+} from "@/lib/storyboard-workflow";
 import {
   createUnknownMediaAssetMetadata,
   workflowOutputMediaId,
@@ -511,6 +517,9 @@ export default function Page() {
       projectAssetRevision: asset.revision ?? 0,
       metadata: asset.metadata,
     })), [projectMediaAssets]);
+  const storyboardVideoCandidates = useMemo(() => activeWorkflowId
+    ? collectStoryboardVideoCandidates(activeWorkflowId, nodes, edges, registry)
+    : [], [activeWorkflowId, edges, nodes]);
 
   useEffect(() => {
     if (!storageReady || !activeWorkflowId) return;
@@ -1090,6 +1099,46 @@ export default function Page() {
       setStorageStatus("Unable to add storyboard video model");
       return;
     }
+    const promptText = buildStoryboardVideoPrompt(
+      scene,
+      shot,
+      lastScene && lastShot ? { scene: lastScene, shot: lastShot } : undefined,
+    );
+    const storyboardDurations = [shot.durationSeconds, lastShot?.durationSeconds]
+      .filter((duration): duration is number => typeof duration === "number");
+    const storyboardDurationSeconds = storyboardDurations.length
+      ? storyboardDurations.reduce((total, duration) => total + duration, 0)
+      : null;
+    const workflowNodes = additions.nodes.map((node) => {
+      if (node.data.type === videoType) {
+        const params = isRecord(node.data.params) ? node.data.params : {};
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            params: {
+              ...params,
+              ...getStoryboardVideoParamOverrides(videoType, registry, params, {
+                aspectRatio: storyboard.aspectRatio,
+                durationSeconds: storyboardDurationSeconds,
+                hasLastFrame: Boolean(lastShot),
+              }),
+            },
+          },
+        };
+      }
+      if (node.data.type !== "input/prompt") return node;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          params: {
+            ...(isRecord(node.data.params) ? node.data.params : {}),
+            text: promptText,
+          },
+        },
+      };
+    });
     const firstFrameHandle = "firstFrameHandle" in additions
       ? additions.firstFrameHandle
       : additions.imageHandle;
@@ -1143,7 +1192,7 @@ export default function Page() {
       setStorageStatus("Unable to add storyboard video model");
       return;
     }
-    setNodes((current) => [...current, ...frameNodes, ...additions.nodes]);
+    setNodes((current) => [...current, ...frameNodes, ...workflowNodes]);
     setEdges((current) => [...current, ...additions.edges, ...frameEdges]);
     setActiveView("workflow");
     setStorageError("");
@@ -1798,6 +1847,19 @@ export default function Page() {
         onProjectSessionChange={updateProjectSession}
       />
       <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
+        onOpenWorkflow={(workflowId) => {
+          if (workflowId !== activeWorkflowIdRef.current) {
+            if (!workflowsRef.current.some((workflow) => workflow.id === workflowId)) {
+              setStorageError("The workflow that generated this take is no longer available.");
+              setStorageStatus("Unable to open source workflow");
+              return;
+            }
+            switchWorkflow(workflowId);
+            if (activeWorkflowIdRef.current !== workflowId) return;
+          }
+          setActiveView("workflow");
+        }}
+        videoCandidates={storyboardVideoCandidates}
         videoModelOptions={storyboardVideoModelOptions}
         firstLastFrameModelOptions={storyboardFirstLastFrameModelOptions}
         hidden={activeView !== "storyboard"}

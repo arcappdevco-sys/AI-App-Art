@@ -1,4 +1,45 @@
-import type { StoryboardData } from "./StoryboardData";
+import type { StoryboardData, StoryboardScene, StoryboardShot } from "./StoryboardData";
+import type { NodeDef } from "./types";
+
+type StoryboardPromptScene = Pick<StoryboardScene, "title">;
+type StoryboardPromptShot = Pick<
+  StoryboardShot,
+  "title" | "description" | "shotType" | "cameraMove" | "durationSeconds"
+>;
+
+function formatStoryboardPromptShot(
+  scene: StoryboardPromptScene,
+  shot: StoryboardPromptShot,
+  label: string,
+) {
+  const lines = [
+    `Scene: ${scene.title.trim() || "Untitled scene"}`,
+    `Shot: ${shot.title.trim() || "Untitled shot"}`,
+  ];
+  if (shot.description.trim()) lines.push(`Description: ${shot.description.trim()}`);
+  if (shot.shotType) lines.push(`Shot type: ${shot.shotType}`);
+  if (shot.cameraMove) lines.push(`Camera movement: ${shot.cameraMove}`);
+  if (shot.durationSeconds !== null) lines.push(`${label} storyboard duration: ${shot.durationSeconds} seconds`);
+  return lines.join("\n");
+}
+
+export function buildStoryboardVideoPrompt(
+  firstScene: StoryboardPromptScene,
+  firstShot: StoryboardPromptShot,
+  lastFrame?: { scene: StoryboardPromptScene; shot: StoryboardPromptShot },
+): string {
+  if (!lastFrame) {
+    return [
+      "Animate the provided storyboard frame into a video shot.",
+      formatStoryboardPromptShot(firstScene, firstShot, "Shot"),
+    ].join("\n\n");
+  }
+  return [
+    "Create one continuous video from the provided first frame to the provided last frame. Preserve visual continuity and move naturally from the opening composition to the ending composition.",
+    `First frame:\n${formatStoryboardPromptShot(firstScene, firstShot, "First shot")}`,
+    `Last frame:\n${formatStoryboardPromptShot(lastFrame.scene, lastFrame.shot, "Last shot")}`,
+  ].join("\n\n");
+}
 
 export type StoryboardFrameReference = {
   kind: "storyboard-frame";
@@ -7,8 +48,126 @@ export type StoryboardFrameReference = {
   shotId: string;
 };
 
+export type StoryboardVideoCandidate = {
+  sourceId: string;
+  workflowId: string;
+  nodeId: string;
+  outputPort: string;
+  videoType: string;
+  videoUrl: string;
+  model: string;
+  prompt: string;
+  sourceShotRefs: StoryboardFrameReference[];
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function collectStoryboardVideoCandidates(
+  workflowId: string,
+  nodes: readonly {
+    id: string;
+    data: {
+      type?: unknown;
+      title?: unknown;
+      params?: unknown;
+      outputs?: unknown;
+    };
+  }[],
+  edges: readonly { source: string; target: string; targetHandle?: string | null }[],
+  definitions: Record<string, NodeDef>,
+): StoryboardVideoCandidate[] {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const candidates: StoryboardVideoCandidate[] = [];
+
+  for (const node of nodes) {
+    const type = node.data.type;
+    if (typeof type !== "string") continue;
+    const def = definitions[type];
+    if (!def || def.category !== "Video") continue;
+    const outputs = isRecord(node.data.outputs) ? node.data.outputs : {};
+    const outputEntries = Object.entries(def.outputs).flatMap(([port, portType]) => {
+      const value = outputs[port];
+      return portType === "video" && isHttpUrl(value) ? [[port, value] as const] : [];
+    });
+    if (!outputEntries.length) continue;
+
+    const ancestorIds = new Set<string>();
+    const pending = edges.filter((edge) => edge.target === node.id).map((edge) => edge.source);
+    while (pending.length) {
+      const sourceId = pending.pop();
+      if (!sourceId || ancestorIds.has(sourceId)) continue;
+      ancestorIds.add(sourceId);
+      for (const edge of edges) {
+        if (edge.target === sourceId) pending.push(edge.source);
+      }
+    }
+
+    const ancestorNodes = nodes.filter((candidate) => ancestorIds.has(candidate.id));
+    const sourceShotRefs = ancestorNodes.flatMap((candidate) => {
+      if (candidate.data.type !== "input/image" || !isRecord(candidate.data.params)) return [];
+      const reference = candidate.data.params.storyboardFrameRef;
+      if (!isRecord(reference)
+        || reference.kind !== "storyboard-frame"
+        || reference.workflowId !== workflowId
+        || typeof reference.sceneId !== "string"
+        || typeof reference.shotId !== "string") return [];
+      return [{
+        kind: "storyboard-frame" as const,
+        workflowId,
+        sceneId: reference.sceneId,
+        shotId: reference.shotId,
+      }];
+    });
+    const uniqueShotRefs = [...new Map(sourceShotRefs.map((reference) => [
+      `${reference.sceneId}:${reference.shotId}`,
+      reference,
+    ])).values()];
+    if (!uniqueShotRefs.length) continue;
+
+    const params = isRecord(node.data.params) ? node.data.params : {};
+    const directPromptSources = edges
+      .filter((edge) => edge.target === node.id && edge.targetHandle === "prompt")
+      .map((edge) => edge.source);
+    const promptSourceIds = [...new Set([...directPromptSources, ...ancestorNodes.map((candidate) => candidate.id)])];
+    const connectedPrompt = promptSourceIds.flatMap((id) => {
+      const candidate = nodesById.get(id);
+      if (candidate?.data.type !== "input/prompt" || !isRecord(candidate.data.params)) return [];
+      const text = candidate.data.params.text;
+      return typeof text === "string" && text.trim() ? [text] : [];
+    })[0];
+    const modelParam = def.params.find((param) => param.key === "model");
+    const modelValue = typeof params.model === "string" ? params.model : "";
+    const model = modelParam?.optionLabels?.[modelValue] || def.label;
+    const prompt = connectedPrompt ?? (typeof params.prompt === "string" ? params.prompt : "");
+
+    for (const [outputPort, videoUrl] of outputEntries) {
+      candidates.push({
+        sourceId: `${workflowId}:${node.id}:${outputPort}`,
+        workflowId,
+        nodeId: node.id,
+        outputPort,
+        videoType: type,
+        videoUrl,
+        model,
+        prompt,
+        sourceShotRefs: uniqueShotRefs,
+      });
+    }
+  }
+
+  return candidates;
 }
 
 export function resolveStoryboardFrameReference(

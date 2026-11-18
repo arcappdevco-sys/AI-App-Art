@@ -1,7 +1,8 @@
 import type { Edge, Node } from "@xyflow/react";
-import { WAN_NODE_TYPE } from "./wan";
-import { MINIMAX_NODE_TYPE } from "./minimax";
-import { FLUX3_VIDEO_NODE_TYPE } from "./flux3-video";
+import { MINIMAX_NODE_TYPE, MINIMAX_VARIANTS } from "./minimax";
+import { FLUX3_VIDEO_DURATIONS, FLUX3_VIDEO_NODE_TYPE, FLUX3_VIDEO_RATIOS } from "./flux3-video";
+import { OMNI_MODELS } from "./omni";
+import { WAN_MAX_DURATION_SECONDS, WAN_MIN_DURATION_SECONDS, WAN_NODE_TYPE } from "./wan";
 import type { NodeDef } from "./types";
 
 export const videoModelTypes = [
@@ -24,6 +25,12 @@ export type FirstLastFrameModelOption = {
   firstFrameHandle: string;
   lastFrameHandle: string;
   params: Record<string, unknown>;
+};
+
+export type StoryboardVideoSettings = {
+  aspectRatio: string;
+  durationSeconds: number | null;
+  hasLastFrame: boolean;
 };
 
 const firstLastFrameModelLabels: Record<string, string> = {
@@ -97,6 +104,108 @@ function imageHandleForTask(def: NodeDef, handle: string, task: string) {
   if (def.inputs[handle] !== "image") return false;
   const condition = def.conditionalInputs?.[handle];
   return !condition || (condition.param === "task" && condition.value === task);
+}
+
+function durationChoices(
+  type: string,
+  def: NodeDef,
+  params: Record<string, unknown>,
+): number[] {
+  const durationParam = def.params.find((param) => param.key === "duration");
+  if (!durationParam) return [];
+  const dynamicOptions = durationParam.optionsByParam
+    ? durationParam.optionsByParam.values[String(params[durationParam.optionsByParam.param])]
+    : undefined;
+  const options = dynamicOptions ?? durationParam.options;
+  if (options?.length) {
+    return options.map(Number).filter((value) => Number.isInteger(value) && value > 0);
+  }
+  if (type === WAN_NODE_TYPE) {
+    return Array.from(
+      { length: WAN_MAX_DURATION_SECONDS - WAN_MIN_DURATION_SECONDS + 1 },
+      (_, index) => index + WAN_MIN_DURATION_SECONDS,
+    );
+  }
+  if (type === MINIMAX_NODE_TYPE) {
+    const model = String(params.model ?? "");
+    const variant = Object.entries(MINIMAX_VARIANTS)
+      .find(([modelId]) => modelId === model)?.[1];
+    return variant
+      ? Array.from({ length: 16 - variant.minDuration }, (_, index) => variant.minDuration + index)
+      : [];
+  }
+  if (type === FLUX3_VIDEO_NODE_TYPE) return [...FLUX3_VIDEO_DURATIONS];
+  return [];
+}
+
+function aspectRatioValue(value: string) {
+  const match = /^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/.exec(value);
+  if (!match) return undefined;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  return width > 0 && height > 0 ? width / height : undefined;
+}
+
+function closestAspectRatio(options: readonly string[], target: string) {
+  const targetValue = aspectRatioValue(target);
+  if (targetValue === undefined) return undefined;
+  let closest: string | undefined;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const option of options) {
+    const value = aspectRatioValue(option);
+    if (value === undefined) continue;
+    const distance = Math.abs(Math.log(value / targetValue));
+    if (distance < closestDistance) {
+      closest = option;
+      closestDistance = distance;
+    }
+  }
+  return closest;
+}
+
+export function getStoryboardVideoParamOverrides(
+  type: string,
+  definitions: Record<string, NodeDef>,
+  params: Record<string, unknown>,
+  settings: StoryboardVideoSettings,
+): Record<string, unknown> {
+  const def = definitions[type];
+  if (!def) throw new Error(`Unknown node type: ${type}`);
+  const overrides: Record<string, unknown> = {};
+  const targetDuration = settings.durationSeconds;
+
+  if (typeof targetDuration === "number" && Number.isFinite(targetDuration) && targetDuration > 0) {
+    const durationParam = def.params.find((param) => param.key === "duration");
+    let options = durationChoices(type, def, params);
+    if (type === "video/google-omni") {
+      const maximum = params.model === OMNI_MODELS["Gemini Omni 1.2 Flash"] && !settings.hasLastFrame ? 15 : 10;
+      options = options.filter((duration) => duration <= maximum);
+    }
+    const closest = options.reduce<number | undefined>((best, duration) => {
+      if (best === undefined) return duration;
+      const distance = Math.abs(duration - targetDuration);
+      const bestDistance = Math.abs(best - targetDuration);
+      return distance < bestDistance || (distance === bestDistance && duration < best) ? duration : best;
+    }, undefined);
+    if (durationParam && closest !== undefined) {
+      overrides.duration = typeof durationParam.default === "number" ? closest : String(closest);
+    }
+  }
+
+  const aspectRatioParamKey = type === FLUX3_VIDEO_NODE_TYPE
+    || type === "video/veo"
+    || type === "video/google-omni"
+    ? "aspect_ratio"
+    : undefined;
+  if (aspectRatioParamKey) {
+    const ratioParam = def.params.find((param) => param.key === aspectRatioParamKey);
+    const options = type === FLUX3_VIDEO_NODE_TYPE
+      ? FLUX3_VIDEO_RATIOS
+      : ratioParam?.options ?? [];
+    const closest = closestAspectRatio(options, settings.aspectRatio);
+    if (closest) overrides[aspectRatioParamKey] = closest;
+  }
+  return overrides;
 }
 
 export function getImageToVideoModelOptions(

@@ -638,6 +638,138 @@
   color: var(--text-secondary);
 }
 
+.storyboard-generated-takes {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 9px;
+  border: 1px solid var(--line-control);
+  border-radius: 7px;
+  background: var(--surface-deep);
+}
+
+.storyboard-generated-takes-heading,
+.storyboard-take-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.storyboard-generated-takes-heading span,
+.storyboard-take-meta > span,
+.storyboard-take-meta time {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.storyboard-take {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-control);
+}
+
+.storyboard-take-available {
+  border-top-style: dashed;
+}
+
+.storyboard-take video {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  background: #000;
+  object-fit: contain;
+}
+
+.storyboard-take-preview {
+  display: grid;
+  gap: 6px;
+}
+
+.storyboard-take-preview-toggle {
+  justify-self: start;
+  min-height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--line-control);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.storyboard-take-preview-toggle:hover {
+  border-color: var(--line-hover);
+  color: var(--text);
+}
+
+.storyboard-take-prompt {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.storyboard-take-prompt summary {
+  cursor: pointer;
+}
+
+.storyboard-take-prompt p {
+  max-height: 120px;
+  overflow: auto;
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.storyboard-take-save,
+.storyboard-take-remove,
+.storyboard-take-open {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line-control);
+  border-radius: 5px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.storyboard-take-save:hover,
+.storyboard-take-remove:hover,
+.storyboard-take-open:hover {
+  border-color: var(--line-hover);
+  color: var(--text);
+}
+
+.storyboard-take-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.storyboard-take-error,
+.storyboard-take-loading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.storyboard-take-error a {
+  color: var(--accent);
+}
+
 .storyboard-generate-frame:hover:not(:disabled) {
   border-color: var(--line-hover);
   background: var(--surface-hover);

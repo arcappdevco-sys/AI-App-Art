@@ -9,6 +9,7 @@ import {
   createStoryboardScene,
   createStoryboardShot,
   type StoryboardData,
+  type StoryboardGeneratedTake,
   type StoryboardScene,
   type StoryboardShot,
 } from "@/lib/StoryboardData";
@@ -20,6 +21,9 @@ import type {
   FirstLastFrameModelOption,
   ImageToVideoModelOption,
 } from "@/lib/workflow-node-factory";
+import { isAtlasVideoNode } from "@/lib/media-preview";
+import { usePlayableVideo } from "@/lib/use-playable-video";
+import type { StoryboardVideoCandidate } from "@/lib/storyboard-workflow";
 
 type ShotLocation = { sceneId: string; shotId: string; sceneIndex: number; shotIndex: number };
 type DraggedShot = { sceneId: string; shotId: string };
@@ -33,7 +37,47 @@ function shotHasContent(shot: StoryboardShot) {
     || shot.cameraMove
     || shot.durationSeconds !== null
     || shot.notes.trim()
-    || shot.frame,
+    || shot.frame
+    || Boolean(shot.generatedTakes?.length),
+  );
+}
+
+function StoryboardTakeVideo({ take }: { take: Pick<StoryboardGeneratedTake, "videoType" | "videoUrl"> }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const isAtlasVideo = isAtlasVideoNode(take.videoType);
+  const playable = usePlayableVideo(
+    previewOpen && isAtlasVideo && /^https?:\/\//i.test(take.videoUrl) ? take.videoUrl : undefined,
+  );
+  return (
+    <div className="storyboard-take-preview">
+      <button type="button" className="storyboard-take-preview-toggle"
+        aria-expanded={previewOpen}
+        onClick={() => {
+          setPreviewOpen((current) => !current);
+          setFailed(false);
+        }}>
+        {previewOpen ? "Hide preview" : "Preview video"}
+      </button>
+      {previewOpen && (playable.error ? (
+        <p className="storyboard-take-error" role="status">
+          Could not load the video preview. <a href={take.videoUrl} target="_blank" rel="noreferrer">Open original</a>
+        </p>
+      ) : isAtlasVideo && playable.loading ? (
+        <p className="storyboard-take-loading" role="status">Loading video preview…</p>
+      ) : failed ? (
+        <p className="storyboard-take-error" role="status">
+          The browser could not play this video. <a href={take.videoUrl} target="_blank" rel="noreferrer">Open original</a>
+        </p>
+      ) : (
+        <video
+          src={isAtlasVideo ? playable.src : take.videoUrl}
+          controls
+          preload="metadata"
+          onError={() => setFailed(true)}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -62,6 +106,8 @@ export default function StoryboardTab({
   storyboard,
   onChange,
   onSendFrame,
+  onOpenWorkflow,
+  videoCandidates,
   videoModelOptions,
   firstLastFrameModelOptions,
   hidden,
@@ -75,6 +121,8 @@ export default function StoryboardTab({
     videoType: string,
     lastFrame?: { sceneId: string; shotId: string },
   ) => void;
+  onOpenWorkflow: (workflowId: string) => void;
+  videoCandidates: StoryboardVideoCandidate[];
   videoModelOptions: ImageToVideoModelOption[];
   firstLastFrameModelOptions: FirstLastFrameModelOption[];
   hidden: boolean;
@@ -251,6 +299,37 @@ export default function StoryboardTab({
       scenes: current.scenes.map((scene) => scene.id !== sceneId ? scene : {
         ...scene,
         shots: scene.shots.map((shot) => shot.id === shotId ? { ...shot, ...patch } : shot),
+      }),
+    }));
+  };
+  const addGeneratedTake = (
+    sceneId: string,
+    shotId: string,
+    candidate: StoryboardVideoCandidate,
+  ) => {
+    const take: StoryboardGeneratedTake = {
+      id: crypto.randomUUID(),
+      sourceId: candidate.sourceId,
+      workflowId: candidate.workflowId,
+      nodeId: candidate.nodeId,
+      outputPort: candidate.outputPort,
+      videoType: candidate.videoType,
+      videoUrl: candidate.videoUrl,
+      model: candidate.model,
+      prompt: candidate.prompt,
+      createdAt: Date.now(),
+    };
+    onChange((current) => ({
+      ...current,
+      scenes: current.scenes.map((scene) => scene.id !== sceneId ? scene : {
+        ...scene,
+        shots: scene.shots.map((shot) => {
+          if (shot.id !== shotId) return shot;
+          const currentTakes = shot.generatedTakes ?? [];
+          if (currentTakes.some((saved) =>
+            saved.sourceId === take.sourceId && saved.videoUrl === take.videoUrl)) return shot;
+          return { ...shot, generatedTakes: [...currentTakes, take] };
+        }),
       }),
     }));
   };
@@ -492,6 +571,17 @@ export default function StoryboardTab({
                     const location = locations.find((item) => item.shotId === shot.id)!;
                     const number = shotNumbers.get(shot.id)!;
                     const notesOpen = expandedNotes.has(shot.id);
+                    const relatedVideoCandidates = videoCandidates.filter((candidate) =>
+                      candidate.sourceShotRefs.some((reference) =>
+                        reference.sceneId === scene.id && reference.shotId === shot.id,
+                      ),
+                    );
+                    const savedTakes = shot.generatedTakes ?? [];
+                    const availableVideoCandidates = relatedVideoCandidates.filter((candidate) =>
+                      !savedTakes.some((take) =>
+                        take.sourceId === candidate.sourceId && take.videoUrl === candidate.videoUrl,
+                      ),
+                    );
                     const frameStyle = { aspectRatio: ratio };
                     const updateNotesOpen = () => setExpandedNotes((current) => {
                       const next = new Set(current);
@@ -671,6 +761,59 @@ export default function StoryboardTab({
                         </button>
                         {frameErrors[shot.id] && <p className="storyboard-inline-error" role="alert">{frameErrors[shot.id]}</p>}
                         {imageErrors[shot.id] && <p className="storyboard-inline-error" role="status">{imageErrors[shot.id]}</p>}
+                        {(savedTakes.length > 0 || availableVideoCandidates.length > 0) && (
+                          <section className="storyboard-generated-takes"
+                            aria-label={`Generated video takes for Shot ${number}`}>
+                            <div className="storyboard-generated-takes-heading">
+                              <strong>Generated takes</strong>
+                              <span>{savedTakes.length} saved</span>
+                            </div>
+                            {savedTakes.map((take) => (
+                              <article className="storyboard-take" key={take.id}>
+                                <StoryboardTakeVideo take={take} />
+                                <div className="storyboard-take-meta">
+                                  <strong>{take.model}</strong>
+                                  <time dateTime={new Date(take.createdAt).toISOString()}>
+                                    {new Date(take.createdAt).toLocaleString()}
+                                  </time>
+                                </div>
+                                {take.prompt && <details className="storyboard-take-prompt">
+                                  <summary>Prompt used</summary>
+                                  <p>{take.prompt}</p>
+                                </details>}
+                                <div className="storyboard-take-actions">
+                                  <button type="button" className="storyboard-take-open"
+                                    onClick={() => onOpenWorkflow(take.workflowId)}>
+                                    Open source workflow
+                                  </button>
+                                  <button type="button" className="storyboard-take-remove"
+                                    aria-label={`Remove generated take from Shot ${number}`}
+                                    onClick={() => updateShot(scene.id, shot.id, {
+                                      generatedTakes: savedTakes.filter((saved) => saved.id !== take.id),
+                                    })}>Remove take</button>
+                                </div>
+                              </article>
+                            ))}
+                            {availableVideoCandidates.map((candidate) => (
+                              <article className="storyboard-take storyboard-take-available"
+                                key={`${candidate.sourceId}:${candidate.videoUrl}`}>
+                                <StoryboardTakeVideo take={candidate} />
+                                <div className="storyboard-take-meta">
+                                  <strong>{candidate.model}</strong>
+                                  <span>From current workflow</span>
+                                </div>
+                                {candidate.prompt && <details className="storyboard-take-prompt">
+                                  <summary>Prompt used</summary>
+                                  <p>{candidate.prompt}</p>
+                                </details>}
+                                <button type="button" className="storyboard-take-save"
+                                  onClick={() => addGeneratedTake(scene.id, shot.id, candidate)}>
+                                  Save as take
+                                </button>
+                              </article>
+                            ))}
+                          </section>
+                        )}
                         <label className="storyboard-field">
                           <span>Shot title <small>Optional</small></span>
                           <input value={shot.title} aria-label={`Shot ${number} title`}

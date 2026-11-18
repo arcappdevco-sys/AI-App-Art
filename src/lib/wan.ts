@@ -11,6 +11,9 @@ export const WAN_TASKS = {
   "Reference to video": "reference-to-video",
 } as const;
 
+export const WAN_MIN_DURATION_SECONDS = 2;
+export const WAN_MAX_DURATION_SECONDS = 30;
+
 export const WAN_RESOLUTIONS = [
   { value: "480p", group: "Native" },
   { value: "720p", group: "Native" },
@@ -149,7 +152,8 @@ export function normalizeWanParams(params: Record<string, unknown> = {}) {
     ...WAN_DEFAULTS,
     model: MODEL_VALUES.includes(model as (typeof MODEL_VALUES)[number]) ? model : WAN_DEFAULTS.model,
     task: TASK_VALUES.includes(task as (typeof TASK_VALUES)[number]) ? task : WAN_DEFAULTS.task,
-    duration: duration === -1 || (Number.isInteger(duration) && duration >= 2 && duration <= 30)
+    duration: duration === -1 || (Number.isInteger(duration)
+      && duration >= WAN_MIN_DURATION_SECONDS && duration <= WAN_MAX_DURATION_SECONDS)
       ? duration
       : WAN_DEFAULTS.duration,
     resolution: RESOLUTION_VALUES.includes(String(params.resolution) as (typeof RESOLUTION_VALUES)[number])
@@ -329,7 +333,8 @@ export function validateWanRequestBody(body: unknown) {
   if (typeof body.prompt !== "string" || !body.prompt.trim()) errors.push("A prompt is required.");
   if (typeof body.prompt === "string" && body.prompt.length > 20000) errors.push("Prompt must not exceed 20,000 characters.");
   if (typeof body.duration !== "number"
-    || !(body.duration === -1 || (Number.isInteger(body.duration) && body.duration >= 2 && body.duration <= 30))) {
+    || !(body.duration === -1 || (Number.isInteger(body.duration)
+      && body.duration >= WAN_MIN_DURATION_SECONDS && body.duration <= WAN_MAX_DURATION_SECONDS))) {
     errors.push("Duration must be Smart or a whole number from 2 to 30 seconds.");
   }
   if (!RESOLUTION_VALUES.includes(body.resolution as (typeof RESOLUTION_VALUES)[number])) {
@@ -396,9 +401,10 @@ export function buildWanRequest(node: WanNodeLike, resolvedInputs: WanResolvedIn
   let duration: number;
   if (typeof params.duration === "number") duration = params.duration;
   else duration = Number(params.duration);
-  if (!(duration === -1 || (Number.isInteger(duration) && duration >= 2 && duration <= 30))) {
+  if (!(duration === -1 || (Number.isInteger(duration)
+    && duration >= WAN_MIN_DURATION_SECONDS && duration <= WAN_MAX_DURATION_SECONDS))) {
     errors.push("Duration must be Smart or a whole number from 2 to 30 seconds.");
-    duration = 5;
+    duration = WAN_DEFAULTS.duration;
   }
   const resolution = String(params.resolution);
   if (!RESOLUTION_VALUES.includes(resolution as (typeof RESOLUTION_VALUES)[number])) {

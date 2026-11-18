@@ -32,6 +32,19 @@ export type StoryboardAspectRatio = (typeof STORYBOARD_ASPECT_RATIOS)[number];
 export type StoryboardShotType = (typeof STORYBOARD_SHOT_TYPES)[number] | "";
 export type StoryboardCameraMove = (typeof STORYBOARD_CAMERA_MOVES)[number] | "";
 
+export type StoryboardGeneratedTake = {
+  id: string;
+  sourceId: string;
+  workflowId: string;
+  nodeId: string;
+  outputPort: string;
+  videoType: string;
+  videoUrl: string;
+  model: string;
+  prompt: string;
+  createdAt: number;
+};
+
 export type StoryboardShot = {
   id: string;
   title: string;
@@ -41,6 +54,7 @@ export type StoryboardShot = {
   durationSeconds: number | null;
   notes: string;
   frame: string | null;
+  generatedTakes?: StoryboardGeneratedTake[];
   frameMetadata?: MediaAssetMetadata;
 };
 
@@ -110,6 +124,39 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     ? value.frame
     : null;
   const frameMetadata = frame ? normalizeMediaAssetMetadata(value.frameMetadata) : undefined;
+  const generatedTakes = Array.isArray(value.generatedTakes)
+    ? value.generatedTakes.flatMap((take) => {
+      if (!isRecord(take)
+        || typeof take.sourceId !== "string" || !take.sourceId.trim()
+        || typeof take.workflowId !== "string" || !take.workflowId.trim()
+        || typeof take.nodeId !== "string" || !take.nodeId.trim()
+        || typeof take.outputPort !== "string" || !take.outputPort.trim()
+        || typeof take.videoType !== "string" || !take.videoType.trim()
+        || typeof take.videoUrl !== "string"
+        || typeof take.model !== "string"
+        || typeof take.prompt !== "string"
+        || typeof take.createdAt !== "number" || !Number.isFinite(take.createdAt)
+        || take.createdAt < 0 || take.createdAt > 8_640_000_000_000_000) {
+        return [];
+      }
+      let videoUrl: URL;
+      try { videoUrl = new URL(take.videoUrl); }
+      catch { return []; }
+      if (videoUrl.protocol !== "http:" && videoUrl.protocol !== "https:") return [];
+      return [{
+        id: addUniqueId(take.id, usedIds),
+        sourceId: take.sourceId,
+        workflowId: take.workflowId,
+        nodeId: take.nodeId,
+        outputPort: take.outputPort,
+        videoType: take.videoType,
+        videoUrl: videoUrl.toString(),
+        model: take.model.trim() || "Video model",
+        prompt: take.prompt,
+        createdAt: take.createdAt,
+      }];
+    })
+    : [];
   return {
     id,
     title: typeof value.title === "string" ? value.title : "",
@@ -123,6 +170,7 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     durationSeconds,
     notes: typeof value.notes === "string" ? value.notes : "",
     frame,
+    ...(generatedTakes.length ? { generatedTakes } : {}),
     ...(frameMetadata ? { frameMetadata } : {}),
   };
 }
