@@ -47,17 +47,25 @@ import StoryboardTab from "@/components/StoryboardTab";
 import WorkspaceHelp from "@/components/WorkspaceHelp";
 import ProjectFolderControl from "@/components/ProjectFolderControl";
 import {
+  addMediaToProjectFolder,
   loadProjectWorkspaceState,
+  readOrCreateProjectManifest,
   saveProjectWorkspaceState,
   type ProjectFolderSession,
 } from "@/lib/project-folder-storage";
 import { hasValidWorkflowEdgeReferences, stripInvalidWorkflowConnections } from "@/lib/workflow-storage";
-import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
+import {
+  createEmptyStoryboard,
+  normalizeStoryboard,
+  type StoryboardData,
+  type StoryboardGeneratedTake,
+} from "@/lib/StoryboardData";
 import {
   buildStoryboardVideoPrompt,
   collectStoryboardVideoCandidates,
   rebindStoryboardWorkflowReferences,
   resolveWorkflowStoryboardFrames,
+  type StoryboardVideoCandidate,
 } from "@/lib/storyboard-workflow";
 import {
   createUnknownMediaAssetMetadata,
@@ -65,7 +73,11 @@ import {
   workflowOutputMediaSource,
   type ProjectMediaAsset,
 } from "@/lib/project-media";
-import { listProjectMediaAssets, registerProjectMediaAsset } from "@/lib/project-media-storage";
+import {
+  listProjectMediaAssets,
+  loadProjectMediaFile,
+  registerProjectMediaAsset,
+} from "@/lib/project-media-storage";
 import CanvasGroups from "@/components/CanvasGroups";
 import { ExampleDragPreview, useExampleDrag } from "@/components/ExampleDrag";
 import OllamaChat from "@/components/OllamaChat";
@@ -420,6 +432,7 @@ export default function Page() {
   const lastSavedPayload = useRef("");
   const workflowsRef = useRef<SavedWorkflow[]>([]);
   const activeWorkflowIdRef = useRef("");
+  const projectSessionRef = useRef<ProjectFolderSession | null>(null);
   const registeredMediaUrls = useRef(new Map<string, string>());
   const workflowSessionKey = projectSession?.sessionKey ?? "local";
   const loadedWorkflowSessionKey = useRef<string | null>(null);
@@ -429,6 +442,7 @@ export default function Page() {
     setProjectMediaAssets(await listProjectMediaAssets());
   }, []);
   const updateProjectSession = useCallback((session: ProjectFolderSession | null) => {
+    projectSessionRef.current = session;
     setProjectSession(session);
     setProjectSessionReady(true);
     setProjectSessionEpoch((current) => current + 1);
@@ -507,7 +521,8 @@ export default function Page() {
     return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
   }, [runModeMenuOpen]);
   const videoAssets = useMemo<VideoAsset[]>(() => projectMediaAssets
-    .filter((asset) => asset.mediaKind === "video" && asset.id.startsWith("workflow-output:"))
+    .filter((asset) => asset.mediaKind === "video"
+      && (asset.id.startsWith("workflow-output:") || asset.id.startsWith("storyboard-take:")))
     .map((asset) => ({
       id: asset.id,
       name: asset.name,
@@ -1247,6 +1262,151 @@ export default function Page() {
     setStorageError("");
   };
 
+  const saveStoryboardGeneratedTake = async (
+    sceneId: string,
+    shotId: string,
+    candidate: StoryboardVideoCandidate,
+  ) => {
+    try {
+      if (candidate.workflowId === activeWorkflowIdRef.current && !saveWorkflowLocally()) {
+        throw new Error("Could not save the current workflow before saving this take.");
+      }
+      const sourceWorkflow = workflowsRef.current.find((workflow) => workflow.id === candidate.workflowId);
+      const sourceScene = sourceWorkflow?.storyboard.scenes.find((scene) => scene.id === sceneId);
+      const sourceShot = sourceScene?.shots.find((shot) => shot.id === shotId);
+      if (!sourceWorkflow || !sourceScene || !sourceShot
+        || !candidate.sourceShotRefs.some((reference) =>
+          reference.sceneId === sceneId && reference.shotId === shotId)) {
+        throw new Error("The storyboard shot connected to this video is no longer available.");
+      }
+      if (sourceShot.generatedTakes?.some((take) =>
+        take.sourceId === candidate.sourceId && take.videoUrl === candidate.videoUrl)) {
+        throw new Error("This workflow output is already saved as a take.");
+      }
+
+      const sessionAtStart = projectSessionRef.current;
+      const outputAssetId = workflowOutputMediaId(
+        candidate.workflowId,
+        candidate.nodeId,
+        candidate.outputPort,
+      );
+      const existingOutputAsset = projectMediaAssets.find((asset) => asset.id === outputAssetId);
+      const existingOutputMatches = existingOutputAsset && (
+        (existingOutputAsset.source.kind === "url" && existingOutputAsset.source.url === candidate.videoUrl)
+        || (existingOutputAsset.source.kind === "storage"
+          && registeredMediaUrls.current.get(outputAssetId) === candidate.videoUrl)
+      );
+      const outputAsset = existingOutputAsset && existingOutputMatches
+        ? existingOutputAsset
+        : await registerProjectMediaAsset({
+          id: outputAssetId,
+          name: `${candidate.model} output`,
+          mediaKind: "video",
+          mimeType: null,
+          source: { kind: "url", url: candidate.videoUrl },
+          metadata: createUnknownMediaAssetMetadata(),
+        });
+      registeredMediaUrls.current.set(outputAssetId, candidate.videoUrl);
+      const downloadedFile = await loadProjectMediaFile(outputAssetId, outputAsset.revision);
+      const mimeType = downloadedFile.type.startsWith("video/")
+        ? downloadedFile.type
+        : /\.webm(?:$|[?#])/i.test(candidate.videoUrl) ? "video/webm"
+          : /\.mov(?:$|[?#])/i.test(candidate.videoUrl) ? "video/quicktime"
+            : "video/mp4";
+      const extension = mimeType === "video/webm" ? "webm"
+        : mimeType === "video/quicktime" ? "mov" : "mp4";
+      const shotName = sourceShot.title.trim() || `Shot ${sourceScene.shots.indexOf(sourceShot) + 1}`;
+      const mediaName = `${candidate.model} - ${shotName}`
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+        .replace(/[. ]+$/g, "")
+        .slice(0, 110) || "Generated take";
+      const file = new File([downloadedFile], `${mediaName}.${extension}`, {
+        type: mimeType,
+        lastModified: Date.now(),
+      });
+      const assetId = `storyboard-take:${crypto.randomUUID()}`;
+      const asset: ProjectMediaAsset = {
+        id: assetId,
+        name: file.name,
+        mediaKind: "video",
+        mimeType,
+        source: { kind: "storage", storageKey: assetId },
+        metadata: createUnknownMediaAssetMetadata(),
+      };
+
+      let projectName = "";
+      if (sessionAtStart) {
+        const { manifest } = await readOrCreateProjectManifest(sessionAtStart.handle);
+        if (manifest.id !== sessionAtStart.projectId) {
+          throw new Error("The project folder changed before this take could be saved.");
+        }
+        await addMediaToProjectFolder(sessionAtStart.handle, manifest, asset, file);
+        projectName = manifest.name;
+      }
+      const currentSessionKey = projectSessionRef.current?.sessionKey ?? null;
+      if (currentSessionKey !== (sessionAtStart?.sessionKey ?? null)) {
+        throw new Error("The active project changed while this take was being saved. Try again.");
+      }
+      await registerProjectMediaAsset(asset, file);
+      await refreshProjectMediaAssets();
+      if (sessionAtStart) setProjectSessionEpoch((current) => current + 1);
+
+      if (candidate.workflowId === activeWorkflowIdRef.current && !saveWorkflowLocally()) {
+        throw new Error("Could not save workflow changes before attaching this take.");
+      }
+      if ((projectSessionRef.current?.sessionKey ?? null) !== (sessionAtStart?.sessionKey ?? null)) {
+        throw new Error("The active project changed while this take was being saved. Try again.");
+      }
+      let updatedWorkflow: SavedWorkflow | undefined;
+      let updatedShotFound = false;
+      const take: StoryboardGeneratedTake = {
+        id: crypto.randomUUID(),
+        sourceId: candidate.sourceId,
+        workflowId: candidate.workflowId,
+        nodeId: candidate.nodeId,
+        outputPort: candidate.outputPort,
+        videoType: candidate.videoType,
+        videoUrl: candidate.videoUrl,
+        mediaAssetId: assetId,
+        model: candidate.model,
+        prompt: candidate.prompt,
+        createdAt: Date.now(),
+      };
+      const nextWorkflows = workflowsRef.current.map((workflow) => {
+        if (workflow.id !== candidate.workflowId) return workflow;
+        const nextStoryboard: StoryboardData = {
+          ...workflow.storyboard,
+          scenes: workflow.storyboard.scenes.map((scene) => scene.id !== sceneId ? scene : {
+            ...scene,
+            shots: scene.shots.map((shot) => {
+              if (shot.id !== shotId) return shot;
+              updatedShotFound = true;
+              return { ...shot, generatedTakes: [...(shot.generatedTakes ?? []), take] };
+            }),
+          }),
+        };
+        updatedWorkflow = { ...workflow, storyboard: nextStoryboard, updatedAt: Date.now() };
+        return updatedWorkflow;
+      });
+      if (!updatedWorkflow || !updatedShotFound) {
+        throw new Error("The storyboard shot was removed before the take could be attached.");
+      }
+      if (!persistWorkflowList(nextWorkflows, activeWorkflowIdRef.current)) {
+        throw new Error("Could not save the storyboard take to the workflow.");
+      }
+      if (activeWorkflowIdRef.current === candidate.workflowId) {
+        setStoryboard(updatedWorkflow.storyboard);
+      }
+      setStorageError("");
+      setStorageStatus(projectName ? `Saved take to ${projectName}` : "Saved take to this device");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save this generated take.";
+      setStorageError(message);
+      setStorageStatus("Unable to save storyboard take");
+      throw error instanceof Error ? error : new Error(message);
+    }
+  };
+
   const createWorkflow = () => {
     if (!saveWorkflowLocally()) return;
     const workflow: SavedWorkflow = {
@@ -1847,6 +2007,7 @@ export default function Page() {
         onProjectSessionChange={updateProjectSession}
       />
       <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
+        onSaveTake={saveStoryboardGeneratedTake}
         onOpenWorkflow={(workflowId) => {
           if (workflowId !== activeWorkflowIdRef.current) {
             if (!workflowsRef.current.some((workflow) => workflow.id === workflowId)) {
@@ -1860,6 +2021,7 @@ export default function Page() {
           setActiveView("workflow");
         }}
         videoCandidates={storyboardVideoCandidates}
+        projectSession={projectSession}
         videoModelOptions={storyboardVideoModelOptions}
         firstLastFrameModelOptions={storyboardFirstLastFrameModelOptions}
         hidden={activeView !== "storyboard"}

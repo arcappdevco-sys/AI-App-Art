@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type SetStateAction } from "react";
 import {
   STORYBOARD_ASPECT_RATIOS,
   STORYBOARD_CAMERA_MOVES,
@@ -24,6 +24,9 @@ import type {
 import { isAtlasVideoNode } from "@/lib/media-preview";
 import { usePlayableVideo } from "@/lib/use-playable-video";
 import type { StoryboardVideoCandidate } from "@/lib/storyboard-workflow";
+import type { ProjectFolderSession } from "@/lib/project-folder-storage";
+import { readProjectMediaAssetFile } from "@/lib/project-folder-storage";
+import { loadProjectMediaFile } from "@/lib/project-media-storage";
 
 type ShotLocation = { sceneId: string; shotId: string; sceneIndex: number; shotIndex: number };
 type DraggedShot = { sceneId: string; shotId: string };
@@ -42,41 +45,112 @@ function shotHasContent(shot: StoryboardShot) {
   );
 }
 
-function StoryboardTakeVideo({ take }: { take: Pick<StoryboardGeneratedTake, "videoType" | "videoUrl"> }) {
+function StoryboardTakeVideo({
+  take,
+  projectSession,
+}: {
+  take: Pick<StoryboardGeneratedTake, "videoType" | "videoUrl" | "mediaAssetId">;
+  projectSession: ProjectFolderSession | null;
+}) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [storedVideoPreview, setStoredVideoPreview] = useState<{
+    mediaAssetId: string;
+    projectSession: ProjectFolderSession | null;
+    url?: string;
+    error?: string;
+  } | null>(null);
+  const mediaAssetId = take.mediaAssetId;
   const isAtlasVideo = isAtlasVideoNode(take.videoType);
   const playable = usePlayableVideo(
-    previewOpen && isAtlasVideo && /^https?:\/\//i.test(take.videoUrl) ? take.videoUrl : undefined,
+    previewOpen && !mediaAssetId && isAtlasVideo && /^https?:\/\//i.test(take.videoUrl)
+      ? take.videoUrl
+      : undefined,
   );
+  useEffect(() => {
+    if (!previewOpen || !mediaAssetId) return;
+    let active = true;
+    let objectUrl: string | null = null;
+    void (async () => {
+      let file: File;
+      if (projectSession) {
+        try {
+          file = await readProjectMediaAssetFile(
+            projectSession.handle,
+            projectSession.projectId,
+            mediaAssetId,
+          );
+        } catch (projectError) {
+          try {
+            file = await loadProjectMediaFile(mediaAssetId);
+          } catch {
+            throw projectError;
+          }
+        }
+      } else {
+        file = await loadProjectMediaFile(mediaAssetId);
+      }
+      if (!file.type.startsWith("video/")) throw new Error("The saved take is not a video file.");
+      if (!active) return;
+      objectUrl = URL.createObjectURL(file);
+      setStoredVideoPreview({ mediaAssetId, projectSession, url: objectUrl });
+    })().catch((error: unknown) => {
+      if (active) setStoredVideoPreview({
+        mediaAssetId,
+        projectSession,
+        error: error instanceof Error ? error.message : "Could not load the saved video.",
+      });
+    });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [mediaAssetId, previewOpen, projectSession]);
+
+  const currentStoredPreview = storedVideoPreview
+    && storedVideoPreview.mediaAssetId === mediaAssetId
+    && storedVideoPreview.projectSession === projectSession
+    ? storedVideoPreview
+    : null;
+  const storedVideoUrl = currentStoredPreview?.url ?? null;
+  const storedVideoError = currentStoredPreview?.error ?? "";
+  const videoSource = mediaAssetId ? storedVideoUrl : (isAtlasVideo ? playable.src : take.videoUrl);
   return (
     <div className="storyboard-take-preview">
       <button type="button" className="storyboard-take-preview-toggle"
         aria-expanded={previewOpen}
         onClick={() => {
           setPreviewOpen((current) => !current);
+          setStoredVideoPreview(null);
           setFailed(false);
         }}>
         {previewOpen ? "Hide preview" : "Preview video"}
       </button>
-      {previewOpen && (playable.error ? (
+      {previewOpen && mediaAssetId && storedVideoError ? (
+        <p className="storyboard-take-error" role="status">
+          Could not load the saved video: {storedVideoError}
+          {take.videoUrl && <> <a href={take.videoUrl} target="_blank" rel="noreferrer">Try the source link</a></>}
+        </p>
+      ) : previewOpen && mediaAssetId && !storedVideoUrl ? (
+        <p className="storyboard-take-loading" role="status">Loading saved video…</p>
+      ) : previewOpen && !mediaAssetId && playable.error ? (
         <p className="storyboard-take-error" role="status">
           Could not load the video preview. <a href={take.videoUrl} target="_blank" rel="noreferrer">Open original</a>
         </p>
-      ) : isAtlasVideo && playable.loading ? (
+      ) : previewOpen && !mediaAssetId && isAtlasVideo && playable.loading ? (
         <p className="storyboard-take-loading" role="status">Loading video preview…</p>
-      ) : failed ? (
+      ) : previewOpen && failed ? (
         <p className="storyboard-take-error" role="status">
           The browser could not play this video. <a href={take.videoUrl} target="_blank" rel="noreferrer">Open original</a>
         </p>
-      ) : (
+      ) : previewOpen && videoSource ? (
         <video
-          src={isAtlasVideo ? playable.src : take.videoUrl}
+          src={videoSource}
           controls
           preload="metadata"
           onError={() => setFailed(true)}
         />
-      ))}
+      ) : null}
     </div>
   );
 }
@@ -107,7 +181,9 @@ export default function StoryboardTab({
   onChange,
   onSendFrame,
   onOpenWorkflow,
+  onSaveTake,
   videoCandidates,
+  projectSession,
   videoModelOptions,
   firstLastFrameModelOptions,
   hidden,
@@ -122,7 +198,9 @@ export default function StoryboardTab({
     lastFrame?: { sceneId: string; shotId: string },
   ) => void;
   onOpenWorkflow: (workflowId: string) => void;
+  onSaveTake: (sceneId: string, shotId: string, candidate: StoryboardVideoCandidate) => Promise<void>;
   videoCandidates: StoryboardVideoCandidate[];
+  projectSession: ProjectFolderSession | null;
   videoModelOptions: ImageToVideoModelOption[];
   firstLastFrameModelOptions: FirstLastFrameModelOption[];
   hidden: boolean;
@@ -138,6 +216,8 @@ export default function StoryboardTab({
   const [frameModel, setFrameModel] = useState<StoryboardFrameModelId>(STORYBOARD_FRAME_MODELS[0].id);
   const [generatingShotIds, setGeneratingShotIds] = useState<Set<string>>(() => new Set());
   const [frameErrors, setFrameErrors] = useState<Record<string, string>>({});
+  const [savingTakeKeys, setSavingTakeKeys] = useState<Set<string>>(() => new Set());
+  const [takeSaveErrors, setTakeSaveErrors] = useState<Record<string, string>>({});
   const [frameBatchProgress, setFrameBatchProgress] = useState("");
   const [generatingMissingFrames, setGeneratingMissingFrames] = useState(false);
   const [workflowPickerShotId, setWorkflowPickerShotId] = useState<string | null>(null);
@@ -302,36 +382,32 @@ export default function StoryboardTab({
       }),
     }));
   };
-  const addGeneratedTake = (
+  const saveGeneratedTake = async (
     sceneId: string,
     shotId: string,
     candidate: StoryboardVideoCandidate,
   ) => {
-    const take: StoryboardGeneratedTake = {
-      id: crypto.randomUUID(),
-      sourceId: candidate.sourceId,
-      workflowId: candidate.workflowId,
-      nodeId: candidate.nodeId,
-      outputPort: candidate.outputPort,
-      videoType: candidate.videoType,
-      videoUrl: candidate.videoUrl,
-      model: candidate.model,
-      prompt: candidate.prompt,
-      createdAt: Date.now(),
-    };
-    onChange((current) => ({
-      ...current,
-      scenes: current.scenes.map((scene) => scene.id !== sceneId ? scene : {
-        ...scene,
-        shots: scene.shots.map((shot) => {
-          if (shot.id !== shotId) return shot;
-          const currentTakes = shot.generatedTakes ?? [];
-          if (currentTakes.some((saved) =>
-            saved.sourceId === take.sourceId && saved.videoUrl === take.videoUrl)) return shot;
-          return { ...shot, generatedTakes: [...currentTakes, take] };
-        }),
-      }),
-    }));
+    const key = `${candidate.sourceId}:${candidate.videoUrl}`;
+    setSavingTakeKeys((current) => new Set(current).add(key));
+    setTakeSaveErrors((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    try {
+      await onSaveTake(sceneId, shotId, candidate);
+    } catch (error) {
+      setTakeSaveErrors((current) => ({
+        ...current,
+        [key]: error instanceof Error ? error.message : "Could not save this take.",
+      }));
+    } finally {
+      setSavingTakeKeys((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    }
   };
 
   const updateScene = (sceneId: string, patch: Partial<StoryboardScene>) => {
@@ -770,7 +846,7 @@ export default function StoryboardTab({
                             </div>
                             {savedTakes.map((take) => (
                               <article className="storyboard-take" key={take.id}>
-                                <StoryboardTakeVideo take={take} />
+                                <StoryboardTakeVideo take={take} projectSession={projectSession} />
                                 <div className="storyboard-take-meta">
                                   <strong>{take.model}</strong>
                                   <time dateTime={new Date(take.createdAt).toISOString()}>
@@ -797,7 +873,7 @@ export default function StoryboardTab({
                             {availableVideoCandidates.map((candidate) => (
                               <article className="storyboard-take storyboard-take-available"
                                 key={`${candidate.sourceId}:${candidate.videoUrl}`}>
-                                <StoryboardTakeVideo take={candidate} />
+                                <StoryboardTakeVideo take={candidate} projectSession={projectSession} />
                                 <div className="storyboard-take-meta">
                                   <strong>{candidate.model}</strong>
                                   <span>From current workflow</span>
@@ -807,9 +883,15 @@ export default function StoryboardTab({
                                   <p>{candidate.prompt}</p>
                                 </details>}
                                 <button type="button" className="storyboard-take-save"
-                                  onClick={() => addGeneratedTake(scene.id, shot.id, candidate)}>
-                                  Save as take
+                                  disabled={savingTakeKeys.has(`${candidate.sourceId}:${candidate.videoUrl}`)}
+                                  onClick={() => void saveGeneratedTake(scene.id, shot.id, candidate)}>
+                                  {savingTakeKeys.has(`${candidate.sourceId}:${candidate.videoUrl}`)
+                                    ? "Saving local copy…" : "Save as take"}
                                 </button>
+                                {takeSaveErrors[`${candidate.sourceId}:${candidate.videoUrl}`]
+                                  && <p className="storyboard-take-error" role="alert">
+                                    Could not save take: {takeSaveErrors[`${candidate.sourceId}:${candidate.videoUrl}`]}
+                                  </p>}
                               </article>
                             ))}
                           </section>

@@ -40,6 +40,7 @@ export type StoryboardGeneratedTake = {
   outputPort: string;
   videoType: string;
   videoUrl: string;
+  mediaAssetId?: string;
   model: string;
   prompt: string;
   createdAt: number;
@@ -151,6 +152,9 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
         outputPort: take.outputPort,
         videoType: take.videoType,
         videoUrl: videoUrl.toString(),
+        ...(typeof take.mediaAssetId === "string" && take.mediaAssetId.trim()
+          ? { mediaAssetId: take.mediaAssetId }
+          : {}),
         model: take.model.trim() || "Video model",
         prompt: take.prompt,
         createdAt: take.createdAt,

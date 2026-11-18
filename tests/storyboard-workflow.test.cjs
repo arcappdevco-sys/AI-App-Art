@@ -239,6 +239,7 @@ test("normalizes generated takes and ignores malformed or non-HTTP video sources
     outputPort: "video",
     videoType: "video/test",
     videoUrl: "https://media.example/take.mp4",
+    mediaAssetId: "storyboard-take:take-1",
     model: "Test Video",
     prompt: "A careful camera move.",
     createdAt: 1_700_000_000_000,
