@@ -16,6 +16,18 @@ import {
 } from "./project-video-editor";
 import type { ProjectMediaAsset } from "./project-media";
 import type { StoredVideoEditorState } from "./video-editor-storage";
+import {
+  createProjectCompositorDocument,
+  normalizeProjectCompositorDocument,
+  PROJECT_COMPOSITOR_DOCUMENT_FILE_NAME,
+  type ProjectCompositorState,
+} from "./project-compositor";
+import {
+  createProjectWorkspaceDocument,
+  normalizeProjectWorkspaceDocument,
+  PROJECT_WORKSPACE_DOCUMENT_FILE_NAME,
+  type ProjectWorkspaceState,
+} from "./project-workspace";
 
 declare global {
   interface Window {
@@ -28,6 +40,10 @@ declare global {
 
   interface FileSystemHandle {
     queryPermission?: (descriptor?: { mode?: "read" | "readwrite" }) => Promise<PermissionState>;
+  }
+
+  interface FileSystemDirectoryHandle {
+    values(): AsyncIterableIterator<FileSystemHandle>;
   }
 }
 
@@ -137,6 +153,108 @@ function safeMediaFileName(name: string): string {
   return sanitized || "media";
 }
 
+type ProjectBackupEntry = {
+  path: string;
+  handle: FileSystemFileHandle;
+};
+
+async function collectProjectBackupEntries(
+  directory: FileSystemDirectoryHandle,
+  destination: FileSystemDirectoryHandle,
+  relativePath = "",
+): Promise<{ directories: string[]; files: ProjectBackupEntry[] }> {
+  const directories: string[] = [];
+  const files: ProjectBackupEntry[] = [];
+  for await (const entry of directory.values()) {
+    const path = normalizeProjectRelativePath(relativePath ? `${relativePath}/${entry.name}` : entry.name);
+    if (entry.kind === "directory") {
+      if (await entry.isSameEntry(destination)) {
+        throw new Error("Choose a backup folder outside the project folder.");
+      }
+      directories.push(path);
+      const nested = await collectProjectBackupEntries(
+        entry as FileSystemDirectoryHandle,
+        destination,
+        path,
+      );
+      directories.push(...nested.directories);
+      files.push(...nested.files);
+    } else {
+      files.push({ path, handle: entry as FileSystemFileHandle });
+    }
+  }
+  return { directories, files };
+}
+
+export async function backupProjectFolder(
+  source: FileSystemDirectoryHandle,
+  expectedProjectId: string,
+  destination: FileSystemDirectoryHandle,
+  onProgress?: (completedFiles: number, totalFiles: number) => void,
+): Promise<{ fileCount: number; totalBytes: number }> {
+  const manifest = await readProjectManifest(source);
+  if (!manifest) throw new Error(`Project manifest "${PROJECT_MANIFEST_FILE_NAME}" is missing; the project cannot be backed up.`);
+  if (manifest.id !== expectedProjectId) {
+    throw new Error("The project folder changed before its backup could be created.");
+  }
+  if (await source.isSameEntry(destination)) {
+    throw new Error("Choose a different, empty folder for the backup.");
+  }
+  const destinationEntries = destination.values();
+  if (!(await destinationEntries.next()).done) {
+    throw new Error(`The backup folder "${destination.name}" is not empty. Choose an empty folder.`);
+  }
+
+  const { directories, files } = await collectProjectBackupEntries(source, destination);
+  const projectFiles = new Map(files.map((entry) => [entry.path, entry]));
+  const assetsByPath = new Map(manifest.assets.map((asset) => [asset.relativePath, asset]));
+  for (const asset of manifest.assets) {
+    if (!projectFiles.has(asset.relativePath)) {
+      throw new Error(`Project media "${asset.name}" is missing at "${asset.relativePath}".`);
+    }
+    if (asset.proxyPath && !projectFiles.has(asset.proxyPath)) {
+      throw new Error(`Project proxy for "${asset.name}" is missing at "${asset.proxyPath}".`);
+    }
+  }
+  const filesToCopy: Array<{ path: string; file: File }> = [];
+  let totalBytes = 0;
+  for (const entry of files) {
+    const file = await entry.handle.getFile();
+    const asset = assetsByPath.get(entry.path);
+    if (asset && asset.sizeBytes !== null && file.size !== asset.sizeBytes) {
+      throw new Error(
+        `Project media "${asset.name}" has changed size (expected ${asset.sizeBytes} bytes, found ${file.size}).`,
+      );
+    }
+    filesToCopy.push({ path: entry.path, file });
+    totalBytes += file.size;
+  }
+  let completedFiles = 0;
+  try {
+    for (const path of directories) {
+      let target = destination;
+      for (const segment of path.split("/")) {
+        target = await target.getDirectoryHandle(segment, { create: true });
+      }
+    }
+
+    for (const entry of filesToCopy) {
+      const destinationFile = await getFileHandleAtPath(destination, entry.path, true);
+      const writable = await destinationFile.createWritable();
+      await writable.write(entry.file);
+      await writable.close();
+      completedFiles += 1;
+      onProgress?.(completedFiles, files.length);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`The backup may be incomplete; its destination may contain a partial copy. ${message}`, {
+      cause: error,
+    });
+  }
+  return { fileCount: files.length, totalBytes };
+}
+
 export async function addMediaToProjectFolder(
   handle: FileSystemDirectoryHandle,
   manifest: ProjectManifest,
@@ -209,19 +327,16 @@ export async function readProjectMediaAssetFile(
   return readProjectMediaFile(handle, asset);
 }
 
-export async function readOrCreateProjectManifest(
+async function readProjectManifest(
   handle: FileSystemDirectoryHandle,
-): Promise<{ manifest: ProjectManifest; created: boolean }> {
+): Promise<ProjectManifest | null> {
   let fileHandle: FileSystemFileHandle;
   try {
     fileHandle = await handle.getFileHandle(PROJECT_MANIFEST_FILE_NAME);
   } catch (error) {
-    if (!isNamedError(error, "NotFoundError")) throw error;
-    const manifest = createManifest(handle.name);
-    await writeManifest(handle, manifest);
-    return { manifest, created: true };
+    if (isNamedError(error, "NotFoundError")) return null;
+    throw error;
   }
-
   const text = await (await fileHandle.getFile()).text();
   let raw: unknown;
   try {
@@ -232,7 +347,17 @@ export async function readOrCreateProjectManifest(
     }
     throw error;
   }
-  return { manifest: normalizeProjectManifest(raw), created: false };
+  return normalizeProjectManifest(raw);
+}
+
+export async function readOrCreateProjectManifest(
+  handle: FileSystemDirectoryHandle,
+): Promise<{ manifest: ProjectManifest; created: boolean }> {
+  const existing = await readProjectManifest(handle);
+  if (existing) return { manifest: existing, created: false };
+  const manifest = createManifest(handle.name);
+  await writeManifest(handle, manifest);
+  return { manifest, created: true };
 }
 
 export async function loadProjectVideoEditorState(
@@ -284,6 +409,100 @@ export async function saveProjectVideoEditorState(
   await writable.close();
 }
 
+export async function loadProjectCompositorState(
+  handle: FileSystemDirectoryHandle,
+  expectedProjectId: string,
+): Promise<ProjectCompositorState | null> {
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  if (manifest.id !== expectedProjectId) {
+    throw new Error("The project folder changed before its compositor document could be loaded.");
+  }
+  let fileHandle: FileSystemFileHandle;
+  try {
+    fileHandle = await handle.getFileHandle(PROJECT_COMPOSITOR_DOCUMENT_FILE_NAME);
+  } catch (error) {
+    if (isNamedError(error, "NotFoundError")) return null;
+    throw error;
+  }
+  const text = await (await fileHandle.getFile()).text();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(
+        `The project compositor document "${PROJECT_COMPOSITOR_DOCUMENT_FILE_NAME}" contains invalid JSON.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  return normalizeProjectCompositorDocument(raw, manifest).state;
+}
+
+export async function saveProjectCompositorState(
+  handle: FileSystemDirectoryHandle,
+  expectedProjectId: string,
+  state: ProjectCompositorState,
+): Promise<void> {
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  if (manifest.id !== expectedProjectId) {
+    throw new Error("The project folder changed before its compositor document could be saved.");
+  }
+  const document = createProjectCompositorDocument(state, manifest);
+  const fileHandle = await handle.getFileHandle(PROJECT_COMPOSITOR_DOCUMENT_FILE_NAME, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(`${JSON.stringify(document, null, 2)}\n`);
+  await writable.close();
+}
+
+export async function loadProjectWorkspaceState(
+  handle: FileSystemDirectoryHandle,
+  expectedProjectId: string,
+): Promise<ProjectWorkspaceState | null> {
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  if (manifest.id !== expectedProjectId) {
+    throw new Error("The project folder changed before its workflow document could be loaded.");
+  }
+  let fileHandle: FileSystemFileHandle;
+  try {
+    fileHandle = await handle.getFileHandle(PROJECT_WORKSPACE_DOCUMENT_FILE_NAME);
+  } catch (error) {
+    if (isNamedError(error, "NotFoundError")) return null;
+    throw error;
+  }
+  const text = await (await fileHandle.getFile()).text();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(
+        `The project workspace document "${PROJECT_WORKSPACE_DOCUMENT_FILE_NAME}" contains invalid JSON.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  return normalizeProjectWorkspaceDocument(raw, expectedProjectId).state;
+}
+
+export async function saveProjectWorkspaceState(
+  handle: FileSystemDirectoryHandle,
+  expectedProjectId: string,
+  state: ProjectWorkspaceState,
+): Promise<void> {
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  if (manifest.id !== expectedProjectId) {
+    throw new Error("The project folder changed before its workflow document could be saved.");
+  }
+  const document = createProjectWorkspaceDocument(state, manifest.id);
+  const fileHandle = await handle.getFileHandle(PROJECT_WORKSPACE_DOCUMENT_FILE_NAME, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(`${JSON.stringify(document, null, 2)}\n`);
+  await writable.close();
+}
+
 export async function saveCurrentProjectFolder(handle: FileSystemDirectoryHandle): Promise<void> {
   const database = await openDatabase();
   try {
@@ -329,10 +548,11 @@ export async function chooseProjectFolder(): Promise<FileSystemDirectoryHandle> 
 
 export async function chooseProjectMediaFiles(
   projectFolder: FileSystemDirectoryHandle,
+  multiple = true,
 ): Promise<File[] | null> {
   if (!window.showOpenFilePicker) return null;
   const handles = await window.showOpenFilePicker({
-    multiple: true,
+    multiple,
     startIn: projectFolder,
   });
   return Promise.all(handles.map((handle) => handle.getFile()));

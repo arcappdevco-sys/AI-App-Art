@@ -16,9 +16,14 @@ import { STORYBOARD_FRAME_MODELS, buildStoryboardFramePrompt, generateStoryboard
 import { storyboardImageDataUrl } from "@/lib/StoryboardImages";
 import { inspectImageDataUrlMetadata } from "@/lib/project-media-browser";
 import { normalizeGeneratedStoryboard } from "@/lib/StoryboardScript";
+import type {
+  FirstLastFrameModelOption,
+  ImageToVideoModelOption,
+} from "@/lib/workflow-node-factory";
 
 type ShotLocation = { sceneId: string; shotId: string; sceneIndex: number; shotIndex: number };
 type DraggedShot = { sceneId: string; shotId: string };
+type PendingFirstLastFrame = { sceneId: string; shotId: string; videoType: string };
 
 function shotHasContent(shot: StoryboardShot) {
   return Boolean(
@@ -57,12 +62,21 @@ export default function StoryboardTab({
   storyboard,
   onChange,
   onSendFrame,
+  videoModelOptions,
+  firstLastFrameModelOptions,
   hidden,
   saveError,
 }: {
   storyboard: StoryboardData;
   onChange: (value: SetStateAction<StoryboardData>) => void;
-  onSendFrame: (sceneId: string, shotId: string) => void;
+  onSendFrame: (
+    sceneId: string,
+    shotId: string,
+    videoType: string,
+    lastFrame?: { sceneId: string; shotId: string },
+  ) => void;
+  videoModelOptions: ImageToVideoModelOption[];
+  firstLastFrameModelOptions: FirstLastFrameModelOption[];
   hidden: boolean;
   saveError: string;
 }) {
@@ -78,9 +92,21 @@ export default function StoryboardTab({
   const [frameErrors, setFrameErrors] = useState<Record<string, string>>({});
   const [frameBatchProgress, setFrameBatchProgress] = useState("");
   const [generatingMissingFrames, setGeneratingMissingFrames] = useState(false);
+  const [workflowPickerShotId, setWorkflowPickerShotId] = useState<string | null>(null);
+  const [pendingFirstLastFrame, setPendingFirstLastFrame] = useState<PendingFirstLastFrame | null>(null);
   const draggedShot = useRef<DraggedShot | null>(null);
   const locations = useMemo(() => shotLocations(storyboard.scenes), [storyboard.scenes]);
   const shotNumbers = useMemo(() => new Map(locations.map((location, index) => [location.shotId, index + 1])), [locations]);
+  const frameChoices = useMemo(() => locations.flatMap((location) => {
+    const scene = storyboard.scenes[location.sceneIndex];
+    const shot = scene.shots[location.shotIndex];
+    if (!shot.frame) return [];
+    return [{
+      sceneId: scene.id,
+      shotId: shot.id,
+      label: `${scene.title} · ${shot.title.trim() || `Shot ${location.shotIndex + 1}`}`,
+    }];
+  }), [locations, storyboard.scenes]);
   const ratio = storyboard.aspectRatio.replace(":", " / ");
 
   const handleScriptFile = async (file?: File) => {
@@ -513,9 +539,74 @@ export default function StoryboardTab({
                                   }),
                                 }));
                               }}>Duplicate</button>
-                            {shot.frame && <button type="button" title="Add this frame to the workflow"
-                              aria-label={`Use Shot ${number} frame in workflow`}
-                              onClick={() => onSendFrame(scene.id, shot.id)}>To workflow</button>}
+                            {shot.frame && <div className="storyboard-workflow-picker">
+                              <button type="button" title="Choose a video AI for this shot"
+                                aria-label={`Choose a video AI for Shot ${number}`}
+                                aria-haspopup="menu"
+                                aria-expanded={workflowPickerShotId === shot.id}
+                                aria-controls={`storyboard-video-models-${number}`}
+                                onClick={() => {
+                                  const closing = workflowPickerShotId === shot.id;
+                                  setWorkflowPickerShotId(closing ? null : shot.id);
+                                  setPendingFirstLastFrame(null);
+                                }}>To workflow ▾</button>
+                              {workflowPickerShotId === shot.id && <div
+                                id={`storyboard-video-models-${number}`}
+                                className="storyboard-workflow-picker-menu"
+                                role="group"
+                                aria-label={`Choose a video AI and frame mode for Shot ${number}`}
+                                onKeyDown={(event) => {
+                                  if (event.key !== "Escape") return;
+                                  if (pendingFirstLastFrame?.shotId === shot.id) setPendingFirstLastFrame(null);
+                                  else setWorkflowPickerShotId(null);
+                                }}>
+                                {pendingFirstLastFrame?.sceneId === scene.id
+                                  && pendingFirstLastFrame.shotId === shot.id ? (
+                                  <>
+                                    <div className="storyboard-workflow-picker-heading">
+                                      <span>Choose the last frame</span>
+                                      <button type="button" onClick={() => setPendingFirstLastFrame(null)}>Back</button>
+                                    </div>
+                                    {frameChoices.filter((choice) =>
+                                      choice.sceneId !== scene.id || choice.shotId !== shot.id,
+                                    ).map((choice) => <button key={`${choice.sceneId}-${choice.shotId}`} type="button"
+                                      onClick={() => {
+                                        setWorkflowPickerShotId(null);
+                                        setPendingFirstLastFrame(null);
+                                        onSendFrame(scene.id, shot.id, pendingFirstLastFrame.videoType, choice);
+                                      }}>{choice.label}</button>)}
+                                    {frameChoices.every((choice) =>
+                                      choice.sceneId === scene.id && choice.shotId === shot.id,
+                                    ) && <p className="storyboard-workflow-picker-empty">
+                                      Add a frame to another shot before choosing a last frame.
+                                    </p>}
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className="storyboard-workflow-picker-section">
+                                      <span>Image to video</span>
+                                      {videoModelOptions.map((option) => <button key={option.type} type="button"
+                                        onClick={() => {
+                                          setWorkflowPickerShotId(null);
+                                          onSendFrame(scene.id, shot.id, option.type);
+                                        }}>{option.label}</button>)}
+                                    </div>
+                                    {firstLastFrameModelOptions.length > 0 && <div
+                                      className="storyboard-workflow-picker-section">
+                                      <span>First + last frame</span>
+                                      {firstLastFrameModelOptions.map((option) => <button
+                                        key={option.type}
+                                        type="button"
+                                        onClick={() => setPendingFirstLastFrame({
+                                          sceneId: scene.id,
+                                          shotId: shot.id,
+                                          videoType: option.type,
+                                        })}>{option.label}</button>)}
+                                    </div>}
+                                  </>
+                                )}
+                              </div>}
+                            </div>}
                             <button type="button" className="storyboard-delete-action"
                               aria-label={`Delete Shot ${number}`} title="Delete shot" onClick={() => {
                                 if (shotHasContent(shot)

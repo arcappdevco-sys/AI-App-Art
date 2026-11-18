@@ -17,7 +17,16 @@ import { applyCompositorKeyer } from "@/lib/compositor-keyer";
 import { CompositorHistory, compositorHistoryShortcut } from "@/lib/compositor-history";
 import { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, planarTrackingMatrix, similarityTrackingMatrix, trackerAnchors, trackerMode, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingCanvas, type TrackingData, type TrackingMatrix, type TrackingPoint, type TrackingResult, type TrackingSample } from "@/lib/compositor-tracking";
 import { createUnknownMediaAssetMetadata, normalizeMediaAssetMetadata, normalizeMediaAssetMetadataMap, type MediaAssetMetadata, type ProjectMediaAsset } from "@/lib/project-media";
-import { loadProjectMediaFile } from "@/lib/project-media-storage";
+import {
+  addMediaToProjectFolder,
+  chooseProjectMediaFiles,
+  loadProjectCompositorState,
+  readOrCreateProjectManifest,
+  saveProjectCompositorState,
+  type ProjectFolderSession,
+} from "@/lib/project-folder-storage";
+import { loadProjectMediaFile, registerProjectMediaAsset } from "@/lib/project-media-storage";
+import type { ProjectCompositorState } from "@/lib/project-compositor";
 
 type CompNode = CompositorNode;
 type Project = {
@@ -28,6 +37,11 @@ type Project = {
   mediaMetadata?: Record<string, MediaAssetMetadata>;
   tracks?: Record<string, TrackingData>;
   marks?: CompositorMarks;
+  time?: number;
+  viewerTransform?: { zoom: number; x: number; y: number };
+  previewBackground?: "checkerboard" | "color";
+  previewColor?: string;
+  viewChannel?: "rgb" | "red" | "green" | "blue" | "alpha";
 };
 type HistorySnapshot = {
   nodes: CompNode[];
@@ -289,9 +303,20 @@ async function renderVideoFrames(start: number, duration: number, draw: (time: n
   if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining));
 }
 
-export default function Compositor({ hidden, sharedMediaAssets = [] }: {
+export default function Compositor({
+  hidden,
+  sharedMediaAssets = [],
+  projectSession = null,
+  projectSessionReady = true,
+  onProjectMediaChange,
+  onProjectSessionChange,
+}: {
   hidden: boolean;
   sharedMediaAssets?: ProjectMediaAsset[];
+  projectSession?: ProjectFolderSession | null;
+  projectSessionReady?: boolean;
+  onProjectMediaChange?: () => Promise<void>;
+  onProjectSessionChange?: (session: ProjectFolderSession) => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CompNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -311,10 +336,12 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
   const [mediaVersion, setMediaVersion] = useState(0);
   const [templateVersion, setTemplateVersion] = useState(0);
   const [mediaDurations, setMediaDurations] = useState<Record<string, number>>({});
+  const projectHandle = projectSession?.handle ?? null;
+  const projectId = projectSession?.projectId ?? null;
   const [viewerTransform, setViewerTransform] = useState(DEFAULT_VIEWER_TRANSFORM);
-  const [previewBackground, setPreviewBackground] = useState("checkerboard");
+  const [previewBackground, setPreviewBackground] = useState<"checkerboard" | "color">("checkerboard");
   const [previewColor, setPreviewColor] = useState("#ffffff");
-  const [viewChannel, setViewChannel] = useState("rgb");
+  const [viewChannel, setViewChannel] = useState<"rgb" | "red" | "green" | "blue" | "alpha">("rgb");
   const [pickingKey, setPickingKey] = useState("");
   const [panning, setPanning] = useState(false);
   const [historyAvailability, setHistoryAvailability] = useState({ undo: false, redo: false });
@@ -337,6 +364,7 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
   const historyGroup = useRef<{ recorded: boolean; type: "text" | "pointer"; target: EventTarget } | null>(null);
   const restoringHistory = useRef(false);
   const trackingCancelled = useRef(false);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
   const selectedNode = nodes.find((node) => node.id === selected);
   const selectedMaskLayers = selectedNode?.data.kind === "mask" ? getMaskLayers(selectedNode.data.params) : [];
   const selectedMaskLayerId = selectedNode ? maskLayerSelection[selectedNode.id] : undefined;
@@ -413,49 +441,85 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
   }, [hidden, ready, nodes.length, templateVersion]);
 
   useEffect(() => {
+    if (!projectSessionReady) return;
     let active = true;
-    loadProject().then((project) => {
+    const load = projectSession && projectId
+      ? loadProjectCompositorState(projectSession.handle, projectId)
+      : loadProject();
+    load.then((project) => {
       if (!active) return;
       if (project) {
         setNodes(project.nodes);
         setEdges(project.edges);
-        setFiles(project.media);
+        setFiles("media" in project ? project.media : {});
         setMediaReferences(project.mediaRefs ?? {});
         setMediaMetadata(normalizeMediaAssetMetadataMap(project.mediaMetadata));
         setTracks(project.tracks ?? {});
         setMarks(project.marks ?? EMPTY_COMPOSITOR_MARKS);
+        setTime(project.time ?? 0);
+        setViewerTransform(project.viewerTransform ?? DEFAULT_VIEWER_TRANSFORM);
+        setPreviewBackground(project.previewBackground === "color" ? "color" : "checkerboard");
+        setPreviewColor(project.previewColor ?? "#ffffff");
+        setViewChannel(project.viewChannel === "red" || project.viewChannel === "green"
+          || project.viewChannel === "blue" || project.viewChannel === "alpha" ? project.viewChannel : "rgb");
+        setSelected(project.nodes.find((node) => node.selected)?.id ?? "");
       } else {
+        setFiles({});
         setMediaMetadata({});
         setMediaReferences({});
+        setTracks({});
+        setMarks(EMPTY_COMPOSITOR_MARKS);
+        setTime(0);
+        setViewerTransform(DEFAULT_VIEWER_TRANSFORM);
+        setPreviewBackground("checkerboard");
+        setPreviewColor("#ffffff");
+        setViewChannel("rgb");
         setNodes([{ id: crypto.randomUUID(), type: "comp", position: { x: 700, y: 120 },
           data: { kind: "viewer", label: labels.viewer, params: {} } }]);
       }
-      setReady(true); setStatus("Project loaded");
+      setReady(true); setStatus(projectId ? "Project loaded" : "Project loaded locally");
     }).catch((caught) => { if (active) { setError(caught instanceof Error ? caught.message : String(caught)); setStatus("Project could not be loaded"); } });
     return () => { active = false; };
-  }, [setNodes, setEdges]);
+  }, [projectId, projectSession, projectSessionReady, setNodes, setEdges]);
 
   useEffect(() => {
     if (!ready) return;
     const timer = window.setTimeout(() => {
       setStatus("Saving...");
-      const localMedia = Object.fromEntries(Object.entries(files).filter(([id]) => !mediaReferences[id]));
-      const project = {
+      const state: ProjectCompositorState = {
         nodes,
         edges,
-        media: localMedia,
         mediaRefs: mediaReferences,
         mediaMetadata,
         tracks,
         marks,
+        time,
+        viewerTransform,
+        previewBackground,
+        previewColor,
+        viewChannel,
       };
-      saveQueue.current = saveQueue.current.catch(() => {}).then(() => saveProject(project));
-      saveQueue.current.then(() => setStatus("Saved locally")).catch((caught) => {
+      saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
+        if (projectHandle && projectId) {
+          if (Object.keys(files).length) {
+            throw new Error("Copy compositor media into the project before saving its graph.");
+          }
+          await saveProjectCompositorState(projectHandle, projectId, state);
+        } else {
+          const localMedia = Object.fromEntries(Object.entries(files).filter(([id]) => !mediaReferences[id]));
+          await saveProject({
+            ...state,
+            media: localMedia,
+          });
+        }
+      });
+      saveQueue.current.then(() => setStatus(projectId ? "Saved to project folder" : "Saved locally")).catch((caught) => {
         setStatus("Save failed"); setError(caught instanceof Error ? caught.message : String(caught));
       });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [ready, nodes, edges, files, mediaReferences, mediaMetadata, mediaVersion, tracks, marks]);
+  }, [ready, nodes, edges, files, mediaReferences, mediaMetadata, mediaVersion, tracks, marks, time,
+    viewerTransform, previewBackground, previewColor, viewChannel, projectHandle, projectId]);
 
   useEffect(() => {
     let active = true;
@@ -827,23 +891,66 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
     if (!file || !selectedNode) return;
     if (file.size > 200 * 1024 * 1024) { setError("Media files must be 200 MB or smaller."); return; }
     setBusy(true);
+    let loaded: Media | undefined;
     try {
-      const loaded = await createMedia(file);
+      const media = await createMedia(file);
+      loaded = media;
+      let projectAssetId: string | undefined;
+      let projectAssetRevision: number | undefined;
+      if (projectSession && projectId) {
+        const { manifest } = await readOrCreateProjectManifest(projectSession.handle);
+        if (manifest.id !== projectId) throw new Error("The project folder changed before compositor media could be added.");
+        const id = `compositor-${crypto.randomUUID()}`;
+        const mediaAsset: ProjectMediaAsset = {
+          id,
+          name: file.name,
+          mediaKind: file.type.startsWith("image/") ? "image" : "video",
+          mimeType: file.type || null,
+          source: { kind: "storage", storageKey: id },
+          metadata: media.metadata,
+        };
+        const updatedManifest = await addMediaToProjectFolder(projectSession.handle, manifest, mediaAsset, file);
+        const registered = await registerProjectMediaAsset(mediaAsset, file);
+        projectAssetId = id;
+        projectAssetRevision = registered.revision;
+        onProjectSessionChange?.(projectSession);
+        await onProjectMediaChange?.();
+        if (updatedManifest.id !== projectId) throw new Error("The compositor media was added to a different project.");
+      }
       await drawing.current;
       recordHistory();
       const old = mediaRef.current[selectedNode.id];
       if (old) URL.revokeObjectURL(old.url);
-      mediaRef.current[selectedNode.id] = loaded;
-      setMediaDurations((current) => ({ ...current, [selectedNode.id]: loaded.duration }));
-      setMediaMetadata((current) => ({ ...current, [selectedNode.id]: loaded.metadata }));
-      setMediaReferences((current) => {
-        const next = { ...current };
-        delete next[selectedNode.id];
-        return next;
-      });
-      setFiles((current) => ({ ...current, [selectedNode.id]: file }));
+      mediaRef.current[selectedNode.id] = {
+        ...media,
+        projectAssetId,
+        projectAssetRevision,
+      };
+      setMediaDurations((current) => ({ ...current, [selectedNode.id]: media.duration }));
+      setMediaMetadata((current) => ({ ...current, [selectedNode.id]: media.metadata }));
+      if (projectAssetId) {
+        const assetId = projectAssetId;
+        setMediaReferences((current) => ({ ...current, [selectedNode.id]: assetId }));
+        setFiles((current) => {
+          const next = { ...current };
+          delete next[selectedNode.id];
+          return next;
+        });
+      } else {
+        setMediaReferences((current) => {
+          const next = { ...current };
+          delete next[selectedNode.id];
+          return next;
+        });
+        setFiles((current) => ({ ...current, [selectedNode.id]: file }));
+      }
       setMediaVersion((current) => current + 1); setTracks({}); setTime(0); setError("");
-    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    } catch (caught) {
+      if (loaded && !Object.values(mediaRef.current).some((item) => item.url === loaded?.url)) {
+        URL.revokeObjectURL(loaded.url);
+      }
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
     finally { setBusy(false); }
   };
   const chooseSharedAsset = async (assetId: string) => {
@@ -882,6 +989,23 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally { setBusy(false); }
+  };
+  const chooseMediaFile = async () => {
+    if (!projectSession) {
+      mediaInputRef.current?.click();
+      return;
+    }
+    try {
+      const filesInProject = await chooseProjectMediaFiles(projectSession.handle, false);
+      if (filesInProject === null) {
+        mediaInputRef.current?.click();
+      } else if (filesInProject[0]) {
+        await chooseFile(filesInProject[0]);
+      }
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") return;
+      setError(caught instanceof Error ? caught.message : "Could not choose compositor media.");
+    }
   };
   const runTracking = async (resume = false) => {
     if (!selectedNode || selectedNode.data.kind !== "tracker") return;
@@ -1104,12 +1228,24 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
           </label>
           {params?.sourceMode === "solid" ? <label key="solid">Solid color (included in export)
             <input type="color" disabled={busy} value={String(params.solidColor ?? "#ffffff")} onChange={(event) => update("solidColor", event.target.value)} />
-          </label> : params?.sourceMode === "transparent" ? <small>Checkerboard indicates transparency in the Viewer. PNG preserves transparency; WebM does not preserve alpha.</small> : <label key="file">Image or video
-            <input type="file" accept="image/*,video/*" disabled={busy} onChange={(event) => void chooseFile(event.target.files?.[0])} />
+          </label> : params?.sourceMode === "transparent" ? <small>Checkerboard indicates transparency in the Viewer. PNG preserves transparency; WebM does not preserve alpha.</small> : <div key="file" className="comp-media-picker">
+            <span>Image or video</span>
+            <button type="button" disabled={busy} onClick={() => void chooseMediaFile()}
+              title={projectSession ? "Choose a file starting in the project folder." : "Choose an image or video file."}>
+              Choose file
+            </button>
+            <input ref={mediaInputRef} type="file" accept="image/*,video/*" hidden disabled={busy}
+              aria-label="Choose image or video file"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                void chooseFile(file);
+              }}
+            />
             <small>{files[selectedNode.id]?.name
               ?? sharedMediaAssets.find((asset) => asset.id === mediaReferences[selectedNode.id])?.name
               ?? "No file selected"}</small>
-          </label>}
+          </div>}
           {params?.sourceMode !== "solid" && params?.sourceMode !== "transparent"
             && sharedMediaAssets.some((asset) => asset.mediaKind === "image" || asset.mediaKind === "video") && (
               <label>Shared project media
@@ -1379,10 +1515,14 @@ export default function Compositor({ hidden, sharedMediaAssets = [] }: {
             <input type="checkbox" checked={editMaskOnSource} onChange={(event) => setEditMaskOnSource(event.target.checked)} />
             Edit mask on input (uncheck to preview result)
           </label>}
-          <label>View channel (preview only) <select value={viewChannel} onChange={(event) => setViewChannel(event.target.value)}>
+          <label>View channel (preview only) <select value={viewChannel} onChange={(event) => {
+            const value = event.target.value;
+            setViewChannel(value === "red" || value === "green" || value === "blue" || value === "alpha" ? value : "rgb");
+          }}>
             <option value="rgb">RGB</option><option value="red">Red</option><option value="green">Green</option><option value="blue">Blue</option><option value="alpha">Alpha</option>
           </select></label>
-          <label>Transparency background (preview only) <select value={previewBackground} onChange={(event) => setPreviewBackground(event.target.value)}>
+          <label>Transparency background (preview only) <select value={previewBackground}
+            onChange={(event) => setPreviewBackground(event.target.value === "color" ? "color" : "checkerboard")}>
             <option value="checkerboard">Checkerboard</option><option value="color">Custom color</option>
           </select></label>
           {previewBackground === "color" && <label>Preview color <input type="color" value={previewColor} onChange={(event) => setPreviewColor(event.target.value)} /></label>}

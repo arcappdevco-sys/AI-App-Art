@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   addMediaToProjectFolder,
+  backupProjectFolder,
   chooseProjectFolder,
   loadCurrentProjectFolder,
   projectFolderPermission,
@@ -52,7 +53,7 @@ export default function ProjectFolderControl({
   const [manifest, setManifest] = useState<ProjectManifest | null>(null);
   const [status, setStatus] = useState("No project folder open");
   const [error, setError] = useState("");
-  const [busyAction, setBusyAction] = useState<"opening" | "copying" | null>(null);
+  const [busyAction, setBusyAction] = useState<"opening" | "copying" | "backing-up" | null>(null);
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [activeSession, setActiveSession] = useState<ProjectFolderSession | null>(null);
   const busy = busyAction !== null;
@@ -184,6 +185,31 @@ export default function ProjectFolderControl({
     }
   };
 
+  const backupProject = async () => {
+    if (!activeSession || !manifest) return;
+    setBusyAction("backing-up");
+    setError("");
+    setStatus("Choose an empty folder for the backup…");
+    try {
+      const destination = await chooseProjectFolder();
+      const result = await backupProjectFolder(
+        activeSession.handle,
+        manifest.id,
+        destination,
+        (completed, total) => setStatus(`Backing up project · ${completed}/${total} files`),
+      );
+      setStatus(`Backup complete · ${result.fileCount} files · ${result.totalBytes.toLocaleString()} bytes`);
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        setStatus(`Project: ${manifest.name} · ${manifest.assets.length} media`);
+      } else {
+        setError(caught instanceof Error ? caught.message : "Could not back up the project.");
+      }
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   return (
     <div className="ff-project-folder-control">
       <button
@@ -191,7 +217,7 @@ export default function ProjectFolderControl({
         className="ff-toolbar-button"
         onClick={() => void openProjectFolder()}
         disabled={busy}
-        title="Open a folder-backed project or create its manifest in an empty folder."
+        title="Open a project folder or select a backup folder to restore it."
       >
         {busyAction === "opening" ? "Opening project…" : manifest ? "Change project folder" : "Open project folder"}
       </button>
@@ -200,6 +226,15 @@ export default function ProjectFolderControl({
       </span>
       {manifest && (
         <>
+          <button
+            type="button"
+            className="ff-toolbar-button"
+            onClick={() => void backupProject()}
+            disabled={busy || !activeSession}
+            title="Copy the full project into an empty folder. Wait for workspace saves to finish; open the copy later to restore it."
+          >
+            {busyAction === "backing-up" ? "Backing up…" : "Backup"}
+          </button>
           <select
             className="ff-project-folder-select"
             aria-label="Media to copy into project"

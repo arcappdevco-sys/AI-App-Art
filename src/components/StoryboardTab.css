@@ -507,6 +507,74 @@
   padding: 0 6px;
 }
 
+.storyboard-workflow-picker {
+  position: relative;
+}
+
+.storyboard-shot-actions .storyboard-workflow-picker-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  right: 0;
+  display: grid;
+  min-width: 175px;
+  max-height: min(65vh, 360px);
+  gap: 4px;
+  align-content: start;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line-control);
+  border-radius: 7px;
+  background: var(--panel-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+}
+
+.storyboard-workflow-picker-section {
+  display: grid;
+  gap: 4px;
+}
+
+.storyboard-workflow-picker-section + .storyboard-workflow-picker-section {
+  margin-top: 4px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line-control);
+}
+
+.storyboard-workflow-picker-section > span,
+.storyboard-workflow-picker-heading > span {
+  padding: 3px 6px 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.storyboard-workflow-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.storyboard-shot-actions .storyboard-workflow-picker-heading button {
+  min-height: 24px;
+  padding: 0 6px;
+  color: var(--muted);
+}
+
+.storyboard-workflow-picker-empty {
+  margin: 3px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.storyboard-shot-actions .storyboard-workflow-picker-menu button {
+  justify-content: flex-start;
+  min-height: 28px;
+  padding: 0 7px;
+  text-align: left;
+  white-space: nowrap;
+}
+
 .storyboard-frame {
   position: relative;
   display: grid;

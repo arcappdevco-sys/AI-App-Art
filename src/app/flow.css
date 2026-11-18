@@ -1609,6 +1609,8 @@ body {
 .comp-viewer-hint { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--line-control); border-radius: 5px; font-size: 12px; }
 .comp-viewer-hint p { margin: 0; }
 .comp-inspector label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.comp-media-picker { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+.comp-media-picker small { color: var(--muted); }
 .comp-inspector input:not([type="checkbox"]) {
   width: 100%; min-width: 0; color: var(--text); background: var(--surface-deep);
   border: 1px solid var(--line-control); border-radius: 4px; padding: 5px;

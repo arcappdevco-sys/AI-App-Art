@@ -29,7 +29,14 @@ import { deleteWanDocument } from "@/lib/wan-storage";
 import { MINIMAX_NODE_TYPE, normalizeMiniMaxParams } from "@/lib/minimax";
 import { FLUX3_NODE_TYPE, normalizeFlux3Params } from "@/lib/flux3";
 import { FLUX3_VIDEO_NODE_TYPE } from "@/lib/flux3-video";
-import { createWorkflowNodes, videoModelTypes } from "@/lib/workflow-node-factory";
+import {
+  createFirstLastFrameWorkflowNodes,
+  createImageToVideoWorkflowNodes,
+  createWorkflowNodes,
+  getFirstLastFrameModelOptions,
+  getImageToVideoModelOptions,
+  videoModelTypes,
+} from "@/lib/workflow-node-factory";
 import { validateWorkflow, type WorkflowValidationIssue } from "@/lib/workflow-validation";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
@@ -38,7 +45,12 @@ import Compositor from "@/components/Compositor";
 import StoryboardTab from "@/components/StoryboardTab";
 import WorkspaceHelp from "@/components/WorkspaceHelp";
 import ProjectFolderControl from "@/components/ProjectFolderControl";
-import type { ProjectFolderSession } from "@/lib/project-folder-storage";
+import {
+  loadProjectWorkspaceState,
+  saveProjectWorkspaceState,
+  type ProjectFolderSession,
+} from "@/lib/project-folder-storage";
+import { hasValidWorkflowEdgeReferences, stripInvalidWorkflowConnections } from "@/lib/workflow-storage";
 import { createEmptyStoryboard, normalizeStoryboard, type StoryboardData } from "@/lib/StoryboardData";
 import { rebindStoryboardWorkflowReferences, resolveWorkflowStoryboardFrames } from "@/lib/storyboard-workflow";
 import {
@@ -54,6 +66,8 @@ import OllamaChat from "@/components/OllamaChat";
 import { createCanvasGroup, groupBoundsForNodes, normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
 
 const nodeTypes = { workflow: WorkflowNode };
+const storyboardVideoModelOptions = getImageToVideoModelOptions(registry);
+const storyboardFirstLastFrameModelOptions = getFirstLastFrameModelOptions(registry);
 const WORKFLOWS_STORAGE_KEY = "fal-flow:workflows";
 const LEGACY_WORKFLOW_STORAGE_KEY = "fal-flow:workflow";
 const UI_THEME_STORAGE_KEY = "fal-flow:ui-theme";
@@ -103,6 +117,12 @@ type SavedWorkflow = {
   groups: CanvasGroup[];
   storyboard: StoryboardData;
   updatedAt: number;
+};
+
+type WorkflowLibrary = {
+  version: 1;
+  activeWorkflowId: string;
+  workflows: SavedWorkflow[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -248,6 +268,90 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
   };
 }
 
+function normalizeWorkflowLibrary(value: unknown): {
+  library: WorkflowLibrary;
+  removedConnections: number;
+} {
+  if (!isRecord(value) || (value.version !== undefined && value.version !== 1)
+    || !Array.isArray(value.workflows) || value.workflows.length === 0) {
+    throw new Error("Saved workflow library is invalid.");
+  }
+  let removedConnections = 0;
+  const workflows = value.workflows.map((item, index) => {
+    if (!isRecord(item) || typeof item.id !== "string" || !item.id) {
+      throw new Error(`Saved workflow ${index + 1} is invalid.`);
+    }
+    const sanitized = stripInvalidWorkflowConnections(item);
+    removedConnections += sanitized.removed;
+    return {
+      id: item.id,
+      ...normalizeWorkflow(sanitized.workflow),
+      updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : Date.now(),
+    };
+  });
+  if (new Set(workflows.map((workflow) => workflow.id)).size !== workflows.length) {
+    throw new Error("Saved workflow library contains duplicate workflow IDs.");
+  }
+  const activeWorkflowId = workflows.some((workflow) => workflow.id === value.activeWorkflowId)
+    ? value.activeWorkflowId as string
+    : workflows[0].id;
+  return {
+    library: { version: 1, activeWorkflowId, workflows },
+    removedConnections,
+  };
+}
+
+function createDefaultWorkflowLibrary(): WorkflowLibrary {
+  const id = crypto.randomUUID();
+  return {
+    version: 1,
+    activeWorkflowId: id,
+    workflows: [{
+      id,
+      name: DEFAULT_WORKFLOW_NAME,
+      nodes: [],
+      edges: [],
+      groups: [],
+      storyboard: createEmptyStoryboard(),
+      updatedAt: Date.now(),
+    }],
+  };
+}
+
+function readBrowserWorkflowLibrary(): {
+  library: WorkflowLibrary;
+  restored: boolean;
+  legacyKey: boolean;
+  removedConnections: number;
+} {
+  const saved = window.localStorage.getItem(WORKFLOWS_STORAGE_KEY);
+  if (saved) {
+    const normalized = normalizeWorkflowLibrary(JSON.parse(saved));
+    return {
+      ...normalized,
+      restored: true,
+      legacyKey: false,
+    };
+  }
+  const legacy = window.localStorage.getItem(LEGACY_WORKFLOW_STORAGE_KEY);
+  if (!legacy) {
+    return { library: createDefaultWorkflowLibrary(), restored: false, legacyKey: false, removedConnections: 0 };
+  }
+  const sanitized = stripInvalidWorkflowConnections(JSON.parse(legacy));
+  const normalized = normalizeWorkflow(sanitized.workflow);
+  const id = crypto.randomUUID();
+  return {
+    library: {
+      version: 1,
+      activeWorkflowId: id,
+      workflows: [{ id, ...normalized, updatedAt: Date.now() }],
+    },
+    restored: true,
+    legacyKey: true,
+    removedConnections: sanitized.removed,
+  };
+}
+
 function workflowGenerationNodes(nodes: Node[]) {
   return nodes.flatMap((node) => {
     const data = node.data as { type?: string; params?: unknown };
@@ -311,6 +415,9 @@ export default function Page() {
   const workflowsRef = useRef<SavedWorkflow[]>([]);
   const activeWorkflowIdRef = useRef("");
   const registeredMediaUrls = useRef(new Map<string, string>());
+  const workflowSessionKey = projectSession?.sessionKey ?? "local";
+  const loadedWorkflowSessionKey = useRef<string | null>(null);
+  const workflowSaveQueue = useRef<Promise<void>>(Promise.resolve());
 
   const refreshProjectMediaAssets = useCallback(async () => {
     setProjectMediaAssets(await listProjectMediaAssets());
@@ -469,85 +576,118 @@ export default function Page() {
   }, [activeWorkflowId, nodes, refreshProjectMediaAssets, storageReady]);
 
   useEffect(() => {
+    if (!projectSessionReady) return;
+    loadedWorkflowSessionKey.current = null;
+    let active = true;
     const timeout = window.setTimeout(() => {
-      try {
-        const saved = window.localStorage.getItem(WORKFLOWS_STORAGE_KEY);
-        let nextWorkflows: SavedWorkflow[];
-        let nextActiveId: string;
-        if (saved) {
-          const store: unknown = JSON.parse(saved);
-          if (!isRecord(store) || (store.version !== undefined && store.version !== 1)
-            || !Array.isArray(store.workflows) || store.workflows.length === 0) {
-            throw new Error("Saved workflow library is invalid.");
-          }
-          nextWorkflows = store.workflows.map((item, index) => {
-            if (!isRecord(item) || typeof item.id !== "string" || !item.id) {
-              throw new Error(`Saved workflow ${index + 1} is invalid.`);
+      setStorageReady(false);
+      setStorageStatus(projectSession ? "Loading project workflows…" : "Loading saved workflow…");
+      void (async () => {
+        try {
+          let library: WorkflowLibrary;
+          let restoredFromDevice = false;
+          let removedConnections = 0;
+          if (projectSession) {
+            const saved = await loadProjectWorkspaceState(projectSession.handle, projectSession.projectId);
+            if (saved) {
+              const normalized = normalizeWorkflowLibrary(saved);
+              library = normalized.library;
+              removedConnections = normalized.removedConnections;
+              restoredFromDevice = true;
+            } else {
+              const browserLibrary = readBrowserWorkflowLibrary();
+              library = browserLibrary.library;
+              removedConnections = browserLibrary.removedConnections;
+              await saveProjectWorkspaceState(projectSession.handle, projectSession.projectId, library);
             }
-            return {
-              id: item.id,
-              ...normalizeWorkflow(item),
-              updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : Date.now(),
-            };
-          });
-          if (new Set(nextWorkflows.map((workflow) => workflow.id)).size !== nextWorkflows.length) {
-            throw new Error("Saved workflow library contains duplicate workflow IDs.");
+          } else {
+            const local = readBrowserWorkflowLibrary();
+            library = local.library;
+            restoredFromDevice = local.restored;
+            removedConnections = local.removedConnections;
+            const serialized = JSON.stringify(library);
+            window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
+            if (local.legacyKey) window.localStorage.removeItem(LEGACY_WORKFLOW_STORAGE_KEY);
+            lastSavedPayload.current = serialized;
           }
-          nextActiveId = nextWorkflows.some((workflow) => workflow.id === store.activeWorkflowId)
-            ? store.activeWorkflowId as string
-            : nextWorkflows[0].id;
-        } else {
-          const legacy = window.localStorage.getItem(LEGACY_WORKFLOW_STORAGE_KEY);
-          const normalized = legacy
-            ? normalizeWorkflow(JSON.parse(legacy))
-            : {
-              name: DEFAULT_WORKFLOW_NAME,
-              nodes: [],
-              edges: [],
-              groups: [],
-              storyboard: createEmptyStoryboard(),
-            };
-          nextActiveId = crypto.randomUUID();
-          nextWorkflows = [{ id: nextActiveId, ...normalized, updatedAt: Date.now() }];
+          if (!active) return;
+          const current = library.workflows.find((workflow) => workflow.id === library.activeWorkflowId);
+          if (!current) throw new Error("The active workflow could not be restored.");
+          workflowsRef.current = library.workflows;
+          activeWorkflowIdRef.current = library.activeWorkflowId;
+          setWorkflows(library.workflows);
+          setActiveWorkflowId(library.activeWorkflowId);
+          setWorkflowName(current.name);
+          setNodes(current.nodes);
+          setEdges(current.edges);
+          setGroups(current.groups);
+          setStoryboard(current.storyboard);
+          loadedWorkflowSessionKey.current = workflowSessionKey;
+          setStorageError("");
+          const restoreStatus = projectSession
+            ? restoredFromDevice ? "Restored from project folder" : "Copied browser workflows into project"
+            : restoredFromDevice ? "Restored from this device" : "Auto-saved on this device";
+          setStorageStatus(removedConnections > 0
+            ? `${restoreStatus}; removed ${removedConnections} invalid connection${removedConnections === 1 ? "" : "s"}`
+            : restoreStatus);
+          setStorageReady(true);
+        } catch (error) {
+          if (!active) return;
+          setStorageError(error instanceof Error ? error.message : "Could not restore workflows.");
+          setStorageStatus(projectSession ? "Unable to restore project workflows" : "Unable to restore workflow");
         }
-        const active = nextWorkflows.find((workflow) => workflow.id === nextActiveId)!;
-        workflowsRef.current = nextWorkflows;
-        activeWorkflowIdRef.current = nextActiveId;
-        setWorkflows(nextWorkflows);
-        setActiveWorkflowId(nextActiveId);
-        setWorkflowName(active.name);
-        setNodes(active.nodes);
-        setEdges(active.edges);
-        setGroups(active.groups);
-        setStoryboard(active.storyboard);
-        const serialized = JSON.stringify({ version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows });
-        window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
-        window.localStorage.removeItem(LEGACY_WORKFLOW_STORAGE_KEY);
-        lastSavedPayload.current = serialized;
-        setStorageStatus(saved || window.localStorage.getItem(LEGACY_WORKFLOW_STORAGE_KEY)
-          ? "Restored from this device"
-          : "Auto-saved on this device");
-        setStorageReady(true);
-      } catch (error) {
-        setStorageError(error instanceof Error ? error.message : String(error));
-        setStorageStatus("Unable to restore workflow");
-      }
+      })();
     }, 0);
-    return () => window.clearTimeout(timeout);
-  }, [setEdges, setNodes]);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+    };
+  }, [projectSession, projectSessionReady, setEdges, setNodes, workflowSessionKey]);
+
+  const queueProjectWorkspaceSave = (
+    library: WorkflowLibrary,
+    session: ProjectFolderSession,
+    manual = false,
+    removedConnections = 0,
+  ) => {
+    const sessionKey = session.sessionKey;
+    const cleanupNotice = removedConnections > 0
+      ? `; removed ${removedConnections} invalid connection${removedConnections === 1 ? "" : "s"}`
+      : "";
+    setStorageStatus(`Saving to project folder…${cleanupNotice}`);
+    const saving = workflowSaveQueue.current.catch(() => {})
+      .then(() => saveProjectWorkspaceState(session.handle, session.projectId, library));
+    workflowSaveQueue.current = saving;
+    void saving.then(() => {
+      if (loadedWorkflowSessionKey.current !== sessionKey) return;
+      setStorageError("");
+      setStorageStatus(`${manual ? "Saved just now" : "Saved to project folder"}${cleanupNotice}`);
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Could not save project workflows.";
+      setStorageError(message);
+      setStorageStatus("Unable to save project workflows");
+    });
+  };
 
   const saveWorkflowLocally = useCallback((manual = false) => {
-    if (!activeWorkflowIdRef.current) return false;
+    if (!activeWorkflowIdRef.current || loadedWorkflowSessionKey.current !== workflowSessionKey) return false;
     const savedNodes = nodes.map((node) => ({
       ...node,
       data: { ...node.data, status: "idle", log: "" },
     }));
+    const savedNodeIds = new Set(savedNodes.map((node) => node.id));
+    const savedEdges = edges.filter((edge) => hasValidWorkflowEdgeReferences(edge, savedNodeIds));
+    const removedConnections = edges.length - savedEdges.length;
+    if (removedConnections > 0) {
+      console.warn(`Removed ${removedConnections} invalid workflow connection${removedConnections === 1 ? "" : "s"} before saving.`);
+      setEdges(savedEdges);
+    }
     const activeId = activeWorkflowIdRef.current;
     const current: SavedWorkflow = {
       id: activeId,
       name: workflowName.trim() || DEFAULT_WORKFLOW_NAME,
       nodes: savedNodes,
-      edges,
+      edges: savedEdges,
       groups,
       storyboard,
       updatedAt: Date.now(),
@@ -555,8 +695,14 @@ export default function Page() {
     const nextWorkflows = workflowsRef.current.some((workflow) => workflow.id === activeId)
       ? workflowsRef.current.map((workflow) => workflow.id === activeId ? current : workflow)
       : [...workflowsRef.current, current];
-    const store = { version: 1, activeWorkflowId: activeId, workflows: nextWorkflows };
-    const payload = JSON.stringify(store);
+    const library: WorkflowLibrary = { version: 1, activeWorkflowId: activeId, workflows: nextWorkflows };
+    if (projectSession) {
+      workflowsRef.current = nextWorkflows;
+      setWorkflows(nextWorkflows);
+      queueProjectWorkspaceSave(library, projectSession, manual, removedConnections);
+      return true;
+    }
+    const payload = JSON.stringify(library);
     try {
       if (lastSavedPayload.current !== payload) {
         window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, payload);
@@ -565,7 +711,10 @@ export default function Page() {
       workflowsRef.current = nextWorkflows;
       setWorkflows(nextWorkflows);
       setStorageError("");
-      setStorageStatus(manual ? "Saved just now" : "Auto-saved on this device");
+      const cleanupNotice = removedConnections > 0
+        ? `; removed ${removedConnections} invalid connection${removedConnections === 1 ? "" : "s"}`
+        : "";
+      setStorageStatus(`${manual ? "Saved just now" : "Auto-saved on this device"}${cleanupNotice}`);
       setStorageReady(true);
       return true;
     } catch (error) {
@@ -573,7 +722,7 @@ export default function Page() {
       setStorageStatus("Unable to save workflow");
       return false;
     }
-  }, [edges, groups, nodes, storyboard, workflowName]);
+  }, [edges, groups, nodes, projectSession, setEdges, storyboard, workflowName, workflowSessionKey]);
 
   const clearCanvas = () => {
     setNodes([]);
@@ -585,7 +734,7 @@ export default function Page() {
   };
 
   useEffect(() => {
-    if (!storageReady) return;
+    if (!storageReady || loadedWorkflowSessionKey.current !== workflowSessionKey) return;
     const timeout = window.setTimeout(saveWorkflowLocally, 300);
     const saveOnPageHide = () => saveWorkflowLocally();
     window.addEventListener("pagehide", saveOnPageHide);
@@ -593,7 +742,7 @@ export default function Page() {
       window.clearTimeout(timeout);
       window.removeEventListener("pagehide", saveOnPageHide);
     };
-  }, [saveWorkflowLocally, storageReady]);
+  }, [saveWorkflowLocally, storageReady, workflowSessionKey]);
 
   const addNode = (type: string, groupExample = false, dropPosition?: { x: number; y: number }) => {
     const def = registry[type];
@@ -899,53 +1048,134 @@ export default function Page() {
   };
   const run = () => { void executeGraph(undefined, runMode === "low"); };
   const runNode = (nodeId: string) => { void executeGraph([nodeId]); };
-  const addStoryboardFrameToWorkflow = (sceneId: string, shotId: string) => {
+  const addStoryboardFrameToWorkflow = (
+    sceneId: string,
+    shotId: string,
+    videoType: string,
+    lastFrameReference?: { sceneId: string; shotId: string },
+  ) => {
     const workflowId = activeWorkflowIdRef.current;
     const scene = storyboard.scenes.find((candidate) => candidate.id === sceneId);
     const shot = scene?.shots.find((candidate) => candidate.id === shotId);
     if (!storageReady || !workflowId || !scene || !shot?.frame) return;
+    const lastScene = lastFrameReference
+      ? storyboard.scenes.find((candidate) => candidate.id === lastFrameReference.sceneId)
+      : undefined;
+    const lastShot = lastScene?.shots.find((candidate) => candidate.id === lastFrameReference?.shotId);
+    if (lastFrameReference && (!lastScene || !lastShot?.frame
+      || (lastScene.id === scene.id && lastShot.id === shot.id))) {
+      setStorageError("Choose a different storyboard shot with a frame as the last frame.");
+      setStorageStatus("Unable to add storyboard video model");
+      return;
+    }
+    let additions: ReturnType<typeof createImageToVideoWorkflowNodes>
+      | ReturnType<typeof createFirstLastFrameWorkflowNodes>;
+    try {
+      const position = { x: 100 + nodes.length * 30, y: 100 + nodes.length * 30 };
+      additions = lastFrameReference
+        ? createFirstLastFrameWorkflowNodes(videoType, registry, position)
+        : createImageToVideoWorkflowNodes(videoType, registry, position);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageStatus("Unable to add storyboard video model");
+      return;
+    }
     const shotIndex = scene.shots.findIndex((candidate) => candidate.id === shotId);
     const shotName = shot.title.trim() || `Shot ${shotIndex + 1}`;
-    setNodes((current) => {
-      const imageInputCount = current.filter((node) =>
-        (node.data as { type?: string }).type === "input/image").length;
-      return [...current, {
-        id: `input/image-${crypto.randomUUID()}`,
-        type: "workflow",
-        position: { x: 80, y: 80 + imageInputCount * 150 },
-        data: {
-          type: "input/image",
-          params: {
-            url: "",
-            storyboardFrameRef: { kind: "storyboard-frame", workflowId, sceneId, shotId },
+    const lastShotIndex = lastScene?.shots.findIndex((candidate) => candidate.id === lastShot?.id) ?? -1;
+    const lastShotName = lastShot?.title.trim() || `Shot ${lastShotIndex + 1}`;
+    const modelNode = additions.nodes.find((node) => node.data.type === videoType);
+    if (!modelNode) {
+      setStorageError(`Unable to create the ${additions.label} workflow node`);
+      setStorageStatus("Unable to add storyboard video model");
+      return;
+    }
+    const firstFrameHandle = "firstFrameHandle" in additions
+      ? additions.firstFrameHandle
+      : additions.imageHandle;
+    const lastFrameHandle = "lastFrameHandle" in additions ? additions.lastFrameHandle : undefined;
+    const createStoryboardImageNode = (
+      frameScene: NonNullable<typeof scene>,
+      frameShot: NonNullable<typeof shot>,
+      frameShotName: string,
+      role: "guide" | "first" | "last",
+      verticalOffset: number,
+    ): Node => ({
+      id: `input/image-${crypto.randomUUID()}`,
+      type: "workflow",
+      position: { x: modelNode.position.x - 360, y: modelNode.position.y + verticalOffset },
+      data: {
+        type: "input/image",
+        params: {
+          url: "",
+          storyboardFrameRef: {
+            kind: "storyboard-frame",
+            workflowId,
+            sceneId: frameScene.id,
+            shotId: frameShot.id,
           },
-          status: "idle",
-          outputs: {},
-          log: "",
-          title: `Storyboard guide · ${scene.title} / ${shotName}`,
-          paramLabels: { url: "Image (upload or paste URL)" },
         },
-      } as Node];
+        status: "idle",
+        outputs: {},
+        log: "",
+        title: `${role === "guide" ? "Storyboard guide" : role === "first" ? "Storyboard first frame" : "Storyboard last frame"} · ${frameScene.title} / ${frameShotName}`,
+        paramLabels: { url: "Image (upload or paste URL)" },
+      },
     });
+    const frameNodes = [
+      createStoryboardImageNode(scene, shot, shotName, lastShot ? "first" : "guide", 220),
+      ...(lastScene && lastShot ? [
+        createStoryboardImageNode(lastScene, lastShot, lastShotName, "last", 390),
+      ] : []),
+    ];
+    const frameEdges = frameNodes.flatMap((imageNode, index) => {
+      const targetHandle = index === 0 ? firstFrameHandle : lastFrameHandle;
+      return targetHandle ? [{
+        id: `${imageNode.id}-${modelNode.id}-storyboard-frame`,
+        source: imageNode.id,
+        sourceHandle: "image",
+        target: modelNode.id,
+        targetHandle,
+      }] : [];
+    });
+    if (frameEdges.length !== frameNodes.length) {
+      setStorageError(`The ${additions.label} model does not support a last-frame input.`);
+      setStorageStatus("Unable to add storyboard video model");
+      return;
+    }
+    setNodes((current) => [...current, ...frameNodes, ...additions.nodes]);
+    setEdges((current) => [...current, ...additions.edges, ...frameEdges]);
     setActiveView("workflow");
     setStorageError("");
-    setStorageStatus("Storyboard frame added as a workflow image input");
+    setStorageStatus(lastShot
+      ? `Added ${additions.label} first-and-last-frame workflow from ${shotName} to ${lastShotName}`
+      : `Added ${additions.label} image-to-video workflow from ${shotName}`);
   };
 
   const persistWorkflowList = (nextWorkflows: SavedWorkflow[], nextActiveId: string) => {
-    const serialized = JSON.stringify({ version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows });
-    try {
-      window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
-    } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
-      setStorageStatus("Unable to save workflow library");
-      return false;
+    if (loadedWorkflowSessionKey.current !== workflowSessionKey) return false;
+    const library: WorkflowLibrary = { version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows };
+    if (projectSession) {
+      workflowsRef.current = nextWorkflows;
+      activeWorkflowIdRef.current = nextActiveId;
+      setWorkflows(nextWorkflows);
+      setActiveWorkflowId(nextActiveId);
+      queueProjectWorkspaceSave(library, projectSession);
+    } else {
+      const serialized = JSON.stringify(library);
+      try {
+        window.localStorage.setItem(WORKFLOWS_STORAGE_KEY, serialized);
+      } catch (error) {
+        setStorageError(error instanceof Error ? error.message : String(error));
+        setStorageStatus("Unable to save workflow library");
+        return false;
+      }
+      workflowsRef.current = nextWorkflows;
+      activeWorkflowIdRef.current = nextActiveId;
+      setWorkflows(nextWorkflows);
+      setActiveWorkflowId(nextActiveId);
+      lastSavedPayload.current = serialized;
     }
-    workflowsRef.current = nextWorkflows;
-    activeWorkflowIdRef.current = nextActiveId;
-    lastSavedPayload.current = serialized;
-    setWorkflows(nextWorkflows);
-    setActiveWorkflowId(nextActiveId);
     return true;
   };
 
@@ -1549,7 +1779,7 @@ export default function Page() {
       </main>
       </div>
       <VideoEditor
-        key={projectSession?.sessionKey ?? "local"}
+        key={`video-editor:${projectSession?.sessionKey ?? "local"}`}
         assets={videoAssets}
         onProjectMediaChange={refreshProjectMediaAssets}
         onProjectSessionChange={updateProjectSession}
@@ -1558,8 +1788,18 @@ export default function Page() {
         projectSessionEpoch={projectSessionEpoch}
         hidden={activeView !== "editor"}
       />
-      <Compositor hidden={activeView !== "compositor"} sharedMediaAssets={projectMediaAssets} />
+      <Compositor
+        key={`compositor:${projectSession?.sessionKey ?? "local"}`}
+        hidden={activeView !== "compositor"}
+        sharedMediaAssets={projectMediaAssets}
+        projectSession={projectSession}
+        projectSessionReady={projectSessionReady}
+        onProjectMediaChange={refreshProjectMediaAssets}
+        onProjectSessionChange={updateProjectSession}
+      />
       <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
+        videoModelOptions={storyboardVideoModelOptions}
+        firstLastFrameModelOptions={storyboardFirstLastFrameModelOptions}
         hidden={activeView !== "storyboard"}
         saveError={storageStatus.startsWith("Unable to") ? storageError : ""} />
       <ExampleDragPreview preview={exampleDrag.preview} />
