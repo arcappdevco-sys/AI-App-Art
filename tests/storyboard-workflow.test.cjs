@@ -244,6 +244,8 @@ test("normalizes generated takes and ignores malformed or non-HTTP video sources
     prompt: "A careful camera move.",
     createdAt: 1_700_000_000_000,
   };
+  const legacyTake = { ...take, id: "legacy-take" };
+  delete legacyTake.mediaAssetId;
   const storyboard = normalizeStoryboard({
     version: 1,
     title: "Test",
@@ -253,9 +255,9 @@ test("normalizes generated takes and ignores malformed or non-HTTP video sources
       title: "Scene 1",
       shots: [{
         id: "shot-1",
-        generatedTakes: [take, { ...take, id: "bad", videoUrl: "file:///video.mp4" }],
+          generatedTakes: [take, legacyTake, { ...take, id: "bad", videoUrl: "file:///video.mp4" }],
       }],
     }],
   });
-  assert.deepEqual(storyboard.scenes[0].shots[0].generatedTakes, [take]);
+  assert.deepEqual(storyboard.scenes[0].shots[0].generatedTakes, [take, legacyTake]);
 });

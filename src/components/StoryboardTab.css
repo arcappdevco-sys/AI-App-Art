@@ -313,11 +313,86 @@
   outline-offset: 2px;
 }
 
-.storyboard-board {
+.storyboard-navigation-viewport {
+  position: relative;
   min-height: 0;
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: var(--bg);
+}
+
+.storyboard-navigation-viewport.is-panning {
+  cursor: grabbing;
+}
+
+.storyboard-navigation-world {
+  width: 100%;
+  min-height: 100%;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.storyboard-board {
+  width: 100%;
+  min-height: 100%;
   padding: 24px clamp(16px, 3vw, 48px) 48px;
+}
+
+.storyboard-navigation-controls {
+  position: absolute;
+  z-index: 2;
+  bottom: 14px;
+  left: 14px;
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--control-bg);
+  box-shadow: 0 4px 16px #0005;
+}
+
+.storyboard-navigation-controls button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 19px;
+}
+
+.storyboard-navigation-controls button + button {
+  border-top: 1px solid var(--line-control);
+}
+
+.storyboard-navigation-controls button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.storyboard-navigation-controls button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.storyboard-navigation-hint {
+  position: absolute;
+  z-index: 2;
+  bottom: 17px;
+  left: 58px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  pointer-events: none;
 }
 
 .storyboard-storage-error {
@@ -752,10 +827,21 @@
   color: var(--text);
 }
 
+.storyboard-take-save:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .storyboard-take-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+}
+
+.storyboard-take-local-status {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .storyboard-take-error,
@@ -927,6 +1013,13 @@
 
   .storyboard-board {
     padding: 14px 10px 30px;
+  }
+
+  .storyboard-navigation-hint {
+    max-width: calc(100% - 72px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .storyboard-scene {

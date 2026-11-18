@@ -1266,6 +1266,7 @@ export default function Page() {
     sceneId: string,
     shotId: string,
     candidate: StoryboardVideoCandidate,
+    existingTakeId?: string,
   ) => {
     try {
       if (candidate.workflowId === activeWorkflowIdRef.current && !saveWorkflowLocally()) {
@@ -1274,12 +1275,21 @@ export default function Page() {
       const sourceWorkflow = workflowsRef.current.find((workflow) => workflow.id === candidate.workflowId);
       const sourceScene = sourceWorkflow?.storyboard.scenes.find((scene) => scene.id === sceneId);
       const sourceShot = sourceScene?.shots.find((shot) => shot.id === shotId);
+      const existingTake = existingTakeId
+        ? sourceShot?.generatedTakes?.find((take) => take.id === existingTakeId)
+        : undefined;
       if (!sourceWorkflow || !sourceScene || !sourceShot
         || !candidate.sourceShotRefs.some((reference) =>
           reference.sceneId === sceneId && reference.shotId === shotId)) {
         throw new Error("The storyboard shot connected to this video is no longer available.");
       }
-      if (sourceShot.generatedTakes?.some((take) =>
+      if (existingTakeId && !existingTake) {
+        throw new Error("The saved storyboard take is no longer available.");
+      }
+      if (existingTake?.mediaAssetId) {
+        throw new Error("This take already has a local copy.");
+      }
+      if (!existingTakeId && sourceShot.generatedTakes?.some((take) =>
         take.sourceId === candidate.sourceId && take.videoUrl === candidate.videoUrl)) {
         throw new Error("This workflow output is already saved as a take.");
       }
@@ -1340,6 +1350,9 @@ export default function Page() {
         if (manifest.id !== sessionAtStart.projectId) {
           throw new Error("The project folder changed before this take could be saved.");
         }
+        if ((projectSessionRef.current?.sessionKey ?? null) !== sessionAtStart.sessionKey) {
+          throw new Error("The active project changed while this take was being saved. Try again.");
+        }
         await addMediaToProjectFolder(sessionAtStart.handle, manifest, asset, file);
         projectName = manifest.name;
       }
@@ -1359,19 +1372,22 @@ export default function Page() {
       }
       let updatedWorkflow: SavedWorkflow | undefined;
       let updatedShotFound = false;
-      const take: StoryboardGeneratedTake = {
-        id: crypto.randomUUID(),
-        sourceId: candidate.sourceId,
-        workflowId: candidate.workflowId,
-        nodeId: candidate.nodeId,
-        outputPort: candidate.outputPort,
-        videoType: candidate.videoType,
-        videoUrl: candidate.videoUrl,
-        mediaAssetId: assetId,
-        model: candidate.model,
-        prompt: candidate.prompt,
-        createdAt: Date.now(),
-      };
+      let updatedTakeFound = false;
+      const take: StoryboardGeneratedTake = existingTake
+        ? { ...existingTake, mediaAssetId: assetId }
+        : {
+          id: crypto.randomUUID(),
+          sourceId: candidate.sourceId,
+          workflowId: candidate.workflowId,
+          nodeId: candidate.nodeId,
+          outputPort: candidate.outputPort,
+          videoType: candidate.videoType,
+          videoUrl: candidate.videoUrl,
+          mediaAssetId: assetId,
+          model: candidate.model,
+          prompt: candidate.prompt,
+          createdAt: Date.now(),
+        };
       const nextWorkflows = workflowsRef.current.map((workflow) => {
         if (workflow.id !== candidate.workflowId) return workflow;
         const nextStoryboard: StoryboardData = {
@@ -1381,15 +1397,23 @@ export default function Page() {
             shots: scene.shots.map((shot) => {
               if (shot.id !== shotId) return shot;
               updatedShotFound = true;
-              return { ...shot, generatedTakes: [...(shot.generatedTakes ?? []), take] };
+              if (!existingTakeId) {
+                return { ...shot, generatedTakes: [...(shot.generatedTakes ?? []), take] };
+              }
+              const generatedTakes = (shot.generatedTakes ?? []).map((savedTake) => {
+                if (savedTake.id !== existingTakeId || savedTake.mediaAssetId) return savedTake;
+                updatedTakeFound = true;
+                return take;
+              });
+              return updatedTakeFound ? { ...shot, generatedTakes } : shot;
             }),
           }),
         };
         updatedWorkflow = { ...workflow, storyboard: nextStoryboard, updatedAt: Date.now() };
         return updatedWorkflow;
       });
-      if (!updatedWorkflow || !updatedShotFound) {
-        throw new Error("The storyboard shot was removed before the take could be attached.");
+      if (!updatedWorkflow || !updatedShotFound || (existingTakeId && !updatedTakeFound)) {
+        throw new Error("The storyboard shot or take was removed before the local copy could be attached.");
       }
       if (!persistWorkflowList(nextWorkflows, activeWorkflowIdRef.current)) {
         throw new Error("Could not save the storyboard take to the workflow.");
@@ -1405,6 +1429,30 @@ export default function Page() {
       setStorageStatus("Unable to save storyboard take");
       throw error instanceof Error ? error : new Error(message);
     }
+  };
+
+  const saveExistingStoryboardTakeCopy = async (
+    sceneId: string,
+    shotId: string,
+    take: StoryboardGeneratedTake,
+  ) => {
+    const candidate: StoryboardVideoCandidate = {
+      sourceId: take.sourceId,
+      workflowId: take.workflowId,
+      nodeId: take.nodeId,
+      outputPort: take.outputPort,
+      videoType: take.videoType,
+      videoUrl: take.videoUrl,
+      model: take.model,
+      prompt: take.prompt,
+      sourceShotRefs: [{
+        kind: "storyboard-frame",
+        workflowId: take.workflowId,
+        sceneId,
+        shotId,
+      }],
+    };
+    await saveStoryboardGeneratedTake(sceneId, shotId, candidate, take.id);
   };
 
   const createWorkflow = () => {
@@ -2008,6 +2056,7 @@ export default function Page() {
       />
       <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
         onSaveTake={saveStoryboardGeneratedTake}
+        onSaveTakeCopy={saveExistingStoryboardTakeCopy}
         onOpenWorkflow={(workflowId) => {
           if (workflowId !== activeWorkflowIdRef.current) {
             if (!workflowsRef.current.some((workflow) => workflow.id === workflowId)) {

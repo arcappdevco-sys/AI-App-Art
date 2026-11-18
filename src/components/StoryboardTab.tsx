@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import {
   STORYBOARD_ASPECT_RATIOS,
   STORYBOARD_CAMERA_MOVES,
@@ -31,6 +31,16 @@ import { loadProjectMediaFile } from "@/lib/project-media-storage";
 type ShotLocation = { sceneId: string; shotId: string; sceneIndex: number; shotIndex: number };
 type DraggedShot = { sceneId: string; shotId: string };
 type PendingFirstLastFrame = { sceneId: string; shotId: string; videoType: string };
+type StoryboardBoardTransform = { x: number; y: number; zoom: number };
+type StoryboardPanGesture = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  origin: StoryboardBoardTransform;
+};
+
+const STORYBOARD_MIN_ZOOM = 0.25;
+const STORYBOARD_MAX_ZOOM = 3;
 
 function shotHasContent(shot: StoryboardShot) {
   return Boolean(
@@ -53,6 +63,7 @@ function StoryboardTakeVideo({
   projectSession: ProjectFolderSession | null;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [hasPreviewed, setHasPreviewed] = useState(false);
   const [failed, setFailed] = useState(false);
   const [storedVideoPreview, setStoredVideoPreview] = useState<{
     mediaAssetId: string;
@@ -63,12 +74,12 @@ function StoryboardTakeVideo({
   const mediaAssetId = take.mediaAssetId;
   const isAtlasVideo = isAtlasVideoNode(take.videoType);
   const playable = usePlayableVideo(
-    previewOpen && !mediaAssetId && isAtlasVideo && /^https?:\/\//i.test(take.videoUrl)
+    hasPreviewed && !mediaAssetId && isAtlasVideo && /^https?:\/\//i.test(take.videoUrl)
       ? take.videoUrl
       : undefined,
   );
   useEffect(() => {
-    if (!previewOpen || !mediaAssetId) return;
+    if (!hasPreviewed || !mediaAssetId) return;
     let active = true;
     let objectUrl: string | null = null;
     void (async () => {
@@ -105,7 +116,7 @@ function StoryboardTakeVideo({
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [mediaAssetId, previewOpen, projectSession]);
+  }, [hasPreviewed, mediaAssetId, projectSession]);
 
   const currentStoredPreview = storedVideoPreview
     && storedVideoPreview.mediaAssetId === mediaAssetId
@@ -115,14 +126,20 @@ function StoryboardTakeVideo({
   const storedVideoUrl = currentStoredPreview?.url ?? null;
   const storedVideoError = currentStoredPreview?.error ?? "";
   const videoSource = mediaAssetId ? storedVideoUrl : (isAtlasVideo ? playable.src : take.videoUrl);
+  const videoRef = useRef<HTMLVideoElement>(null);
   return (
     <div className="storyboard-take-preview">
       <button type="button" className="storyboard-take-preview-toggle"
         aria-expanded={previewOpen}
         onClick={() => {
-          setPreviewOpen((current) => !current);
-          setStoredVideoPreview(null);
-          setFailed(false);
+          if (previewOpen) {
+            videoRef.current?.pause();
+            setPreviewOpen(false);
+          } else {
+            setFailed(false);
+            setHasPreviewed(true);
+            setPreviewOpen(true);
+          }
         }}>
         {previewOpen ? "Hide preview" : "Preview video"}
       </button>
@@ -143,11 +160,13 @@ function StoryboardTakeVideo({
         <p className="storyboard-take-error" role="status">
           The browser could not play this video. <a href={take.videoUrl} target="_blank" rel="noreferrer">Open original</a>
         </p>
-      ) : previewOpen && videoSource ? (
+      ) : hasPreviewed && videoSource ? (
         <video
+          ref={videoRef}
           src={videoSource}
           controls
           preload="metadata"
+          hidden={!previewOpen || failed}
           onError={() => setFailed(true)}
         />
       ) : null}
@@ -182,6 +201,7 @@ export default function StoryboardTab({
   onSendFrame,
   onOpenWorkflow,
   onSaveTake,
+  onSaveTakeCopy,
   videoCandidates,
   projectSession,
   videoModelOptions,
@@ -199,6 +219,7 @@ export default function StoryboardTab({
   ) => void;
   onOpenWorkflow: (workflowId: string) => void;
   onSaveTake: (sceneId: string, shotId: string, candidate: StoryboardVideoCandidate) => Promise<void>;
+  onSaveTakeCopy: (sceneId: string, shotId: string, take: StoryboardGeneratedTake) => Promise<void>;
   videoCandidates: StoryboardVideoCandidate[];
   projectSession: ProjectFolderSession | null;
   videoModelOptions: ImageToVideoModelOption[];
@@ -218,11 +239,17 @@ export default function StoryboardTab({
   const [frameErrors, setFrameErrors] = useState<Record<string, string>>({});
   const [savingTakeKeys, setSavingTakeKeys] = useState<Set<string>>(() => new Set());
   const [takeSaveErrors, setTakeSaveErrors] = useState<Record<string, string>>({});
+  const [savingTakeCopyIds, setSavingTakeCopyIds] = useState<Set<string>>(() => new Set());
+  const [takeCopyErrors, setTakeCopyErrors] = useState<Record<string, string>>({});
   const [frameBatchProgress, setFrameBatchProgress] = useState("");
   const [generatingMissingFrames, setGeneratingMissingFrames] = useState(false);
   const [workflowPickerShotId, setWorkflowPickerShotId] = useState<string | null>(null);
   const [pendingFirstLastFrame, setPendingFirstLastFrame] = useState<PendingFirstLastFrame | null>(null);
   const draggedShot = useRef<DraggedShot | null>(null);
+  const boardViewportRef = useRef<HTMLDivElement>(null);
+  const boardWorldRef = useRef<HTMLDivElement>(null);
+  const boardTransform = useRef<StoryboardBoardTransform>({ x: 0, y: 0, zoom: 1 });
+  const boardPanGesture = useRef<StoryboardPanGesture | null>(null);
   const locations = useMemo(() => shotLocations(storyboard.scenes), [storyboard.scenes]);
   const shotNumbers = useMemo(() => new Map(locations.map((location, index) => [location.shotId, index + 1])), [locations]);
   const frameChoices = useMemo(() => locations.flatMap((location) => {
@@ -410,6 +437,33 @@ export default function StoryboardTab({
     }
   };
 
+  const saveExistingTakeCopy = async (
+    sceneId: string,
+    shotId: string,
+    take: StoryboardGeneratedTake,
+  ) => {
+    setSavingTakeCopyIds((current) => new Set(current).add(take.id));
+    setTakeCopyErrors((current) => {
+      const next = { ...current };
+      delete next[take.id];
+      return next;
+    });
+    try {
+      await onSaveTakeCopy(sceneId, shotId, take);
+    } catch (error) {
+      setTakeCopyErrors((current) => ({
+        ...current,
+        [take.id]: error instanceof Error ? error.message : "Could not save this take locally.",
+      }));
+    } finally {
+      setSavingTakeCopyIds((current) => {
+        const next = new Set(current);
+        next.delete(take.id);
+        return next;
+      });
+    }
+  };
+
   const updateScene = (sceneId: string, patch: Partial<StoryboardScene>) => {
     onChange((current) => ({
       ...current,
@@ -509,6 +563,93 @@ export default function StoryboardTab({
     }
   };
 
+  const applyBoardTransform = useCallback((transform: StoryboardBoardTransform) => {
+    boardTransform.current = transform;
+    if (boardWorldRef.current) {
+      boardWorldRef.current.style.transform =
+        `translate(${transform.x}px, ${transform.y}px) scale(${transform.zoom})`;
+    }
+  }, []);
+
+  const zoomBoard = useCallback((factor: number, point?: { x: number; y: number }) => {
+    const viewport = boardViewportRef.current;
+    if (!viewport) return;
+    const current = boardTransform.current;
+    const bounds = viewport.getBoundingClientRect();
+    const x = point?.x ?? bounds.width / 2;
+    const y = point?.y ?? bounds.height / 2;
+    const zoom = Math.max(STORYBOARD_MIN_ZOOM, Math.min(STORYBOARD_MAX_ZOOM, current.zoom * factor));
+    const worldX = (x - current.x) / current.zoom;
+    const worldY = (y - current.y) / current.zoom;
+    applyBoardTransform({
+      x: x - worldX * zoom,
+      y: y - worldY * zoom,
+      zoom,
+    });
+  }, [applyBoardTransform]);
+
+  const handleBoardWheel = useCallback((event: WheelEvent) => {
+    const viewport = boardViewportRef.current;
+    if (!viewport) return;
+    if (event.target instanceof HTMLElement
+      && event.target.closest("input, textarea, select, button, [contenteditable='true'], .storyboard-take-prompt")) {
+      return;
+    }
+    event.preventDefault();
+    const current = boardTransform.current;
+    if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      const deltaX = event.shiftKey && !event.deltaX ? event.deltaY : event.deltaX;
+      applyBoardTransform({
+        ...current,
+        x: current.x - deltaX,
+        y: current.y - event.deltaY,
+      });
+      return;
+    }
+    const bounds = viewport.getBoundingClientRect();
+    zoomBoard(Math.pow(1.1, -event.deltaY / 100), {
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top,
+    });
+  }, [applyBoardTransform, zoomBoard]);
+
+  useEffect(() => {
+    const viewport = boardViewportRef.current;
+    if (!viewport) return;
+    viewport.addEventListener("wheel", handleBoardWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", handleBoardWheel);
+  }, [handleBoardWheel]);
+
+  const handleBoardPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 1
+      || (event.target instanceof HTMLElement && event.target.closest(".storyboard-navigation-controls"))) return;
+    event.preventDefault();
+    boardPanGesture.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      origin: { ...boardTransform.current },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.currentTarget.classList.add("is-panning");
+  };
+
+  const handleBoardPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const gesture = boardPanGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    applyBoardTransform({
+      ...gesture.origin,
+      x: gesture.origin.x + event.clientX - gesture.startX,
+      y: gesture.origin.y + event.clientY - gesture.startY,
+    });
+  };
+
+  const finishBoardPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (boardPanGesture.current?.pointerId !== event.pointerId) return;
+    boardPanGesture.current = null;
+    event.currentTarget.classList.remove("is-panning");
+  };
+
   return (
     <main className="storyboard-workspace" hidden={hidden} aria-label="Storyboard workspace"
       onKeyDownCapture={isolateWorkflowKeys}>
@@ -606,7 +747,18 @@ export default function StoryboardTab({
 
       {saveError && <p className="storyboard-storage-error" role="alert">Could not save this storyboard: {saveError}</p>}
 
-      <div className="storyboard-board">
+      <div className="storyboard-navigation-viewport"
+        ref={boardViewportRef}
+        onPointerDown={handleBoardPointerDown}
+        onPointerMove={handleBoardPointerMove}
+        onPointerUp={finishBoardPan}
+        onPointerCancel={finishBoardPan}
+        onLostPointerCapture={finishBoardPan}
+        onAuxClick={(event) => {
+          if (event.button === 1) event.preventDefault();
+        }}>
+        <div className="storyboard-navigation-world" ref={boardWorldRef}>
+          <div className="storyboard-board">
         {storyboard.scenes.length === 0 ? (
           <section className="storyboard-empty">
             <span aria-hidden="true">▧</span>
@@ -858,6 +1010,15 @@ export default function StoryboardTab({
                                   <p>{take.prompt}</p>
                                 </details>}
                                 <div className="storyboard-take-actions">
+                                  {take.mediaAssetId ? (
+                                    <span className="storyboard-take-local-status" role="status">Local copy saved</span>
+                                  ) : (
+                                    <button type="button" className="storyboard-take-save"
+                                      disabled={savingTakeCopyIds.has(take.id)}
+                                      onClick={() => void saveExistingTakeCopy(scene.id, shot.id, take)}>
+                                      {savingTakeCopyIds.has(take.id) ? "Saving local copy…" : "Save local copy"}
+                                    </button>
+                                  )}
                                   <button type="button" className="storyboard-take-open"
                                     onClick={() => onOpenWorkflow(take.workflowId)}>
                                     Open source workflow
@@ -868,6 +1029,9 @@ export default function StoryboardTab({
                                       generatedTakes: savedTakes.filter((saved) => saved.id !== take.id),
                                     })}>Remove take</button>
                                 </div>
+                                {takeCopyErrors[take.id] && <p className="storyboard-take-error" role="alert">
+                                  Could not save local copy: {takeCopyErrors[take.id]}
+                                </p>}
                               </article>
                             ))}
                             {availableVideoCandidates.map((candidate) => (
@@ -972,6 +1136,17 @@ export default function StoryboardTab({
             )}
           </section>
         ))}
+          </div>
+        </div>
+        <div className="storyboard-navigation-controls" role="group" aria-label="Storyboard navigation">
+          <button type="button" aria-label="Zoom in storyboard" title="Zoom in"
+            onClick={() => zoomBoard(1.2)}>+</button>
+          <button type="button" aria-label="Zoom out storyboard" title="Zoom out"
+            onClick={() => zoomBoard(1 / 1.2)}>−</button>
+          <button type="button" aria-label="Reset storyboard view" title="Reset view"
+            onClick={() => applyBoardTransform({ x: 0, y: 0, zoom: 1 })}>⌂</button>
+        </div>
+        <span className="storyboard-navigation-hint">Middle-drag to pan · Wheel to zoom</span>
       </div>
     </main>
   );
