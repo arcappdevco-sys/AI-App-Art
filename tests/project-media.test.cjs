@@ -18,6 +18,7 @@ const {
   workflowOutputSnapshotMediaId,
   workflowOutputMediaSource,
 } = require(path.join(__dirname, "..", "src", "lib", "project-media.ts"));
+const { summarizeProjectMediaStorage } = require(path.join(__dirname, "..", "src", "lib", "project-media-storage.ts"));
 
 test("legacy assets receive explicit unknown metadata", () => {
   const asset = normalizeProjectMediaAsset({
@@ -108,4 +109,18 @@ test("shared asset revisions are normalized and validated", () => {
     source: { kind: "storage", storageKey: "invalid-revision" },
     revision: -1,
   }), /non-negative safe integer/);
+});
+
+test("browser media storage summary counts only non-empty cached Blobs", () => {
+  const summary = summarizeProjectMediaStorage([
+    { id: "video", blob: new Blob(["12345"]) },
+    { id: "image", blob: new Blob(["123"]) },
+    { id: "empty", blob: new Blob([]) },
+    { id: "uncached" },
+  ]);
+  assert.deepEqual(summary, {
+    bytes: 8,
+    cachedAssets: 2,
+    bytesByAssetId: { video: 5, image: 3 },
+  });
 });

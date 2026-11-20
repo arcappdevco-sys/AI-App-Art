@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import {
   ReactFlow, Background, Controls, Handle, Position, addEdge, useEdgesState, useNodesState,
   type Connection, type Edge, type NodeProps, type ReactFlowInstance,
@@ -310,6 +310,7 @@ export default function Compositor({
   projectSessionReady = true,
   onProjectMediaChange,
   onProjectSessionChange,
+  onRegisterSaveHandler,
 }: {
   hidden: boolean;
   sharedMediaAssets?: ProjectMediaAsset[];
@@ -317,6 +318,7 @@ export default function Compositor({
   projectSessionReady?: boolean;
   onProjectMediaChange?: () => Promise<void>;
   onProjectSessionChange?: (session: ProjectFolderSession) => void;
+  onRegisterSaveHandler?: (handler: (() => Promise<void>) | null) => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CompNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -482,44 +484,78 @@ export default function Compositor({
     return () => { active = false; };
   }, [projectId, projectSession, projectSessionReady, setNodes, setEdges]);
 
+  const saveCompositorNow = useCallback(async () => {
+    if (!ready) throw new Error("The compositor is still loading and cannot be saved yet.");
+    const state: ProjectCompositorState = {
+      nodes,
+      edges,
+      mediaRefs: mediaReferences,
+      mediaMetadata,
+      tracks,
+      marks,
+      time,
+      viewerTransform,
+      previewBackground,
+      previewColor,
+      viewChannel,
+    };
+    saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
+      if (projectHandle && projectId) {
+        if (Object.keys(files).length) {
+          throw new Error("Copy compositor media into the project before saving its graph.");
+        }
+        await saveProjectCompositorState(projectHandle, projectId, state);
+      } else {
+        const localMedia = Object.fromEntries(Object.entries(files).filter(([id]) => !mediaReferences[id]));
+        await saveProject({
+          ...state,
+          media: localMedia,
+        });
+      }
+    });
+    setStatus("Saving...");
+    try {
+      await saveQueue.current;
+      setStatus(projectId ? "Saved to project folder" : "Saved locally");
+    } catch (caught) {
+      setStatus("Save failed");
+      setError(caught instanceof Error ? caught.message : String(caught));
+      throw caught;
+    }
+  }, [
+    ready,
+    nodes,
+    edges,
+    mediaReferences,
+    mediaMetadata,
+    tracks,
+    marks,
+    time,
+    viewerTransform,
+    previewBackground,
+    previewColor,
+    viewChannel,
+    files,
+    projectHandle,
+    projectId,
+  ]);
+  const saveCompositorNowRef = useRef(saveCompositorNow);
+
+  useEffect(() => {
+    saveCompositorNowRef.current = saveCompositorNow;
+  }, [saveCompositorNow]);
+
   useEffect(() => {
     if (!ready) return;
-    const timer = window.setTimeout(() => {
-      setStatus("Saving...");
-      const state: ProjectCompositorState = {
-        nodes,
-        edges,
-        mediaRefs: mediaReferences,
-        mediaMetadata,
-        tracks,
-        marks,
-        time,
-        viewerTransform,
-        previewBackground,
-        previewColor,
-        viewChannel,
-      };
-      saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
-        if (projectHandle && projectId) {
-          if (Object.keys(files).length) {
-            throw new Error("Copy compositor media into the project before saving its graph.");
-          }
-          await saveProjectCompositorState(projectHandle, projectId, state);
-        } else {
-          const localMedia = Object.fromEntries(Object.entries(files).filter(([id]) => !mediaReferences[id]));
-          await saveProject({
-            ...state,
-            media: localMedia,
-          });
-        }
-      });
-      saveQueue.current.then(() => setStatus(projectId ? "Saved to project folder" : "Saved locally")).catch((caught) => {
-        setStatus("Save failed"); setError(caught instanceof Error ? caught.message : String(caught));
-      });
-    }, 500);
+    const timer = window.setTimeout(() => { void saveCompositorNow().catch(() => {}); }, 500);
     return () => window.clearTimeout(timer);
-  }, [ready, nodes, edges, files, mediaReferences, mediaMetadata, mediaVersion, tracks, marks, time,
-    viewerTransform, previewBackground, previewColor, viewChannel, projectHandle, projectId]);
+  }, [ready, mediaVersion, saveCompositorNow]);
+
+  useEffect(() => {
+    const save = () => saveCompositorNowRef.current();
+    onRegisterSaveHandler?.(save);
+    return () => onRegisterSaveHandler?.(null);
+  }, [onRegisterSaveHandler]);
 
   useEffect(() => {
     let active = true;

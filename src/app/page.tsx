@@ -53,6 +53,7 @@ import {
   saveProjectWorkspaceState,
   type ProjectFolderSession,
 } from "@/lib/project-folder-storage";
+import { isProjectWorkspaceView, type ProjectWorkspaceView } from "@/lib/project-workspace";
 import { hasValidWorkflowEdgeReferences, stripInvalidWorkflowConnections } from "@/lib/workflow-storage";
 import {
   createEmptyStoryboard,
@@ -75,9 +76,11 @@ import {
   type ProjectMediaAsset,
 } from "@/lib/project-media";
 import {
+  isWorkflowVideoSnapshotSuppressed,
   listProjectMediaAssets,
   loadProjectMediaFile,
   registerProjectMediaAsset,
+  restoreWorkflowVideoSnapshot,
 } from "@/lib/project-media-storage";
 import CanvasGroups from "@/components/CanvasGroups";
 import { ExampleDragPreview, useExampleDrag } from "@/components/ExampleDrag";
@@ -142,6 +145,7 @@ type WorkflowLibrary = {
   version: 1;
   activeWorkflowId: string;
   workflows: SavedWorkflow[];
+  activeView: ProjectWorkspaceView;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -315,7 +319,12 @@ function normalizeWorkflowLibrary(value: unknown): {
     ? value.activeWorkflowId as string
     : workflows[0].id;
   return {
-    library: { version: 1, activeWorkflowId, workflows },
+    library: {
+      version: 1,
+      activeWorkflowId,
+      workflows,
+      activeView: isProjectWorkspaceView(value.activeView) ? value.activeView : "workflow",
+    },
     removedConnections,
   };
 }
@@ -325,6 +334,7 @@ function createDefaultWorkflowLibrary(): WorkflowLibrary {
   return {
     version: 1,
     activeWorkflowId: id,
+    activeView: "workflow",
     workflows: [{
       id,
       name: DEFAULT_WORKFLOW_NAME,
@@ -363,6 +373,7 @@ function readBrowserWorkflowLibrary(): {
     library: {
       version: 1,
       activeWorkflowId: id,
+      activeView: "workflow",
       workflows: [{ id, ...normalized, updatedAt: Date.now() }],
     },
     restored: true,
@@ -395,7 +406,7 @@ function formatRunCost(total: number, withoutEstimate: number) {
 
 export default function Page() {
   const router = useRouter();
-  const [activeView, setActiveView] = useState<"storyboard" | "workflow" | "editor" | "compositor">("workflow");
+  const [activeView, setActiveView] = useState<ProjectWorkspaceView>("workflow");
   const [uiTheme, setUiTheme] = useState<UiTheme>("midnight");
   const [uiButtonColor, setUiButtonColor] = useState<UiButtonColor>("blue");
   const [runMode, setRunMode] = useState<RunMode>("all");
@@ -410,6 +421,10 @@ export default function Page() {
   const [projectSession, setProjectSession] = useState<ProjectFolderSession | null>(null);
   const [projectSessionReady, setProjectSessionReady] = useState(false);
   const [projectSessionEpoch, setProjectSessionEpoch] = useState(0);
+  const [projectSaving, setProjectSaving] = useState(false);
+  const [projectSaveError, setProjectSaveError] = useState("");
+  const [projectSaveStatus, setProjectSaveStatus] = useState("");
+  const [registeredSaveHandlers, setRegisteredSaveHandlers] = useState({ editor: false, compositor: false });
   const groupCanvasRef = useRef<HTMLElement>(null);
   const groupFlowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
@@ -443,9 +458,23 @@ export default function Page() {
   const workflowSessionKey = projectSession?.sessionKey ?? "local";
   const loadedWorkflowSessionKey = useRef<string | null>(null);
   const workflowSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  const editorSaveHandler = useRef<(() => Promise<void>) | null>(null);
+  const compositorSaveHandler = useRef<(() => Promise<void>) | null>(null);
 
   const refreshProjectMediaAssets = useCallback(async () => {
     setProjectMediaAssets(await listProjectMediaAssets());
+  }, []);
+  const registerEditorSaveHandler = useCallback((handler: (() => Promise<void>) | null) => {
+    editorSaveHandler.current = handler;
+    setRegisteredSaveHandlers((current) => current.editor === (handler !== null)
+      ? current
+      : { ...current, editor: handler !== null });
+  }, []);
+  const registerCompositorSaveHandler = useCallback((handler: (() => Promise<void>) | null) => {
+    compositorSaveHandler.current = handler;
+    setRegisteredSaveHandlers((current) => current.compositor === (handler !== null)
+      ? current
+      : { ...current, compositor: handler !== null });
   }, []);
   const ensureWorkflowVideoSaved = useCallback((
     workflowId: string,
@@ -506,6 +535,18 @@ export default function Page() {
     });
     return saving;
   }, []);
+  const ensureWorkflowVideoSavedUnlessDeleted = useCallback(async (
+    workflowId: string,
+    nodeId: string,
+    port: string,
+    url: string,
+    name: string,
+    sessionAtStart = projectSessionRef.current,
+  ) => {
+    const assetId = await workflowOutputSnapshotMediaId(workflowId, nodeId, port, url);
+    if (await isWorkflowVideoSnapshotSuppressed(assetId)) return null;
+    return ensureWorkflowVideoSaved(workflowId, nodeId, port, url, name, sessionAtStart);
+  }, [ensureWorkflowVideoSaved]);
   const updateProjectSession = useCallback((session: ProjectFolderSession | null) => {
     projectSessionRef.current = session;
     setProjectSession(session);
@@ -616,7 +657,7 @@ export default function Page() {
     if (!storageReady || !activeWorkflowId) return;
     const pending: Array<{
       kind: "video" | "image";
-      promise: Promise<ProjectMediaAsset>;
+      promise: Promise<ProjectMediaAsset | undefined>;
     }> = [];
     for (const node of nodes) {
       const data = node.data as {
@@ -648,13 +689,13 @@ export default function Page() {
             && !generatedVideoSaves.current.has(saveTaskKey)) {
             pending.push({
               kind: "video",
-              promise: ensureWorkflowVideoSaved(
+              promise: ensureWorkflowVideoSavedUnlessDeleted(
                 activeWorkflowId,
                 node.id,
                 port,
                 value,
                 data.params?.title || data.title || definition.label || "Generated video",
-              ).then(({ asset }) => asset),
+              ).then((saved) => saved?.asset),
             });
           }
           continue;
@@ -663,8 +704,8 @@ export default function Page() {
         const name = data.params?.title || data.title || definition.label || "Generated media";
         if (mediaKind === "video") {
           if (alreadySavedAsTake) continue;
-          const saving = ensureWorkflowVideoSaved(activeWorkflowId, node.id, port, value, name)
-            .then(({ asset }) => asset)
+          const saving = ensureWorkflowVideoSavedUnlessDeleted(activeWorkflowId, node.id, port, value, name)
+            .then((saved) => saved?.asset)
             .catch((error: unknown) => {
               if (registeredMediaUrls.current.get(id) === value) registeredMediaUrls.current.delete(id);
               throw error;
@@ -718,7 +759,7 @@ export default function Page() {
       setStorageError(error instanceof Error ? error.message : "Could not refresh shared media.");
       setStorageStatus("Unable to refresh shared media");
     });
-  }, [activeWorkflowId, ensureWorkflowVideoSaved, nodes, projectSession?.sessionKey, refreshProjectMediaAssets, storageReady]);
+  }, [activeWorkflowId, ensureWorkflowVideoSavedUnlessDeleted, nodes, projectSession?.sessionKey, refreshProjectMediaAssets, storageReady]);
 
   useEffect(() => {
     if (!projectSessionReady) return;
@@ -767,6 +808,7 @@ export default function Page() {
           setEdges(current.edges);
           setGroups(current.groups);
           setStoryboard(current.storyboard);
+          setActiveView(library.activeView);
           loadedWorkflowSessionKey.current = workflowSessionKey;
           setStorageError("");
           const restoreStatus = projectSession
@@ -840,7 +882,12 @@ export default function Page() {
     const nextWorkflows = workflowsRef.current.some((workflow) => workflow.id === activeId)
       ? workflowsRef.current.map((workflow) => workflow.id === activeId ? current : workflow)
       : [...workflowsRef.current, current];
-    const library: WorkflowLibrary = { version: 1, activeWorkflowId: activeId, workflows: nextWorkflows };
+    const library: WorkflowLibrary = {
+      version: 1,
+      activeWorkflowId: activeId,
+      workflows: nextWorkflows,
+      activeView,
+    };
     if (projectSession) {
       workflowsRef.current = nextWorkflows;
       setWorkflows(nextWorkflows);
@@ -867,7 +914,58 @@ export default function Page() {
       setStorageStatus("Unable to save workflow");
       return false;
     }
-  }, [edges, groups, nodes, projectSession, setEdges, storyboard, workflowName, workflowSessionKey]);
+  }, [activeView, edges, groups, nodes, projectSession, setEdges, storyboard, workflowName, workflowSessionKey]);
+
+  const saveProjectNow = useCallback(async () => {
+    if (!projectSession) throw new Error("Open a project folder before saving the project.");
+    if (!projectSessionReady) throw new Error("The project workspace is still loading.");
+    setProjectSaving(true);
+    setProjectSaveError("");
+    setProjectSaveStatus("Saving project…");
+    const failures: string[] = [];
+    const saveTasks: Array<[string, () => Promise<void>]> = [
+      ["Workflow and storyboard", async () => {
+        if (!saveWorkflowLocally(true)) {
+          throw new Error("The workflow is still loading and cannot be saved.");
+        }
+        await workflowSaveQueue.current;
+      }],
+      ["Video editor", async () => {
+        if (!editorSaveHandler.current) throw new Error("The video editor save handler is not ready.");
+        await editorSaveHandler.current();
+      }],
+      ["Compositor", async () => {
+        if (!compositorSaveHandler.current) throw new Error("The compositor save handler is not ready.");
+        await compositorSaveHandler.current();
+      }],
+    ];
+
+    try {
+      for (const [label, save] of saveTasks) {
+        try {
+          await save();
+        } catch (caught) {
+          failures.push(`${label}: ${caught instanceof Error ? caught.message : "save failed"}`);
+        }
+      }
+      if (failures.length) throw new Error(failures.join(" "));
+      setProjectSaveStatus("Project saved");
+      window.setTimeout(() => {
+        setProjectSaveStatus((current) => current === "Project saved" ? "" : current);
+      }, 3000);
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Could not save the project.";
+      setProjectSaveError(message);
+      setProjectSaveStatus("Project save failed");
+      throw new Error(message);
+    } finally {
+      setProjectSaving(false);
+    }
+  }, [projectSession, projectSessionReady, saveWorkflowLocally]);
+
+  const prepareProjectPackageExport = useCallback(async () => {
+    await saveProjectNow();
+  }, [saveProjectNow]);
 
   const clearCanvas = () => {
     setNodes([]);
@@ -1339,7 +1437,12 @@ export default function Page() {
 
   const persistWorkflowList = (nextWorkflows: SavedWorkflow[], nextActiveId: string) => {
     if (loadedWorkflowSessionKey.current !== workflowSessionKey) return false;
-    const library: WorkflowLibrary = { version: 1, activeWorkflowId: nextActiveId, workflows: nextWorkflows };
+    const library: WorkflowLibrary = {
+      version: 1,
+      activeWorkflowId: nextActiveId,
+      workflows: nextWorkflows,
+      activeView,
+    };
     if (projectSession) {
       workflowsRef.current = nextWorkflows;
       activeWorkflowIdRef.current = nextActiveId;
@@ -1422,6 +1525,19 @@ export default function Page() {
         candidate.outputPort,
       );
       const shotName = sourceShot.title.trim() || `Shot ${sourceScene.shots.indexOf(sourceShot) + 1}`;
+      const snapshotAssetId = await workflowOutputSnapshotMediaId(
+        candidate.workflowId,
+        candidate.nodeId,
+        candidate.outputPort,
+        candidate.videoUrl,
+      );
+      if (await isWorkflowVideoSnapshotSuppressed(snapshotAssetId)) {
+        await restoreWorkflowVideoSnapshot(snapshotAssetId);
+        const snapshotTaskKey = `${candidate.workflowId}:${candidate.nodeId}:${candidate.outputPort}:${
+          candidate.videoUrl
+        }:${sessionAtStart?.sessionKey ?? "local"}`;
+        generatedVideoSaves.current.delete(snapshotTaskKey);
+      }
       const savedVideo = await ensureWorkflowVideoSaved(
         candidate.workflowId,
         candidate.nodeId,
@@ -1691,8 +1807,30 @@ export default function Page() {
             assets={projectMediaAssets}
             onProjectMediaChange={refreshProjectMediaAssets}
             onProjectSessionChange={updateProjectSession}
+            onBeforePackageExport={prepareProjectPackageExport}
             projectSessionEpoch={projectSessionEpoch}
           />
+          <button
+            type="button"
+            className="ff-toolbar-button ff-project-save-button"
+            onClick={() => { void saveProjectNow().catch(() => {}); }}
+            disabled={!projectSession || !projectSessionReady || projectSaving
+              || !registeredSaveHandlers.editor || !registeredSaveHandlers.compositor}
+            title={projectSaveError || "Save workflow, storyboard, video editor, and compositor to the open project."}
+            aria-describedby={projectSaveStatus ? "ff-project-save-status" : undefined}
+          >
+            {projectSaving ? "Saving…" : projectSaveError ? "Save failed" : "Save Project"}
+          </button>
+          {projectSaveStatus && (
+            <span
+              id="ff-project-save-status"
+              className="ff-project-save-status"
+              role={projectSaveError ? "alert" : "status"}
+              title={projectSaveError || projectSaveStatus}
+            >
+              {projectSaveError || projectSaveStatus}
+            </span>
+          )}
         </div>
         <div className="ff-workflow-name">
           <nav className="ff-mode-tabs" aria-label="App workspace">
@@ -2115,6 +2253,7 @@ export default function Page() {
         assets={videoAssets}
         onProjectMediaChange={refreshProjectMediaAssets}
         onProjectSessionChange={updateProjectSession}
+        onRegisterSaveHandler={registerEditorSaveHandler}
         projectSession={projectSession}
         projectSessionReady={projectSessionReady}
         projectSessionEpoch={projectSessionEpoch}
@@ -2128,6 +2267,7 @@ export default function Page() {
         projectSessionReady={projectSessionReady}
         onProjectMediaChange={refreshProjectMediaAssets}
         onProjectSessionChange={updateProjectSession}
+        onRegisterSaveHandler={registerCompositorSaveHandler}
       />
       <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
         onSaveTake={saveStoryboardGeneratedTake}

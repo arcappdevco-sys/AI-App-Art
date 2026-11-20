@@ -1,15 +1,31 @@
 "use client";
 
-import { normalizeProjectMediaAsset, type ProjectMediaAsset } from "./project-media";
+import {
+  normalizeProjectMediaAsset,
+  workflowOutputSnapshotHash,
+  type ProjectMediaAsset,
+} from "./project-media";
 
 type StoredProjectMediaAsset = ProjectMediaAsset & {
   blob?: Blob;
   updatedAt: number;
 };
 
+type SuppressedWorkflowVideoSnapshot = {
+  id: string;
+  deletedAt: number;
+};
+
+export type ProjectMediaStorageUsage = {
+  bytes: number;
+  cachedAssets: number;
+  bytesByAssetId: Record<string, number>;
+};
+
 const DATABASE_NAME = "fal-flow-project-media";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const ASSET_STORE = "assets";
+const SUPPRESSED_SNAPSHOT_STORE = "suppressedWorkflowVideoSnapshots";
 const MAX_MEDIA_BYTES = 512 * 1024 * 1024;
 const pendingLoads = new Map<string, Promise<File>>();
 
@@ -24,11 +40,29 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!request.result.objectStoreNames.contains(ASSET_STORE)) {
         request.result.createObjectStore(ASSET_STORE, { keyPath: "id" });
       }
+      if (!request.result.objectStoreNames.contains(SUPPRESSED_SNAPSHOT_STORE)) {
+        request.result.createObjectStore(SUPPRESSED_SNAPSHOT_STORE, { keyPath: "id" });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("Could not open shared media storage."));
     request.onblocked = () => reject(new Error("Shared media storage is blocked by another open tab."));
   });
+}
+
+function isWorkflowVideoSnapshotId(id: string): boolean {
+  return id.startsWith("workflow-output:") && /:saved:[0-9a-f]{64}$/i.test(id);
+}
+
+export function summarizeProjectMediaStorage(
+  assets: readonly Pick<StoredProjectMediaAsset, "id" | "blob">[],
+): ProjectMediaStorageUsage {
+  const cachedAssets = assets.flatMap((asset) =>
+    asset.blob && asset.blob.size > 0 ? [[asset.id, asset.blob.size] as const] : []
+  );
+  const bytesByAssetId: Record<string, number> = Object.fromEntries(cachedAssets);
+  const bytes = Object.values(bytesByAssetId).reduce((total, size) => total + size, 0);
+  return { bytes, cachedAssets: cachedAssets.length, bytesByAssetId };
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
@@ -142,6 +176,108 @@ export async function listProjectMediaAssets(): Promise<ProjectMediaAsset[]> {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .map(({ id, name, mediaKind, mimeType, source, metadata, revision }) =>
         normalizeProjectMediaAsset({ id, name, mediaKind, mimeType, source, metadata, revision }));
+  } finally {
+    database.close();
+  }
+}
+
+export async function getProjectMediaStorageUsage(): Promise<ProjectMediaStorageUsage> {
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(ASSET_STORE, "readonly");
+    const done = transactionDone(transaction);
+    const [stored] = await Promise.all([
+      requestResult(transaction.objectStore(ASSET_STORE).getAll() as IDBRequest<StoredProjectMediaAsset[]>),
+      done,
+    ]);
+    return summarizeProjectMediaStorage(stored);
+  } finally {
+    database.close();
+  }
+}
+
+export async function loadProjectMediaFileForUrl(url: string): Promise<File | null> {
+  const parsedUrl = new URL(url);
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw new Error("Saved video previews require an HTTP or HTTPS URL.");
+  }
+  const normalizedUrl = parsedUrl.toString();
+  const snapshotHash = await workflowOutputSnapshotHash(url);
+  const database = await openDatabase();
+  let candidates: StoredProjectMediaAsset[];
+  try {
+    const transaction = database.transaction(ASSET_STORE, "readonly");
+    const done = transactionDone(transaction);
+    [candidates] = await Promise.all([
+      requestResult(transaction.objectStore(ASSET_STORE).getAll() as IDBRequest<StoredProjectMediaAsset[]>),
+      done,
+    ]);
+  } finally {
+    database.close();
+  }
+  const candidate = candidates
+    .filter((asset) => asset.mediaKind === "video" && (
+      (asset.source.kind === "url" && asset.source.url === normalizedUrl)
+      || (asset.blob && asset.id.endsWith(`:saved:${snapshotHash}`))
+    ))
+    .sort((left, right) => Number(Boolean(right.blob)) - Number(Boolean(left.blob))
+      || right.updatedAt - left.updatedAt)[0];
+  if (!candidate) return null;
+  return loadProjectMediaFile(candidate.id, candidate.revision);
+}
+
+export async function deleteProjectMediaAsset(id: string): Promise<void> {
+  const database = await openDatabase();
+  try {
+    const stores = isWorkflowVideoSnapshotId(id)
+      ? [ASSET_STORE, SUPPRESSED_SNAPSHOT_STORE]
+      : [ASSET_STORE];
+    const transaction = database.transaction(stores, "readwrite");
+    const done = transactionDone(transaction);
+    const assetStore = transaction.objectStore(ASSET_STORE);
+    const request = assetStore.get(id) as IDBRequest<StoredProjectMediaAsset | undefined>;
+    let found = false;
+    request.onsuccess = () => {
+      if (!request.result) return;
+      found = true;
+      assetStore.delete(id);
+      if (isWorkflowVideoSnapshotId(id)) {
+        transaction.objectStore(SUPPRESSED_SNAPSHOT_STORE).put({ id, deletedAt: Date.now() } satisfies SuppressedWorkflowVideoSnapshot);
+      }
+    };
+    request.onerror = () => transaction.abort();
+    await done;
+    if (!found) throw new Error(`Local media "${id}" no longer exists.`);
+  } finally {
+    database.close();
+  }
+}
+
+export async function isWorkflowVideoSnapshotSuppressed(id: string): Promise<boolean> {
+  if (!isWorkflowVideoSnapshotId(id)) return false;
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(SUPPRESSED_SNAPSHOT_STORE, "readonly");
+    const done = transactionDone(transaction);
+    const [suppressed] = await Promise.all([
+      requestResult(transaction.objectStore(SUPPRESSED_SNAPSHOT_STORE)
+        .get(id) as IDBRequest<SuppressedWorkflowVideoSnapshot | undefined>),
+      done,
+    ]);
+    return Boolean(suppressed);
+  } finally {
+    database.close();
+  }
+}
+
+export async function restoreWorkflowVideoSnapshot(id: string): Promise<void> {
+  if (!isWorkflowVideoSnapshotId(id)) return;
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(SUPPRESSED_SNAPSHOT_STORE, "readwrite");
+    const done = transactionDone(transaction);
+    transaction.objectStore(SUPPRESSED_SNAPSHOT_STORE).delete(id);
+    await done;
   } finally {
     database.close();
   }

@@ -405,6 +405,8 @@ body {
   z-index: 30;
   width: 320px;
   max-width: calc(100vw - 24px);
+  max-height: min(80vh, 560px);
+  overflow: auto;
   padding: 12px;
   border: 1px solid var(--line-hover);
   border-radius: 10px;
@@ -418,6 +420,23 @@ body {
   min-width: 0;
 }
 
+.ff-project-folder-storage {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ff-project-folder-storage strong {
+  color: var(--text-secondary);
+}
+
+.ff-project-folder-storage [role="alert"] {
+  color: #ef9b84;
+}
+
 .ff-project-folder-status {
   color: var(--muted);
   font-size: 10px;
@@ -427,6 +446,56 @@ body {
 
 .ff-project-folder-status[role="alert"] {
   color: #ef9b84;
+}
+
+.ff-project-media-missing {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, #ef9b84 45%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, #ef9b84 7%, var(--panel));
+}
+
+.ff-project-media-missing-heading,
+.ff-project-media-relink-choice {
+  display: grid;
+  gap: 7px;
+}
+
+.ff-project-media-missing p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.ff-project-media-missing-item {
+  display: grid;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.ff-project-media-missing-item > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ff-project-media-missing-item > div:first-child span,
+.ff-project-media-no-match,
+.ff-project-media-relink-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ff-project-media-relink-note {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 
 .ff-project-folder-select {
@@ -440,6 +509,17 @@ body {
   background: var(--surface);
   color: var(--text-secondary);
   font-size: 11px;
+}
+
+.ff-delete-media-button {
+  border-color: color-mix(in srgb, #ef9b84 45%, var(--line));
+  color: #ef9b84;
+}
+
+.ff-delete-media-button:hover:not(:disabled) {
+  border-color: #ef9b84;
+  background: color-mix(in srgb, #ef9b84 10%, transparent);
+  color: #ffc0ad;
 }
 
 .ff-workspace-help {
@@ -572,6 +652,24 @@ body {
 .ff-toolbar-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.ff-project-save-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.ff-project-save-status {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-project-save-status[role="alert"] {
+  color: #ef9b84;
 }
 
 .ff-open {

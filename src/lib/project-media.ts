@@ -49,10 +49,14 @@ export async function workflowOutputSnapshotMediaId(
   url: string,
 ): Promise<string> {
   const outputId = workflowOutputMediaId(workflowId, nodeId, port);
+  const hash = await workflowOutputSnapshotHash(url);
+  return `${outputId}:saved:${hash}`;
+}
+
+export async function workflowOutputSnapshotHash(url: string): Promise<string> {
   if (!/^https?:\/\//i.test(url)) throw new Error("Workflow video snapshots require an HTTP or HTTPS URL.");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url));
-  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `${outputId}:saved:${hash}`;
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export function workflowOutputMediaSource(

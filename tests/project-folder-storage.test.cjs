@@ -13,6 +13,9 @@ require.extensions[".ts"] = (module, filename) => {
 const {
   addMediaToProjectFolder,
   backupProjectFolder,
+  exportProjectPackage,
+  findProjectFolderRoot,
+  importProjectPackageIntoFolder,
   loadProjectCompositorState,
   loadProjectWorkspaceState,
   loadProjectVideoEditorState,
@@ -21,6 +24,10 @@ const {
   readProjectMediaAssetFile,
   readProjectMediaFile,
   readOrCreateProjectManifest,
+  relinkProjectMediaAtPath,
+  relinkProjectMediaFromFile,
+  saveProjectManifest,
+  scanAndRelinkProjectMedia,
   saveProjectCompositorState,
   saveProjectWorkspaceState,
   saveProjectVideoEditorState,
@@ -128,6 +135,31 @@ function createMemoryDirectoryHandle() {
     },
   });
   return { ...createHandle("", "Test Project"), files, directories };
+}
+
+async function writeMemoryFile(root, relativePath, file) {
+  const segments = relativePath.split("/");
+  let directory = root;
+  for (const segment of segments.slice(0, -1)) {
+    directory = await directory.getDirectoryHandle(segment, { create: true });
+  }
+  const fileHandle = await directory.getFileHandle(segments.at(-1), { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(file);
+  await writable.close();
+}
+
+async function createProjectMedia(handle, file = new File(["media bytes"], "source.mp4", { type: "video/mp4" })) {
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  const updated = await addMediaToProjectFolder(handle, manifest, {
+    id: "media-relink",
+    name: "Shared source",
+    mediaKind: "video",
+    mimeType: "video/mp4",
+    source: { kind: "storage", storageKey: "media-relink" },
+    metadata: {},
+  }, file);
+  return { manifest: updated, asset: updated.assets[0] };
 }
 
 test("creates a manifest in a new project folder", async () => {
@@ -267,6 +299,112 @@ test("reports project media files that are missing from disk", async () => {
   await assert.rejects(readProjectMediaFile(handle, updated.assets[0]), /is missing/);
 });
 
+test("finds a single nested project root without relying on its folder name", async () => {
+  const selectedFolder = createMemoryDirectoryHandle();
+  const container = await selectedFolder.getDirectoryHandle("Shared bundle", { create: true });
+  const renamedProject = await container.getDirectoryHandle("Renamed workspace", { create: true });
+  const { manifest } = await readOrCreateProjectManifest(renamedProject);
+
+  const found = await findProjectFolderRoot(selectedFolder);
+  assert.equal(found.path, renamedProject.path);
+  assert.equal((await readOrCreateProjectManifest(found)).manifest.id, manifest.id);
+});
+
+test("automatically relinks a unique exact filename and size match", async () => {
+  const handle = createMemoryDirectoryHandle();
+  const { manifest, asset } = await createProjectMedia(handle);
+  const originalPath = asset.relativePath;
+  const fileName = originalPath.split("/").at(-1);
+  handle.files.delete(originalPath);
+  const movedPath = `Renamed Media/${fileName}`;
+  await writeMemoryFile(handle, movedPath, new File(["media bytes"], fileName, { type: "video/mp4" }));
+
+  const repaired = await scanAndRelinkProjectMedia(handle, manifest);
+  assert.deepEqual(repaired.relinkedAssetIds, [asset.id]);
+  assert.deepEqual(repaired.unresolved, []);
+  assert.equal(repaired.manifest.assets[0].id, asset.id);
+  assert.equal(repaired.manifest.assets[0].relativePath, movedPath);
+  assert.equal(await (await readProjectMediaFile(handle, repaired.manifest.assets[0])).text(), "media bytes");
+});
+
+test("does not guess between duplicate candidates and allows an explicit choice", async () => {
+  const handle = createMemoryDirectoryHandle();
+  const { manifest, asset } = await createProjectMedia(handle);
+  const originalPath = asset.relativePath;
+  const fileName = originalPath.split("/").at(-1);
+  handle.files.delete(originalPath);
+  const firstPath = `First/${fileName}`;
+  const secondPath = `Second/${fileName}`;
+  await writeMemoryFile(handle, firstPath, new File(["media bytes"], fileName, { type: "video/mp4" }));
+  await writeMemoryFile(handle, secondPath, new File(["media bytes"], fileName, { type: "video/mp4" }));
+
+  const scan = await scanAndRelinkProjectMedia(handle, manifest);
+  assert.deepEqual(scan.relinkedAssetIds, []);
+  assert.deepEqual(scan.unresolved, [{ asset, candidates: [firstPath, secondPath] }]);
+  assert.equal(scan.manifest.assets[0].relativePath, originalPath);
+
+  const selected = await relinkProjectMediaAtPath(handle, manifest, asset.id, secondPath);
+  assert.equal(selected.assets[0].id, asset.id);
+  assert.equal(selected.assets[0].relativePath, secondPath);
+});
+
+test("requires a user choice when the project has no saved file size", async () => {
+  const handle = createMemoryDirectoryHandle();
+  const { manifest, asset } = await createProjectMedia(handle);
+  const originalPath = asset.relativePath;
+  const fileName = originalPath.split("/").at(-1);
+  const manifestWithoutSize = await saveProjectManifest(handle, {
+    ...manifest,
+    assets: manifest.assets.map((entry) => ({ ...entry, sizeBytes: null })),
+  });
+  handle.files.delete(originalPath);
+  const candidatePath = `Moved/${fileName}`;
+  await writeMemoryFile(handle, candidatePath, new File(["different size"], fileName, { type: "video/mp4" }));
+
+  const scan = await scanAndRelinkProjectMedia(handle, manifestWithoutSize);
+  assert.deepEqual(scan.relinkedAssetIds, []);
+  assert.deepEqual(scan.unresolved[0].candidates, [candidatePath]);
+
+  const selected = await relinkProjectMediaAtPath(handle, manifestWithoutSize, asset.id, candidatePath);
+  assert.equal(selected.assets[0].relativePath, candidatePath);
+});
+
+test("rejects checksum mismatches and copies a verified manual replacement", async () => {
+  const handle = createMemoryDirectoryHandle();
+  const { manifest, asset } = await createProjectMedia(handle);
+  const originalPath = asset.relativePath;
+  const originalFile = await readProjectMediaFile(handle, asset);
+  const checksum = await crypto.subtle.digest("SHA-256", await originalFile.arrayBuffer());
+  const sha256 = Array.from(new Uint8Array(checksum), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const hashedManifest = await saveProjectManifest(handle, {
+    ...manifest,
+    assets: manifest.assets.map((entry) => ({ ...entry, sha256 })),
+  });
+  const fileName = originalPath.split("/").at(-1);
+  handle.files.delete(originalPath);
+  const wrongFile = new File(["media bytex"], fileName, { type: "video/mp4" });
+  const wrongPath = `Wrong/${fileName}`;
+  await writeMemoryFile(handle, wrongPath, wrongFile);
+
+  const scan = await scanAndRelinkProjectMedia(handle, hashedManifest);
+  assert.equal(scan.unresolved.length, 1);
+  assert.deepEqual(scan.unresolved[0].candidates, []);
+  await assert.rejects(
+    relinkProjectMediaAtPath(handle, hashedManifest, asset.id, wrongPath),
+    /saved checksum/,
+  );
+  await assert.rejects(
+    relinkProjectMediaFromFile(handle, hashedManifest, asset.id, wrongFile),
+    /saved checksum/,
+  );
+
+  const replacement = new File(["media bytes"], "replacement.mp4", { type: "video/mp4" });
+  const relinked = await relinkProjectMediaFromFile(handle, hashedManifest, asset.id, replacement);
+  assert.equal(relinked.assets[0].id, asset.id);
+  assert.notEqual(relinked.assets[0].relativePath, originalPath);
+  assert.equal(await (await readProjectMediaFile(handle, relinked.assets[0])).text(), "media bytes");
+});
+
 test("saves and reloads the project timeline document", async () => {
   const handle = createMemoryDirectoryHandle();
   const { manifest } = await readOrCreateProjectManifest(handle);
@@ -383,6 +521,7 @@ test("saves and reloads the project workflow library and active workflow", async
   const state = {
     version: 1,
     activeWorkflowId: "workflow-two",
+    activeView: "storyboard",
     workflows: [
       { id: "workflow-one", name: "First", storyboard: { scenes: [] } },
       { id: "workflow-two", name: "Second", storyboard: { scenes: [{ id: "scene-1" }] } },
@@ -402,6 +541,25 @@ test("returns null when the project workflow document has not been created", asy
   const handle = createMemoryDirectoryHandle();
   const { manifest } = await readOrCreateProjectManifest(handle);
   assert.equal(await loadProjectWorkspaceState(handle, manifest.id), null);
+});
+
+test("defaults older project workspaces to the workflow view", async () => {
+  const handle = createMemoryDirectoryHandle();
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  handle.files.set(PROJECT_WORKSPACE_DOCUMENT_FILE_NAME, JSON.stringify({
+    format: "fal-flow-workspace",
+    schemaVersion: 1,
+    projectId: manifest.id,
+    updatedAt: new Date().toISOString(),
+    state: {
+      version: 1,
+      activeWorkflowId: "legacy-workflow",
+      workflows: [{ id: "legacy-workflow" }],
+    },
+  }));
+
+  const state = await loadProjectWorkspaceState(handle, manifest.id);
+  assert.equal(state.activeView, "workflow");
 });
 
 test("rejects invalid or mismatched project workflow documents without replacing them", async () => {
@@ -450,6 +608,7 @@ test("backs up the complete project tree into an empty folder without changing t
   const workspace = {
     version: 1,
     activeWorkflowId: "workflow-1",
+    activeView: "workflow",
     workflows: [{ id: "workflow-1", name: "Storyboard", nodes: [], edges: [], storyboard: { scenes: [] } }],
   };
   await saveProjectWorkspaceState(source, projectManifest.id, workspace);
@@ -472,6 +631,84 @@ test("backs up the complete project tree into an empty folder without changing t
     await (await readProjectMediaAssetFile(destination, projectManifest.id, asset.id)).text(),
     "backup video",
   );
+});
+
+test("exports and imports a portable project package with workspace and media", async () => {
+  const source = createMemoryDirectoryHandle();
+  const { manifest } = await readOrCreateProjectManifest(source);
+  const projectManifest = await addMediaToProjectFolder(source, manifest, {
+    id: "package-media",
+    name: "Package clip",
+    mediaKind: "video",
+    mimeType: "video/mp4",
+    source: { kind: "storage", storageKey: "package-media" },
+    metadata: {},
+  }, new File(["package video"], "package.mp4", { type: "video/mp4" }));
+  const workspace = {
+    version: 1,
+    activeWorkflowId: "workflow-1",
+    activeView: "storyboard",
+    workflows: [{ id: "workflow-1", name: "Storyboard", nodes: [], edges: [], storyboard: { scenes: [] } }],
+  };
+  await saveProjectWorkspaceState(source, projectManifest.id, workspace);
+
+  const packageBlob = await exportProjectPackage(source, projectManifest.id);
+  assert.equal(packageBlob.type, "application/zip");
+  const destination = createMemoryDirectoryHandle();
+  const importedManifest = await importProjectPackageIntoFolder(packageBlob, destination);
+
+  assert.equal(importedManifest.id, projectManifest.id);
+  assert.deepEqual(await loadProjectWorkspaceState(destination, projectManifest.id), workspace);
+  assert.equal(
+    await (await readProjectMediaAssetFile(destination, projectManifest.id, "package-media")).text(),
+    "package video",
+  );
+});
+
+test("imports a complete workspace even when media files need relinking", async () => {
+  const { unzipSync, zipSync } = require("fflate");
+  const source = createMemoryDirectoryHandle();
+  const { manifest } = await readOrCreateProjectManifest(source);
+  const projectManifest = await addMediaToProjectFolder(source, manifest, {
+    id: "missing-package-media",
+    name: "Missing package media",
+    mediaKind: "video",
+    mimeType: "video/mp4",
+    source: { kind: "storage", storageKey: "missing-package-media" },
+    metadata: {},
+  }, new File(["package video"], "package.mp4", { type: "video/mp4" }));
+  await saveProjectWorkspaceState(source, projectManifest.id, {
+    version: 1,
+    activeWorkflowId: "workflow-1",
+    workflows: [{ id: "workflow-1", name: "Workflow", nodes: [], edges: [], storyboard: { scenes: [] } }],
+  });
+  const completePackage = await exportProjectPackage(source, projectManifest.id);
+  const packageEntries = unzipSync(new Uint8Array(await completePackage.arrayBuffer()));
+  delete packageEntries[projectManifest.assets[0].relativePath];
+  const packageWithMissingMedia = new Blob([zipSync(packageEntries)]);
+  const destination = createMemoryDirectoryHandle();
+
+  const imported = await importProjectPackageIntoFolder(packageWithMissingMedia, destination);
+  const repair = await scanAndRelinkProjectMedia(destination, imported);
+  assert.equal(imported.id, projectManifest.id);
+  assert.equal(repair.unresolved.length, 1);
+  assert.equal(repair.unresolved[0].asset.id, "missing-package-media");
+});
+
+test("rejects unsafe and incomplete project packages without writing files", async () => {
+  const { zipSync } = require("fflate");
+  const destination = createMemoryDirectoryHandle();
+  const unsafePackage = new Blob([zipSync({ "../outside.txt": new Uint8Array([1]) })]);
+  await assert.rejects(importProjectPackageIntoFolder(unsafePackage, destination), /safe path|traversal/i);
+  assert.equal(destination.files.size, 0);
+
+  const projectSource = createMemoryDirectoryHandle();
+  const { manifest } = await readOrCreateProjectManifest(projectSource);
+  const missingWorkspace = new Blob([zipSync({
+    [PROJECT_MANIFEST_FILE_NAME]: new TextEncoder().encode(JSON.stringify(manifest)),
+  })]);
+  await assert.rejects(importProjectPackageIntoFolder(missingWorkspace, destination), /missing "fal-flow.workspace.json"/);
+  assert.equal(destination.files.size, 0);
 });
 
 test("refuses a non-empty or nested backup destination without overwriting existing files", async () => {

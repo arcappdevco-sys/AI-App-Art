@@ -363,6 +363,7 @@ export default function VideoEditor({
   hidden = false,
   onProjectMediaChange,
   onProjectSessionChange,
+  onRegisterSaveHandler,
   projectSession = null,
   projectSessionReady = true,
   projectSessionEpoch = 0,
@@ -371,6 +372,7 @@ export default function VideoEditor({
   hidden?: boolean;
   onProjectMediaChange?: () => void;
   onProjectSessionChange?: (session: ProjectFolderSession) => void;
+  onRegisterSaveHandler?: (handler: (() => Promise<void>) | null) => void;
   projectSession?: ProjectFolderSession | null;
   projectSessionReady?: boolean;
   projectSessionEpoch?: number;
@@ -435,6 +437,7 @@ export default function VideoEditor({
     uploadedAssets,
     activeSequenceId,
   });
+  const editorSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const undoStack = useRef<EditorHistorySnapshot[]>([]);
   const redoStack = useRef<EditorHistorySnapshot[]>([]);
   const historyRestoreInProgress = useRef(false);
@@ -817,10 +820,7 @@ export default function VideoEditor({
     };
   }, [assets, persistenceReady, recordHistory]);
 
-  useEffect(() => {
-    if (!persistenceReady) return;
-    if (persistenceValidationError) return;
-    const state: StoredVideoEditorState = {
+  const createStoredEditorState = useCallback((): StoredVideoEditorState => ({
       version: 4,
       sequences: sequences.map((sequence) => ({
         ...sequence,
@@ -862,44 +862,62 @@ export default function VideoEditor({
       })),
       activeSequenceId,
       activeTool,
-    };
+    }), [activeSequenceId, activeTool, sequences, uploadedAssets]);
 
-    let cancelled = false;
-    const persist = async () => {
-      setPersistenceStatus("Saving editor…");
-      try {
+  const saveEditorNow = useCallback(async () => {
+    if (!persistenceReady) throw new Error("The video editor is still loading and cannot be saved yet.");
+    if (persistenceValidationError) {
+      setPersistenceError(persistenceValidationError);
+      setPersistenceStatus("Editor save failed");
+      throw new Error(persistenceValidationError);
+    }
+    setPersistenceStatus("Saving editor…");
+    try {
+      const state = createStoredEditorState();
+      editorSaveQueue.current = editorSaveQueue.current.catch(() => {}).then(async () => {
         if (projectHandle && projectId) {
           await saveProjectVideoEditorState(projectHandle, projectId, state);
         } else {
           await saveVideoEditorState(state);
         }
-        if (cancelled) return;
-        setPersistenceError("");
-        setPersistenceStatus(projectId ? "Saved to project folder" : "Saved on this device");
-      } catch (caught) {
-        if (cancelled) return;
-        setPersistenceError(caught instanceof Error ? caught.message : "Could not save the video editor.");
-        setPersistenceStatus("Editor save failed");
-      }
-    };
-    const timeout = window.setTimeout(persist, 250);
-    window.addEventListener("pagehide", persist);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
-      window.removeEventListener("pagehide", persist);
-    };
+      });
+      await editorSaveQueue.current;
+      setPersistenceError("");
+      setPersistenceStatus(projectId ? "Saved to project folder" : "Saved on this device");
+    } catch (caught) {
+      setPersistenceError(caught instanceof Error ? caught.message : "Could not save the video editor.");
+      setPersistenceStatus("Editor save failed");
+      throw caught;
+    }
   }, [
-    activeSequenceId,
-    activeTool,
+    createStoredEditorState,
     persistenceReady,
     persistenceValidationError,
     projectHandle,
     projectId,
-    projectSessionEpoch,
-    sequences,
-    uploadedAssets,
   ]);
+  const saveEditorNowRef = useRef(saveEditorNow);
+
+  useEffect(() => {
+    saveEditorNowRef.current = saveEditorNow;
+  }, [saveEditorNow]);
+
+  useEffect(() => {
+    if (!persistenceReady || persistenceValidationError) return;
+    const persist = () => { void saveEditorNow().catch(() => {}); };
+    const timeout = window.setTimeout(persist, 250);
+    window.addEventListener("pagehide", persist);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("pagehide", persist);
+    };
+  }, [persistenceReady, persistenceValidationError, projectSessionEpoch, saveEditorNow]);
+
+  useEffect(() => {
+    const save = () => saveEditorNowRef.current();
+    onRegisterSaveHandler?.(save);
+    return () => onRegisterSaveHandler?.(null);
+  }, [onRegisterSaveHandler]);
 
   const activeSequence = sequences.find((sequence) => sequence.id === activeSequenceId) ?? sequences[0];
   const clips = activeSequence?.clips ?? [];

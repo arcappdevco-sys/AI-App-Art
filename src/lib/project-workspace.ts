@@ -2,10 +2,13 @@ export const PROJECT_WORKSPACE_DOCUMENT_FILE_NAME = "fal-flow.workspace.json";
 export const PROJECT_WORKSPACE_DOCUMENT_FORMAT = "fal-flow-workspace";
 export const PROJECT_WORKSPACE_DOCUMENT_VERSION = 1;
 
+export type ProjectWorkspaceView = "storyboard" | "workflow" | "editor" | "compositor";
+
 export type ProjectWorkspaceState = {
   version: 1;
   activeWorkflowId: string;
   workflows: unknown[];
+  activeView: ProjectWorkspaceView;
 };
 
 export type ProjectWorkspaceDocument = {
@@ -24,10 +27,17 @@ function isText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+export function isProjectWorkspaceView(value: unknown): value is ProjectWorkspaceView {
+  return value === "storyboard" || value === "workflow" || value === "editor" || value === "compositor";
+}
+
 function normalizeState(value: unknown): ProjectWorkspaceState {
   if (!isRecord(value) || value.version !== 1 || !isText(value.activeWorkflowId)
     || !Array.isArray(value.workflows) || value.workflows.length === 0) {
     throw new Error("The project workspace document contains invalid workflow data.");
+  }
+  if (value.activeView !== undefined && !isProjectWorkspaceView(value.activeView)) {
+    throw new Error("The project workspace document contains an invalid active view.");
   }
   const workflowIds = value.workflows.map((workflow) => {
     if (!isRecord(workflow) || !isText(workflow.id)) {
@@ -45,6 +55,7 @@ function normalizeState(value: unknown): ProjectWorkspaceState {
     version: 1,
     activeWorkflowId: value.activeWorkflowId,
     workflows: value.workflows,
+    activeView: isProjectWorkspaceView(value.activeView) ? value.activeView : "workflow",
   };
 }
 
