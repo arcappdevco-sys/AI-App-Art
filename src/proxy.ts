@@ -11,6 +11,16 @@ let cachedJwks: {
   keys: ReturnType<typeof createRemoteJWKSet>;
 } | undefined;
 
+function isLocalHost(host: string | null) {
+  if (!host) return false;
+  try {
+    const hostname = new URL(`http://${host}`).hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
 function getCloudflareAccessConfig(): CloudflareAccessConfig {
   const teamDomain = process.env.CLOUDFLARE_ACCESS_TEAM_DOMAIN?.trim();
   const audience = process.env.CLOUDFLARE_ACCESS_AUD?.trim();
@@ -71,6 +81,9 @@ function accessResponse(status: number, message: string) {
 }
 
 export async function proxy(request: NextRequest) {
+  if (process.env.FAL_FLOW_DESKTOP === "1" && isLocalHost(request.headers.get("host"))) {
+    return NextResponse.next();
+  }
   const config = getCloudflareAccessConfig();
   if (config.kind === "disabled") return NextResponse.next();
   if (config.kind === "invalid") {

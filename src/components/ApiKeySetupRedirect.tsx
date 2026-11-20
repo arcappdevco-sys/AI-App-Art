@@ -9,7 +9,7 @@ export default function ApiKeySetupRedirect() {
   const router = useRouter();
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== "development") return;
+    if (process.env.NODE_ENV !== "development" && process.env.NEXT_PUBLIC_FAL_FLOW_DESKTOP !== "1") return;
     try {
       if (window.localStorage.getItem(DISMISSED_KEY_SETUP)) return;
     } catch (error) {

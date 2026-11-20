@@ -14,6 +14,8 @@ const API_KEYS = [
 
 type ApiKeyName = (typeof API_KEYS)[number]["name"];
 type KeyState = Record<ApiKeyName, boolean>;
+const isDesktopApp = process.env.NEXT_PUBLIC_FAL_FLOW_DESKTOP === "1";
+const canConfigureKeys = process.env.NODE_ENV === "development" || isDesktopApp;
 
 const EMPTY_KEY_STATE: KeyState = {
   OPENAI_API_KEY: false,
@@ -89,7 +91,7 @@ export default function SetupPage() {
     }
   }
 
-  if (process.env.NODE_ENV !== "development") {
+  if (!canConfigureKeys) {
     return (
       <main className={styles.page}>
         <section className={styles.card}>
@@ -108,7 +110,9 @@ export default function SetupPage() {
         <p className={styles.eyebrow}>fal flow · LOCAL SETUP</p>
         <h1 id="setup-title">{firstRun ? "Connect your AI providers" : "API key setup"}</h1>
         <p className={styles.intro}>
-          Add only the providers you plan to use. Keys are saved on this computer in <code>.env.local</code>, kept out of GitHub, and never sent back to the browser after saving.
+          {isDesktopApp
+            ? "Add only the providers you plan to use. Keys are kept in this computer user's fal flow settings and are not included in project packages."
+            : <>Add only the providers you plan to use. Keys are saved on this computer in <code>.env.local</code>, kept out of GitHub, and never sent back to the browser after saving.</>}
         </p>
 
         {loading ? (
@@ -145,10 +149,16 @@ export default function SetupPage() {
             </div>
 
             {error && <p className={styles.error} role="alert">{error}</p>}
-            {saved && <p className={styles.success} role="status">Saved to .env.local. Restart the app before using newly added keys.</p>}
+            {saved && (
+              <p className={styles.success} role="status">
+                {isDesktopApp ? "Saved on this computer. The keys are ready to use." : "Saved to .env.local. Restart the app before using newly added keys."}
+              </p>
+            )}
 
             <p className={styles.notice}>
-              Keep this app private on your computer. Restart the development server after saving so the server can load the keys.
+              {isDesktopApp
+                ? "The local settings file is not encrypted; protect this computer user account. Do not copy api-keys.json or include it in a project package."
+                : "Keep this app private on your computer. Restart the development server after saving so the server can load the keys."}
             </p>
             <div className={styles.actions}>
               <button type="submit" className={styles.primaryButton} disabled={loading || saving}>

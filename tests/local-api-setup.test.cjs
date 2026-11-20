@@ -11,7 +11,7 @@ require.extensions[".ts"] = (module, filename) => {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   }).outputText, filename);
 };
-const { POST } = require("../src/app/api/setup/route.ts");
+const { GET, POST } = require("../src/app/api/setup/route.ts");
 
 function setupRequest(body, url = "http://localhost:3000/api/setup") {
   return new Request(url, {
@@ -61,5 +61,72 @@ test("local API setup rejects non-loopback hosts and invalid key values", async 
   } finally {
     if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = originalNodeEnv;
+  }
+});
+
+test("production API-key setup stays disabled outside the desktop app", async () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalDesktopMode = process.env.FAL_FLOW_DESKTOP;
+  process.env.NODE_ENV = "production";
+  delete process.env.FAL_FLOW_DESKTOP;
+  try {
+    const url = "http://localhost:3000/api/setup";
+    const status = await GET(new Request(url, { headers: { Host: new URL(url).host } }));
+    const save = await POST(setupRequest({ OPENAI_API_KEY: "secret" }, url));
+    assert.equal(status.status, 404);
+    assert.equal(save.status, 404);
+  } finally {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    if (originalDesktopMode === undefined) delete process.env.FAL_FLOW_DESKTOP;
+    else process.env.FAL_FLOW_DESKTOP = originalDesktopMode;
+  }
+});
+
+test("desktop API setup stores keys in the current user's settings folder", async () => {
+  const names = [
+    "NODE_ENV",
+    "FAL_FLOW_DESKTOP",
+    "FAL_FLOW_USER_DATA_PATH",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "ATLASCLOUD_API_KEY",
+    "FAL_KEY",
+  ];
+  const originalValues = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fal-flow-desktop-keys-"));
+  process.env.NODE_ENV = "production";
+  process.env.FAL_FLOW_DESKTOP = "1";
+  process.env.FAL_FLOW_USER_DATA_PATH = directory;
+  for (const name of names.slice(3)) delete process.env[name];
+
+  try {
+    const url = "http://127.0.0.1:43210/api/setup";
+    const remote = await POST(setupRequest(
+      { OPENAI_API_KEY: "remote-key" },
+      "http://192.168.1.5:43210/api/setup",
+    ));
+    assert.equal(remote.status, 403);
+
+    const response = await POST(setupRequest({ OPENAI_API_KEY: "user-openai-key" }, url));
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(await response.clone().text(), /user-openai-key/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory, "api-keys.json"), "utf8")), {
+      OPENAI_API_KEY: "user-openai-key",
+      GEMINI_API_KEY: "",
+      ATLASCLOUD_API_KEY: "",
+      FAL_KEY: "",
+    });
+    assert.equal(process.env.OPENAI_API_KEY, "user-openai-key");
+
+    const status = await GET(new Request(url, { headers: { Host: new URL(url).host } }));
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).configured.OPENAI_API_KEY, true);
+  } finally {
+    for (const name of names) {
+      if (originalValues[name] === undefined) delete process.env[name];
+      else process.env[name] = originalValues[name];
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });

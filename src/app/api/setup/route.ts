@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 
 const API_KEY_NAMES = ["OPENAI_API_KEY", "GEMINI_API_KEY", "ATLASCLOUD_API_KEY", "FAL_KEY"] as const;
 type ApiKeyName = (typeof API_KEY_NAMES)[number];
@@ -26,8 +26,12 @@ function localHost(host: string | null) {
   }
 }
 
+function setupEnabled() {
+  return process.env.NODE_ENV === "development" || process.env.FAL_FLOW_DESKTOP === "1";
+}
+
 function isLocalSetupRequest(request: Request) {
-  if (process.env.NODE_ENV !== "development") return false;
+  if (!setupEnabled()) return false;
   const host = request.headers.get("host");
   if (!localHost(host)) return false;
 
@@ -50,6 +54,49 @@ function configuredKeys(): Record<ApiKeyName, boolean> {
     ATLASCLOUD_API_KEY: Boolean(process.env.ATLASCLOUD_API_KEY?.trim()),
     FAL_KEY: Boolean(process.env.FAL_KEY?.trim()),
   };
+}
+
+function emptyApiKeyValues(): ApiKeyValues {
+  return {
+    OPENAI_API_KEY: "",
+    GEMINI_API_KEY: "",
+    ATLASCLOUD_API_KEY: "",
+    FAL_KEY: "",
+  };
+}
+
+async function saveDesktopApiKeys(values: ApiKeyValues): Promise<ApiKeyValues> {
+  const userDataPath = process.env.FAL_FLOW_USER_DATA_PATH;
+  if (!userDataPath || !isAbsolute(userDataPath)) {
+    throw new Error("The desktop app's private settings folder is not configured.");
+  }
+  const filePath = join(userDataPath, "api-keys.json");
+  const existing = emptyApiKeyValues();
+  try {
+    const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
+    if (!isRecord(parsed)) throw new Error("The saved API key settings must contain an object.");
+    for (const name of API_KEY_NAMES) {
+      const value = parsed[name] ?? "";
+      if (typeof value !== "string" || value.length > 4096) {
+        throw new Error(`The saved ${name} value is invalid.`);
+      }
+      existing[name] = value;
+    }
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+
+  const merged = API_KEY_NAMES.reduce((result, name) => {
+    result[name] = values[name] || process.env[name]?.trim() || existing[name];
+    return result;
+  }, emptyApiKeyValues());
+  await mkdir(userDataPath, { recursive: true, mode: 0o700 });
+  await writeFile(filePath, `${JSON.stringify(merged, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  for (const name of API_KEY_NAMES) {
+    if (merged[name]) process.env[name] = merged[name];
+    else delete process.env[name];
+  }
+  return merged;
 }
 
 function escapeEnvValue(value: string) {
@@ -88,9 +135,18 @@ function updateEnvFile(existing: string, values: ApiKeyValues) {
   return `${updatedLines.join("\n")}\n`;
 }
 
+async function readExistingEnvFile(filePath: string): Promise<string> {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return "";
+    throw error;
+  }
+}
+
 export async function GET(request: Request) {
-  if (process.env.NODE_ENV !== "development") {
-    return jsonResponse({ error: "Local API key setup is only available in development." }, 404);
+  if (!setupEnabled()) {
+    return jsonResponse({ error: "Local API key setup is not available in this deployment." }, 404);
   }
   if (!localHost(request.headers.get("host"))) {
     return jsonResponse({ error: "Open the app on this computer using localhost to manage API keys." }, 403);
@@ -101,8 +157,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (process.env.NODE_ENV !== "development") {
-    return jsonResponse({ error: "Local API key setup is only available in development." }, 404);
+  if (!setupEnabled()) {
+    return jsonResponse({ error: "Local API key setup is not available in this deployment." }, 404);
   }
   if (!isLocalSetupRequest(request)) {
     return jsonResponse({ error: "Open the app on this computer using localhost to manage API keys." }, 403);
@@ -123,12 +179,7 @@ export async function POST(request: Request) {
     return jsonResponse({ error: `Unsupported API key name: ${unexpectedName}.` }, 400);
   }
 
-  const values: ApiKeyValues = {
-    OPENAI_API_KEY: "",
-    GEMINI_API_KEY: "",
-    ATLASCLOUD_API_KEY: "",
-    FAL_KEY: "",
-  };
+  const values = emptyApiKeyValues();
   for (const name of API_KEY_NAMES) {
     const value = payload[name] ?? "";
     if (typeof value !== "string") {
@@ -145,15 +196,28 @@ export async function POST(request: Request) {
     return jsonResponse({ error: "Enter at least one API key before saving." }, 400);
   }
 
-  const envFilePath = join(process.cwd(), ".env.local");
-  let existing = "";
-  try {
-    existing = await readFile(envFilePath, "utf8");
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-      console.error("Could not read the local API key file.", error);
-      return jsonResponse({ error: "Could not read .env.local. Check file permissions and try again." }, 500);
+  if (process.env.FAL_FLOW_DESKTOP === "1") {
+    try {
+      const merged = await saveDesktopApiKeys(values);
+      return jsonResponse({
+        saved: API_KEY_NAMES.filter((name) => Boolean(values[name])),
+        configured: Object.fromEntries(API_KEY_NAMES.map((name) => [name, Boolean(merged[name])])),
+      });
+    } catch (error) {
+      console.error("Could not save local desktop API keys.", error);
+      return jsonResponse({
+        error: error instanceof Error ? error.message : "Could not save API keys in the fal flow user settings folder.",
+      }, 500);
     }
+  }
+
+  const envFilePath = join(process.cwd(), ".env.local");
+  const existing = await readExistingEnvFile(envFilePath).catch((error) => {
+    console.error("Could not read the local API key file.", error);
+    return null;
+  });
+  if (existing === null) {
+    return jsonResponse({ error: "Could not read .env.local. Check file permissions and try again." }, 500);
   }
 
   try {

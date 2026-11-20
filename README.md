@@ -53,6 +53,12 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Desktop installers
+
+The desktop installer bundles fal flow's app runtime and FFmpeg, so coworkers do not need VS Code, Node.js, or a development server. Run `npm run dist` to build an installer for the current computer's operating system. To build shareable releases for Windows, Intel and Apple Silicon Macs, and Linux, push a version tag such as `v0.1.0`; the **Desktop installers** GitHub Actions workflow builds the installers and attaches them to that GitHub Release. Unsigned Windows and macOS apps may show SmartScreen or Gatekeeper warnings.
+
+Each coworker installs the app and enters their own provider keys from **API keys**. Keys are saved in that user's local fal flow settings as an unencrypted file protected by the operating system's user permissions; they are not included in installers or project packages. The desktop app's local server listens only on the user's own computer. FFmpeg licensing and source notices are included in each installer.
+
 Use **Chat** in the toolbar for general conversation with a locally installed Ollama model. Start Ollama on the same computer as the fal flow server, install a local chat model, and select it in the panel; **Refresh** discovers newly installed models. Messages are sent to Ollama on `127.0.0.1:11434`, not to an external chat API. Cloud-hosted Ollama models are not offered. The conversation remains in memory until the page is reloaded and is not included in workflows; only the most recent messages within the chat's size limits are sent as context. The assistant does not read or modify the workflow. The first reply can take time while Ollama loads the model; **Stop** cancels a request.
 
 The chat uses the Ollama installation on the computer running the fal flow server, not a remote visitor's computer. Run the application only in a trusted environment: anyone able to access the app can use that server's local model.
