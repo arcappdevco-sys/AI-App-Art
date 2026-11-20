@@ -208,6 +208,7 @@ export default function StoryboardTab({
   firstLastFrameModelOptions,
   hidden,
   saveError,
+  autoSaveError,
 }: {
   storyboard: StoryboardData;
   onChange: (value: SetStateAction<StoryboardData>) => void;
@@ -226,6 +227,7 @@ export default function StoryboardTab({
   firstLastFrameModelOptions: FirstLastFrameModelOption[];
   hidden: boolean;
   saveError: string;
+  autoSaveError: string;
 }) {
   const [selectedSceneId, setSelectedSceneId] = useState("");
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(() => new Set());
@@ -746,6 +748,9 @@ export default function StoryboardTab({
       </section>
 
       {saveError && <p className="storyboard-storage-error" role="alert">Could not save this storyboard: {saveError}</p>}
+      {autoSaveError && <p className="storyboard-storage-error" role="alert">
+        Could not save a generated video locally: {autoSaveError}
+      </p>}
 
       <div className="storyboard-navigation-viewport"
         ref={boardViewportRef}

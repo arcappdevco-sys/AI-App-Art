@@ -42,6 +42,19 @@ export function workflowOutputMediaId(workflowId: string, nodeId: string, port: 
   return `workflow-output:${workflowId}:${nodeId}:${port}`;
 }
 
+export async function workflowOutputSnapshotMediaId(
+  workflowId: string,
+  nodeId: string,
+  port: string,
+  url: string,
+): Promise<string> {
+  const outputId = workflowOutputMediaId(workflowId, nodeId, port);
+  if (!/^https?:\/\//i.test(url)) throw new Error("Workflow video snapshots require an HTTP or HTTPS URL.");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url));
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${outputId}:saved:${hash}`;
+}
+
 export function workflowOutputMediaSource(
   mediaKind: ProjectMediaKind,
   value: string,

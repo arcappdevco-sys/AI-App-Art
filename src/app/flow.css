@@ -212,10 +212,13 @@ body {
 }
 
 .ff-brand {
+  position: relative;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 10px;
   height: 100%;
+  min-width: 0;
   padding: 0 20px;
   border-right: 1px solid var(--line);
 }
@@ -232,7 +235,7 @@ body {
   font-weight: 800;
 }
 
-.ff-brand div,
+.ff-brand-copy,
 .ff-card-copy {
   display: flex;
   flex-direction: column;
@@ -243,7 +246,7 @@ body {
   letter-spacing: -0.3px;
 }
 
-.ff-brand div > span,
+.ff-brand-copy > span,
 .ff-overline {
   margin-top: 2px;
   color: var(--muted);
@@ -332,19 +335,94 @@ body {
 }
 
 .ff-project-folder-control {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.ff-project-folder-menu {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.ff-project-folder-trigger {
   display: flex;
+  max-width: 116px;
+  min-height: 32px;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  list-style: none;
+}
+
+.ff-project-folder-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.ff-project-folder-trigger:hover,
+.ff-project-folder-menu[open] .ff-project-folder-trigger {
+  border-color: var(--line-hover);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.ff-project-folder-trigger svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.ff-project-folder-trigger-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ff-project-folder-trigger-arrow {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.ff-project-folder-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  padding: 12px;
+  border: 1px solid var(--line-hover);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 14px 36px #0008;
+}
+
+.ff-project-folder-control > * {
+  box-sizing: border-box;
+  width: 100%;
   min-width: 0;
 }
 
 .ff-project-folder-status {
-  max-width: 180px;
-  overflow: hidden;
   color: var(--muted);
   font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .ff-project-folder-status[role="alert"] {
@@ -352,9 +430,9 @@ body {
 }
 
 .ff-project-folder-select {
-  width: 150px;
+  width: 100%;
   min-width: 90px;
-  max-width: 180px;
+  max-width: none;
   height: 34px;
   padding: 0 7px;
   border: 1px solid var(--line);
@@ -3176,6 +3254,11 @@ body {
 
   .ff-brand {
     border-right: 0;
+  }
+
+  .ff-project-folder-popover {
+    right: 0;
+    left: auto;
   }
 
   .ff-workflow-name {

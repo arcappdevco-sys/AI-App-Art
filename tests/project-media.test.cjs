@@ -15,6 +15,7 @@ const {
   normalizeMediaAssetMetadata,
   normalizeProjectMediaAsset,
   workflowOutputMediaId,
+  workflowOutputSnapshotMediaId,
   workflowOutputMediaSource,
 } = require(path.join(__dirname, "..", "src", "lib", "project-media.ts"));
 
@@ -60,6 +61,22 @@ test("workflow output asset IDs are stable and require all source identifiers", 
   assert.equal(workflowOutputMediaId("workflow-1", "node-1", "video"),
     "workflow-output:workflow-1:node-1:video");
   assert.throws(() => workflowOutputMediaId("", "node-1", "video"), /requires workflow, node, and port IDs/);
+});
+
+test("workflow output snapshots have stable, URL-specific asset IDs", async () => {
+  const firstUrl = "https://cdn.example/video.mp4?signature=first";
+  const firstId = await workflowOutputSnapshotMediaId("workflow-1", "node-1", "video", firstUrl);
+  assert.equal(firstId, await workflowOutputSnapshotMediaId("workflow-1", "node-1", "video", firstUrl));
+  assert.notEqual(firstId, await workflowOutputSnapshotMediaId(
+    "workflow-1",
+    "node-1",
+    "video",
+    "https://cdn.example/video.mp4?signature=second",
+  ));
+  await assert.rejects(
+    workflowOutputSnapshotMediaId("workflow-1", "node-1", "video", "data:video/mp4;base64,ZmFrZQ=="),
+    /HTTP or HTTPS URL/,
+  );
 });
 
 test("workflow image outputs support remote and inline sources", () => {

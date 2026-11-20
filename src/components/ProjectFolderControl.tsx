@@ -211,55 +211,75 @@ export default function ProjectFolderControl({
   };
 
   return (
-    <div className="ff-project-folder-control">
-      <button
-        type="button"
-        className="ff-toolbar-button"
-        onClick={() => void openProjectFolder()}
-        disabled={busy}
-        title="Open a project folder or select a backup folder to restore it."
+    <details className="ff-project-folder-menu">
+      <summary
+        className="ff-project-folder-trigger"
+        title={manifest
+          ? `Current project: ${manifest.name}\nThe browser hides the full folder path.`
+          : "Project folder options"}
+        aria-label={manifest ? `Project menu, current project ${manifest.name}` : "Project folder menu"}
       >
-        {busyAction === "opening" ? "Opening project…" : manifest ? "Change project folder" : "Open project folder"}
-      </button>
-      <span className="ff-project-folder-status" role={error ? "alert" : "status"} title={error || status}>
-        {error || status}
-      </span>
-      {manifest && (
-        <>
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M2.5 5.5h5l1.8 2h8.2v8.8H2.5z" />
+          <path d="M2.5 7.5h15" />
+        </svg>
+        <span className="ff-project-folder-trigger-name">{manifest?.name ?? "Project"}</span>
+        <span className="ff-project-folder-trigger-arrow" aria-hidden="true">⌄</span>
+      </summary>
+      <div className="ff-project-folder-popover">
+        <div className="ff-project-folder-control">
           <button
             type="button"
             className="ff-toolbar-button"
-            onClick={() => void backupProject()}
-            disabled={busy || !activeSession}
-            title="Copy the full project into an empty folder. Wait for workspace saves to finish; open the copy later to restore it."
+            onClick={() => void openProjectFolder()}
+            disabled={busy}
+            title={manifest
+              ? `Current project: ${manifest.name}\nThe browser hides the full folder path.`
+              : "Open a project folder or select a backup folder to restore it."}
           >
-            {busyAction === "backing-up" ? "Backing up…" : "Backup"}
+            {busyAction === "opening" ? "Opening project…" : manifest ? "Change project folder" : "Open project folder"}
           </button>
-          <select
-            className="ff-project-folder-select"
-            aria-label="Media to copy into project"
-            value={selectedAssetId}
-            onChange={(event) => setSelectedAssetId(event.target.value)}
-            disabled={busy || availableAssets.length === 0}
-          >
-            <option value="">
-              {availableAssets.length ? "Select media…" : assets.length ? "No local media available" : "No media available"}
-            </option>
-            {availableAssets.map((asset) => (
-              <option key={asset.id} value={asset.id}>{asset.name}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="ff-toolbar-button"
-            onClick={() => void addSelectedMedia()}
-            disabled={busy || !selectedAssetId}
-            title="Copy the selected shared-media file into this project's Media/Originals folder."
-          >
-            {busyAction === "copying" ? "Copying…" : "Copy into project"}
-          </button>
-        </>
-      )}
-    </div>
+          <span className="ff-project-folder-status" role={error ? "alert" : "status"} title={error || status}>
+            {error || status}
+          </span>
+          {manifest && (
+            <>
+              <button
+                type="button"
+                className="ff-toolbar-button"
+                onClick={() => void backupProject()}
+                disabled={busy || !activeSession}
+                title="Copy the full project into an empty folder. Wait for workspace saves to finish; open the copy later to restore it."
+              >
+                {busyAction === "backing-up" ? "Backing up…" : "Backup"}
+              </button>
+              <select
+                className="ff-project-folder-select"
+                aria-label="Media to copy into project"
+                value={selectedAssetId}
+                onChange={(event) => setSelectedAssetId(event.target.value)}
+                disabled={busy || availableAssets.length === 0}
+              >
+                <option value="">
+                  {availableAssets.length ? "Select media…" : assets.length ? "No local media available" : "No media available"}
+                </option>
+                {availableAssets.map((asset) => (
+                  <option key={asset.id} value={asset.id}>{asset.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="ff-toolbar-button"
+                onClick={() => void addSelectedMedia()}
+                disabled={busy || !selectedAssetId}
+                title="Copy the selected shared-media file into this project's Media/Originals folder."
+              >
+                {busyAction === "copying" ? "Copying…" : "Copy into project"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </details>
   );
 }

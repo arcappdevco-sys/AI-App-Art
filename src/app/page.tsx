@@ -70,6 +70,7 @@ import {
 import {
   createUnknownMediaAssetMetadata,
   workflowOutputMediaId,
+  workflowOutputSnapshotMediaId,
   workflowOutputMediaSource,
   type ProjectMediaAsset,
 } from "@/lib/project-media";
@@ -434,12 +435,76 @@ export default function Page() {
   const activeWorkflowIdRef = useRef("");
   const projectSessionRef = useRef<ProjectFolderSession | null>(null);
   const registeredMediaUrls = useRef(new Map<string, string>());
+  const generatedVideoSaves = useRef(new Map<string, Promise<{
+    asset: ProjectMediaAsset;
+    file: File;
+    projectName: string;
+  }>>());
   const workflowSessionKey = projectSession?.sessionKey ?? "local";
   const loadedWorkflowSessionKey = useRef<string | null>(null);
   const workflowSaveQueue = useRef<Promise<void>>(Promise.resolve());
 
   const refreshProjectMediaAssets = useCallback(async () => {
     setProjectMediaAssets(await listProjectMediaAssets());
+  }, []);
+  const ensureWorkflowVideoSaved = useCallback((
+    workflowId: string,
+    nodeId: string,
+    port: string,
+    url: string,
+    name: string,
+    sessionAtStart = projectSessionRef.current,
+  ) => {
+    const taskKey = `${workflowId}:${nodeId}:${port}:${url}:${sessionAtStart?.sessionKey ?? "local"}`;
+    const existingTask = generatedVideoSaves.current.get(taskKey);
+    if (existingTask) return existingTask;
+
+    const saving = (async () => {
+      const assetId = await workflowOutputSnapshotMediaId(workflowId, nodeId, port, url);
+      const existingAsset = (await listProjectMediaAssets()).find((asset) => asset.id === assetId);
+      if (existingAsset?.source.kind === "url" && existingAsset.source.url !== url) {
+        throw new Error("The generated video URL does not match its saved media record.");
+      }
+      const extension = /\.webm(?:$|[?#])/i.test(url) ? "webm"
+        : /\.mov(?:$|[?#])/i.test(url) ? "mov" : "mp4";
+      const safeName = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+        .replace(/[. ]+$/g, "")
+        .slice(0, 100) || "Generated video";
+      const asset = existingAsset ?? await registerProjectMediaAsset({
+        id: assetId,
+        name: `${safeName} - ${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`,
+        mediaKind: "video",
+        mimeType: null,
+        source: { kind: "url", url },
+        metadata: createUnknownMediaAssetMetadata(),
+      });
+      const file = await loadProjectMediaFile(assetId, asset.revision);
+      if (!file.type.startsWith("video/")) {
+        throw new Error("The generated output is not a video file.");
+      }
+
+      let projectName = "";
+      if (sessionAtStart) {
+        const { manifest } = await readOrCreateProjectManifest(sessionAtStart.handle);
+        if (manifest.id !== sessionAtStart.projectId) {
+          throw new Error("The project folder changed before this video could be saved.");
+        }
+        if (projectSessionRef.current?.sessionKey !== sessionAtStart.sessionKey) {
+          throw new Error("The active project changed while this video was being saved. Try again.");
+        }
+        if (!manifest.assets.some((entry) => entry.id === assetId)) {
+          await addMediaToProjectFolder(sessionAtStart.handle, manifest, asset, file);
+          setProjectSessionEpoch((current) => current + 1);
+        }
+        projectName = manifest.name;
+      }
+      return { asset, file, projectName };
+    })();
+    generatedVideoSaves.current.set(taskKey, saving);
+    void saving.catch(() => {
+      if (generatedVideoSaves.current.get(taskKey) === saving) generatedVideoSaves.current.delete(taskKey);
+    });
+    return saving;
   }, []);
   const updateProjectSession = useCallback((session: ProjectFolderSession | null) => {
     projectSessionRef.current = session;
@@ -520,25 +585,39 @@ export default function Page() {
     document.addEventListener("pointerdown", closeOnOutsideClick);
     return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
   }, [runModeMenuOpen]);
-  const videoAssets = useMemo<VideoAsset[]>(() => projectMediaAssets
-    .filter((asset) => asset.mediaKind === "video"
-      && (asset.id.startsWith("workflow-output:") || asset.id.startsWith("storyboard-take:")))
-    .map((asset) => ({
-      id: asset.id,
-      name: asset.name,
-      src: asset.source.kind === "url" ? asset.source.url : "",
-      mediaId: asset.id,
-      projectAssetId: asset.id,
-      projectAssetRevision: asset.revision ?? 0,
-      metadata: asset.metadata,
-    })), [projectMediaAssets]);
+  const videoAssets = useMemo<VideoAsset[]>(() => {
+    const savedOutputBases = new Set(projectMediaAssets.flatMap((asset) => {
+      const marker = asset.id.lastIndexOf(":saved:");
+      const hash = marker >= 0 ? asset.id.slice(marker + 7) : "";
+      return asset.mediaKind === "video" && /^[a-f0-9]{64}$/.test(hash)
+        ? [asset.id.slice(0, marker)]
+        : [];
+    }));
+    return projectMediaAssets
+      .filter((asset) => asset.mediaKind === "video"
+        && (asset.id.startsWith("storyboard-take:")
+          || (asset.id.startsWith("workflow-output:")
+            && (asset.id.includes(":saved:") || !savedOutputBases.has(asset.id)))))
+      .map((asset) => ({
+        id: asset.id,
+        name: asset.name,
+        src: asset.source.kind === "url" ? asset.source.url : "",
+        mediaId: asset.id,
+        projectAssetId: asset.id,
+        projectAssetRevision: asset.revision ?? 0,
+        metadata: asset.metadata,
+      }));
+  }, [projectMediaAssets]);
   const storyboardVideoCandidates = useMemo(() => activeWorkflowId
     ? collectStoryboardVideoCandidates(activeWorkflowId, nodes, edges, registry)
     : [], [activeWorkflowId, edges, nodes]);
 
   useEffect(() => {
     if (!storageReady || !activeWorkflowId) return;
-    const pending: Promise<ProjectMediaAsset>[] = [];
+    const pending: Array<{
+      kind: "video" | "image";
+      promise: Promise<ProjectMediaAsset>;
+    }> = [];
     for (const node of nodes) {
       const data = node.data as {
         type?: string;
@@ -555,9 +634,44 @@ export default function Page() {
         const source = workflowOutputMediaSource(mediaKind, value);
         if (!source) continue;
         const id = workflowOutputMediaId(activeWorkflowId, node.id, port);
-        if (registeredMediaUrls.current.get(id) === value) continue;
+        const sourceId = `${activeWorkflowId}:${node.id}:${port}`;
+        const alreadySavedAsTake = mediaKind === "video"
+          && workflowsRef.current.some((workflow) => workflow.id === activeWorkflowId
+            && workflow.storyboard.scenes.some((scene) => scene.shots.some((shot) =>
+              shot.generatedTakes?.some((take) =>
+                take.sourceId === sourceId && take.videoUrl === value && Boolean(take.mediaAssetId)),
+            )));
+        if (registeredMediaUrls.current.get(id) === value) {
+          const saveTaskKey =
+            `${activeWorkflowId}:${node.id}:${port}:${value}:${projectSessionRef.current?.sessionKey ?? "local"}`;
+          if (mediaKind === "video" && !alreadySavedAsTake
+            && !generatedVideoSaves.current.has(saveTaskKey)) {
+            pending.push({
+              kind: "video",
+              promise: ensureWorkflowVideoSaved(
+                activeWorkflowId,
+                node.id,
+                port,
+                value,
+                data.params?.title || data.title || definition.label || "Generated video",
+              ).then(({ asset }) => asset),
+            });
+          }
+          continue;
+        }
         registeredMediaUrls.current.set(id, value);
         const name = data.params?.title || data.title || definition.label || "Generated media";
+        if (mediaKind === "video") {
+          if (alreadySavedAsTake) continue;
+          const saving = ensureWorkflowVideoSaved(activeWorkflowId, node.id, port, value, name)
+            .then(({ asset }) => asset)
+            .catch((error: unknown) => {
+              if (registeredMediaUrls.current.get(id) === value) registeredMediaUrls.current.delete(id);
+              throw error;
+            });
+          pending.push({ kind: "video", promise: saving });
+          continue;
+        }
         const asset: ProjectMediaAsset = {
           id,
           name: port === "video" ? name : `${name} · ${port.replaceAll("_", " ")}`,
@@ -579,25 +693,32 @@ export default function Page() {
           asset.mimeType = mimeType;
           return registerProjectMediaAsset(asset, new Blob([downloaded], { type: mimeType }));
         })();
-        pending.push(registration.catch((error: unknown) => {
-          if (registeredMediaUrls.current.get(id) === value) registeredMediaUrls.current.delete(id);
-          throw error;
-        }));
+        pending.push({
+          kind: "image",
+          promise: registration.catch((error: unknown) => {
+            if (registeredMediaUrls.current.get(id) === value) registeredMediaUrls.current.delete(id);
+            throw error;
+          }),
+        });
       }
     }
     if (!pending.length) return;
-    void Promise.allSettled(pending).then(async (results) => {
-      await refreshProjectMediaAssets();
-      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-      if (failure) {
-        setStorageError(failure.reason instanceof Error ? failure.reason.message : "Could not register generated media.");
-        setStorageStatus("Unable to register shared media");
+    void Promise.allSettled(pending.map((item) => item.promise)).then(async (results) => {
+      const failureIndex = results.findIndex((result) => result.status === "rejected");
+      if (failureIndex >= 0) {
+        const failure = results[failureIndex];
+        setStorageError(failure.status === "rejected" && failure.reason instanceof Error
+          ? failure.reason.message : "Could not save generated media.");
+        setStorageStatus(pending[failureIndex].kind === "video"
+          ? "Unable to save generated video locally"
+          : "Unable to register shared media");
       }
+      await refreshProjectMediaAssets();
     }).catch((error: unknown) => {
       setStorageError(error instanceof Error ? error.message : "Could not refresh shared media.");
       setStorageStatus("Unable to refresh shared media");
     });
-  }, [activeWorkflowId, nodes, refreshProjectMediaAssets, storageReady]);
+  }, [activeWorkflowId, ensureWorkflowVideoSaved, nodes, projectSession?.sessionKey, refreshProjectMediaAssets, storageReady]);
 
   useEffect(() => {
     if (!projectSessionReady) return;
@@ -1300,69 +1421,21 @@ export default function Page() {
         candidate.nodeId,
         candidate.outputPort,
       );
-      const existingOutputAsset = projectMediaAssets.find((asset) => asset.id === outputAssetId);
-      const existingOutputMatches = existingOutputAsset && (
-        (existingOutputAsset.source.kind === "url" && existingOutputAsset.source.url === candidate.videoUrl)
-        || (existingOutputAsset.source.kind === "storage"
-          && registeredMediaUrls.current.get(outputAssetId) === candidate.videoUrl)
-      );
-      const outputAsset = existingOutputAsset && existingOutputMatches
-        ? existingOutputAsset
-        : await registerProjectMediaAsset({
-          id: outputAssetId,
-          name: `${candidate.model} output`,
-          mediaKind: "video",
-          mimeType: null,
-          source: { kind: "url", url: candidate.videoUrl },
-          metadata: createUnknownMediaAssetMetadata(),
-        });
-      registeredMediaUrls.current.set(outputAssetId, candidate.videoUrl);
-      const downloadedFile = await loadProjectMediaFile(outputAssetId, outputAsset.revision);
-      const mimeType = downloadedFile.type.startsWith("video/")
-        ? downloadedFile.type
-        : /\.webm(?:$|[?#])/i.test(candidate.videoUrl) ? "video/webm"
-          : /\.mov(?:$|[?#])/i.test(candidate.videoUrl) ? "video/quicktime"
-            : "video/mp4";
-      const extension = mimeType === "video/webm" ? "webm"
-        : mimeType === "video/quicktime" ? "mov" : "mp4";
       const shotName = sourceShot.title.trim() || `Shot ${sourceScene.shots.indexOf(sourceShot) + 1}`;
-      const mediaName = `${candidate.model} - ${shotName}`
-        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
-        .replace(/[. ]+$/g, "")
-        .slice(0, 110) || "Generated take";
-      const file = new File([downloadedFile], `${mediaName}.${extension}`, {
-        type: mimeType,
-        lastModified: Date.now(),
-      });
-      const assetId = `storyboard-take:${crypto.randomUUID()}`;
-      const asset: ProjectMediaAsset = {
-        id: assetId,
-        name: file.name,
-        mediaKind: "video",
-        mimeType,
-        source: { kind: "storage", storageKey: assetId },
-        metadata: createUnknownMediaAssetMetadata(),
-      };
-
-      let projectName = "";
-      if (sessionAtStart) {
-        const { manifest } = await readOrCreateProjectManifest(sessionAtStart.handle);
-        if (manifest.id !== sessionAtStart.projectId) {
-          throw new Error("The project folder changed before this take could be saved.");
-        }
-        if ((projectSessionRef.current?.sessionKey ?? null) !== sessionAtStart.sessionKey) {
-          throw new Error("The active project changed while this take was being saved. Try again.");
-        }
-        await addMediaToProjectFolder(sessionAtStart.handle, manifest, asset, file);
-        projectName = manifest.name;
-      }
+      const savedVideo = await ensureWorkflowVideoSaved(
+        candidate.workflowId,
+        candidate.nodeId,
+        candidate.outputPort,
+        candidate.videoUrl,
+        `${candidate.model} - ${shotName}`,
+        sessionAtStart,
+      );
+      registeredMediaUrls.current.set(outputAssetId, candidate.videoUrl);
       const currentSessionKey = projectSessionRef.current?.sessionKey ?? null;
       if (currentSessionKey !== (sessionAtStart?.sessionKey ?? null)) {
         throw new Error("The active project changed while this take was being saved. Try again.");
       }
-      await registerProjectMediaAsset(asset, file);
       await refreshProjectMediaAssets();
-      if (sessionAtStart) setProjectSessionEpoch((current) => current + 1);
 
       if (candidate.workflowId === activeWorkflowIdRef.current && !saveWorkflowLocally()) {
         throw new Error("Could not save workflow changes before attaching this take.");
@@ -1374,7 +1447,7 @@ export default function Page() {
       let updatedShotFound = false;
       let updatedTakeFound = false;
       const take: StoryboardGeneratedTake = existingTake
-        ? { ...existingTake, mediaAssetId: assetId }
+        ? { ...existingTake, mediaAssetId: savedVideo.asset.id }
         : {
           id: crypto.randomUUID(),
           sourceId: candidate.sourceId,
@@ -1383,7 +1456,7 @@ export default function Page() {
           outputPort: candidate.outputPort,
           videoType: candidate.videoType,
           videoUrl: candidate.videoUrl,
-          mediaAssetId: assetId,
+          mediaAssetId: savedVideo.asset.id,
           model: candidate.model,
           prompt: candidate.prompt,
           createdAt: Date.now(),
@@ -1422,11 +1495,13 @@ export default function Page() {
         setStoryboard(updatedWorkflow.storyboard);
       }
       setStorageError("");
-      setStorageStatus(projectName ? `Saved take to ${projectName}` : "Saved take to this device");
+      setStorageStatus(savedVideo.projectName
+        ? `Saved take to ${savedVideo.projectName}`
+        : "Saved take to this device");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save this generated take.";
       setStorageError(message);
-      setStorageStatus("Unable to save storyboard take");
+      setStorageStatus(existingTakeId ? "Unable to save local take copy" : "Unable to save storyboard take");
       throw error instanceof Error ? error : new Error(message);
     }
   };
@@ -1608,10 +1683,16 @@ export default function Page() {
       <header className="ff-toolbar">
         <div className="ff-brand">
           <span className="ff-brand-mark" aria-hidden="true">F</span>
-          <div>
+          <div className="ff-brand-copy">
             <strong>fal flow</strong>
             <span>WORKFLOW + VIDEO EDITOR</span>
           </div>
+          <ProjectFolderControl
+            assets={projectMediaAssets}
+            onProjectMediaChange={refreshProjectMediaAssets}
+            onProjectSessionChange={updateProjectSession}
+            projectSessionEpoch={projectSessionEpoch}
+          />
         </div>
         <div className="ff-workflow-name">
           <nav className="ff-mode-tabs" aria-label="App workspace">
@@ -1659,12 +1740,6 @@ export default function Page() {
             )}
         </div>
         <div className="ff-toolbar-actions">
-          <ProjectFolderControl
-            assets={projectMediaAssets}
-            onProjectMediaChange={refreshProjectMediaAssets}
-            onProjectSessionChange={updateProjectSession}
-            projectSessionEpoch={projectSessionEpoch}
-          />
           <OllamaChat />
           <WorkspaceHelp activeView={activeView} />
           {process.env.NODE_ENV === "development" && (
@@ -2074,7 +2149,10 @@ export default function Page() {
         videoModelOptions={storyboardVideoModelOptions}
         firstLastFrameModelOptions={storyboardFirstLastFrameModelOptions}
         hidden={activeView !== "storyboard"}
-        saveError={storageStatus.startsWith("Unable to") ? storageError : ""} />
+        saveError={storageStatus === "Unable to save workflow"
+          || storageStatus === "Unable to save project workflows" ? storageError : ""}
+        autoSaveError={storageStatus === "Unable to save generated video locally" ? storageError : ""}
+      />
       <ExampleDragPreview preview={exampleDrag.preview} />
     </div>
   );
