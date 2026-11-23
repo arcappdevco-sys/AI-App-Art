@@ -1,6 +1,7 @@
 import { registry } from "./registry";
 import { getLowSettingsProfile } from "./runModeLowSettings";
 import { formatCameraTrackGuide } from "./camera-guide";
+import { VFX_VIDEO_REFINE_NODE_TYPE } from "./vfx-relight";
 import type { Graph, NodeStatus } from "./types";
 
 type Outputs = Record<string, unknown>;
@@ -107,6 +108,9 @@ export async function runGraph(graph: Graph, o: RunOpts) {
             inputs[e.targetHandle] = up[e.sourceHandle];
             if (node.type === "video/kling" && node.params.task === "motion-control" && e.targetHandle === "video") {
               inputs.motion_duration_seconds = up.duration_seconds;
+            }
+            if (node.type === VFX_VIDEO_REFINE_NODE_TYPE && e.targetHandle === "video") {
+              inputs.source_duration_seconds = up.duration_seconds;
             }
           }
         }

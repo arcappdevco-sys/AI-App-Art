@@ -4,11 +4,13 @@ import { FLUX3_VIDEO_DURATIONS, FLUX3_VIDEO_NODE_TYPE, FLUX3_VIDEO_RATIOS } from
 import { OMNI_MODELS } from "./omni";
 import { WAN_MAX_DURATION_SECONDS, WAN_MIN_DURATION_SECONDS, WAN_NODE_TYPE } from "./wan";
 import type { NodeDef } from "./types";
+import { VFX_VIDEO_REFINE_NODE_TYPE } from "./vfx-relight";
 
 export const videoModelTypes = [
   WAN_NODE_TYPE, MINIMAX_NODE_TYPE, FLUX3_VIDEO_NODE_TYPE, "video/seedance",
   "video/kling", "video/veo", "video/google-omni",
 ] as const;
+const videoOutputTypes = [...videoModelTypes, VFX_VIDEO_REFINE_NODE_TYPE] as const;
 
 export type ImageToVideoModelOption = {
   type: string;
@@ -303,7 +305,7 @@ export function createWorkflowNodes(
       source: prompt.id, sourceHandle: "text", target: node.id, targetHandle: "prompt",
     });
   }
-  if (videoModelTypes.some((videoType) => videoType === type)) {
+  if (videoOutputTypes.some((videoType) => videoType === type)) {
     const preview = createNode(definitions["output/preview"], {
       x: node.position.x + 360, y: node.position.y,
     });

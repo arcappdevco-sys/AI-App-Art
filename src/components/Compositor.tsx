@@ -330,6 +330,7 @@ export default function Compositor({
   onProjectMediaChange,
   onProjectSessionChange,
   onRegisterSaveHandler,
+  onSendFrameToWorkflow,
 }: {
   hidden: boolean;
   sharedMediaAssets?: ProjectMediaAsset[];
@@ -338,6 +339,7 @@ export default function Compositor({
   onProjectMediaChange?: () => Promise<void>;
   onProjectSessionChange?: (session: ProjectFolderSession) => void;
   onRegisterSaveHandler?: (handler: (() => Promise<void>) | null) => void;
+  onSendFrameToWorkflow?: (dataUrl: string, time: number) => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CompNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -1262,6 +1264,23 @@ export default function Compositor({
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(false); }
   };
+  const sendFrameToWorkflow = async () => {
+    if (!onSendFrameToWorkflow) return;
+    setBusy(true);
+    try {
+      await drawing.current;
+      await draw(time);
+      const dataUrl = previewRef.current?.toDataURL("image/png");
+      if (!dataUrl) throw new Error("Could not encode the compositor frame.");
+      onSendFrameToWorkflow(dataUrl, time);
+      setError("");
+      setStatus(`Frame sent to Workflow · 640 × 360 at ${time.toFixed(1)} s`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
   const exportVideo = async () => {
     const exportDuration = range.end - range.start;
     if (!exportDuration || exportDuration > 60) { setError("Video export requires a marked range no longer than 60 seconds."); return; }
@@ -1697,6 +1716,11 @@ export default function Compositor({
           <button type="button" disabled={busy || !ready || marks.inPoint === null && marks.outPoint === null} onClick={clearMarks}>Clear In/Out</button>
           <button type="button" onClick={() => setViewerTransform(DEFAULT_VIEWER_TRANSFORM)} title="Reset Viewer zoom and pan">Fit viewer ({Math.round(viewerTransform.zoom * 100)}%)</button>
           <button type="button" disabled={busy || !ready} onClick={() => void exportImage()}>Export PNG</button>
+          <button type="button" disabled={busy || !ready || !onSendFrameToWorkflow}
+            onClick={() => void sendFrameToWorkflow()}
+            title="Send the current 640 × 360 composite frame to Workflow as an image input">
+            Send frame to Workflow
+          </button>
           <button type="button" disabled={busy || !ready || !duration} onClick={() => void exportVideo()}>Export WebM</button>
         </div>
         <div className="comp-markers" onPointerDownCapture={(event) => {

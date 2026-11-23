@@ -1,4 +1,5 @@
 import type { PortType } from "./types";
+import { VFX_VIDEO_REFINE_NODE_TYPE } from "./vfx-relight";
 
 export type PreviewMediaType = "image" | "video";
 
@@ -24,6 +25,6 @@ export function outputPreviewType(
 export function isAtlasVideoNode(type: string): boolean {
   return [
     "video/wan-3.0", "video/minimax-h3", "video/flux-3", "video/seedance",
-    "video/kling", "video/veo", "video/google-omni",
+    "video/kling", "video/veo", "video/google-omni", VFX_VIDEO_REFINE_NODE_TYPE,
   ].includes(type);
 }

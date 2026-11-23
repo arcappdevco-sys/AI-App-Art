@@ -19,6 +19,7 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
     steps: [
       "Add input and model nodes from the library, then connect their ports.",
       "Use Auto layout to arrange connected workflows and group related nodes.",
+      "Use the VFX relighting workflow to extract a frame, create a lighting reference, and guide a video edit.",
       "Configure nodes and check the run mode and cost estimate before running; provider usage may be billed.",
       "Camera-track JSON is prompt guidance only; it does not lock a model to exact 3D motion.",
     ],
@@ -37,6 +38,7 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
     steps: [
       "Drag the divider below the Viewer to resize it and the node graph.",
       "Start with a template or add nodes, then connect their image ports.",
+      "Send frame exports to Workflow as 640 × 360 images for use as lighting references.",
       "Choose media in a Media node and preview the result in Viewer.",
       "Hover over a node for a short description. Connect Tracker motion to a Mask or Transform when needed.",
     ],

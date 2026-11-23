@@ -22,6 +22,7 @@ import WanNodeControls from "@/components/WanNodeControls";
 import { MINIMAX_NODE_TYPE } from "@/lib/minimax";
 import MiniMaxNodeControls from "@/components/MiniMaxNodeControls";
 import { isAtlasVideoNode, outputPreviewType, previewMediaType } from "@/lib/media-preview";
+import { VFX_LIGHTING_REFERENCE_NODE_TYPE, VFX_VIDEO_REFINE_NODE_TYPE } from "@/lib/vfx-relight";
 import { uploadWanMedia } from "@/lib/wan-api";
 import { usePlayableVideo } from "@/lib/use-playable-video";
 import type { PortType } from "@/lib/types";
@@ -1293,7 +1294,8 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
     ingredient_1: "Ingredient 1",
     ingredient_2: "Ingredient 2",
     ingredient_3: "Ingredient 3",
-    image: "First frame",
+    image: d.type === VFX_LIGHTING_REFERENCE_NODE_TYPE ? "Reference frame" : "First frame",
+    reference_image: d.type === VFX_VIDEO_REFINE_NODE_TYPE ? "Lighting reference" : "reference_image",
     last_image: "Last frame",
     reference_images: "Reference images",
     reference_video_1: "Reference video 1",

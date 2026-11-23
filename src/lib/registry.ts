@@ -8,9 +8,16 @@ import { KLING_DEFAULTS, KLING_MODELS, KLING_TASKS, buildKlingRequest } from "./
 import { PROMPT_ASSISTANT_MODELS, PROMPT_ASSISTANT_TARGETS } from "./prompt-assistant";
 import { WAN_DEFAULTS, WAN_NODE_TYPE } from "./wan";
 import { MINIMAX_DEFAULTS, MINIMAX_NODE_TYPE } from "./minimax";
-import { FLUX3_DEFAULTS, FLUX3_NODE_TYPE } from "./flux3";
+import { FLUX3_DEFAULTS, FLUX3_NODE_TYPE, normalizeFlux3Params } from "./flux3";
 import { FLUX3_VIDEO_DEFAULTS, FLUX3_VIDEO_NODE_TYPE } from "./flux3-video";
 import { executeWorkflowAtlas } from "./workflow-atlas";
+import {
+  extractVfxFrame,
+  VFX_EXTRACT_FRAME_NODE_TYPE,
+  VFX_LIGHTING_REFERENCE_NODE_TYPE,
+  VFX_REFERENCE_PROVIDERS,
+  VFX_VIDEO_REFINE_NODE_TYPE,
+} from "./vfx-relight";
 
 fal.config({ proxyUrl: "/api/fal/proxy" });
 
@@ -329,6 +336,124 @@ const preview: NodeDef = {
   inputs: { media: "any" }, outputs: {},
   params: [],
   execute: async ({ inputs }) => ({ media: inputs.media ?? null }),
+};
+
+const vfxExtractFrame: NodeDef = {
+  type: VFX_EXTRACT_FRAME_NODE_TYPE,
+  label: "Extract video frame",
+  category: "Input",
+  inputs: { video: "video" },
+  outputs: { image: "image" },
+  params: [{
+    key: "time_seconds",
+    label: "Frame time (seconds)",
+    kind: "number",
+    default: 0,
+    helperText: "Extracts from the source video and scales frames to a maximum 2048 px edge.",
+  }],
+  execute: async ({ inputs, params, signal }) => ({
+    image: await extractVfxFrame(inputs.video, params.time_seconds, signal),
+  }),
+};
+
+const vfxLightingReference: NodeDef = {
+  type: VFX_LIGHTING_REFERENCE_NODE_TYPE,
+  label: "Lighting reference",
+  category: "fal",
+  inputs: { prompt: "text", image: "image" },
+  outputs: { image: "image" },
+  params: [
+    {
+      key: "provider",
+      label: "Image provider",
+      kind: "select",
+      options: ["atlas", "fal"],
+      optionLabels: { atlas: VFX_REFERENCE_PROVIDERS[0], fal: VFX_REFERENCE_PROVIDERS[1] },
+      default: "atlas",
+    },
+    {
+      key: "model",
+      label: "Image edit model",
+      kind: "select",
+      options: [String(FLUX3_DEFAULTS.model), ...Object.keys(NANO_MODELS)],
+      optionsByParam: {
+        param: "provider",
+        values: {
+          atlas: [String(FLUX3_DEFAULTS.model)],
+          fal: Object.keys(NANO_MODELS),
+        },
+      },
+      optionLabels: {
+        [String(FLUX3_DEFAULTS.model)]: "FLUX 3 Image Edit",
+      },
+      default: String(FLUX3_DEFAULTS.model),
+    },
+  ],
+  execute: async ({ inputs, params, log, signal }) => {
+    if (typeof inputs.prompt !== "string" || !inputs.prompt.trim()) {
+      throw new Error("Connect a lighting prompt.");
+    }
+    if (typeof inputs.image !== "string" || !inputs.image) {
+      throw new Error("Connect an extracted or compositor reference frame.");
+    }
+    if (params.provider === "fal") {
+      const model = typeof params.model === "string" && params.model in NANO_MODELS
+        ? params.model
+        : "Nano Banana";
+      const result = await callFal(`${NANO_MODELS[model]}/edit`, {
+        prompt: inputs.prompt,
+        image_urls: [inputs.image],
+        num_images: 1,
+      }, log, signal);
+      const imageUrl = result.images?.[0]?.url ?? result.image?.url;
+      if (typeof imageUrl !== "string" || !imageUrl) {
+        throw new Error("fal.ai did not return a lighting reference image.");
+      }
+      return { image: imageUrl };
+    }
+    return executeWorkflowAtlas("flux-image", {
+      inputs: { prompt: inputs.prompt, reference_images: [inputs.image] },
+      params: normalizeFlux3Params({ ...FLUX3_DEFAULTS, task: "edit" }),
+      log,
+      signal,
+    });
+  },
+};
+
+const vfxVideoRefine: NodeDef = {
+  type: VFX_VIDEO_REFINE_NODE_TYPE,
+  label: "Relight / refine video",
+  category: "fal",
+  autoPrompt: true,
+  inputs: { prompt: "text", video: "video", reference_image: "image" },
+  outputs: { video: "video" },
+  params: [{
+    key: "model",
+    label: "Atlas video-edit model",
+    kind: "select",
+    options: Object.values(OMNI_MODELS),
+    optionLabels: Object.fromEntries(Object.entries(OMNI_MODELS).map(([label, model]) => [model, label])),
+    default: OMNI_MODELS["Gemini Omni 1.2 Flash"],
+    helperText: "Requires an Atlas-supported public MP4; uploaded duration is checked when known. AI edits can alter scene details and are not physically based relighting.",
+  }],
+  execute: async ({ inputs, params, log, signal }) => {
+    const model = Object.values(OMNI_MODELS).includes(params.model)
+      ? String(params.model)
+      : OMNI_MODELS["Gemini Omni 1.2 Flash"];
+    const request = buildOmniRequest({
+      params: { ...OMNI_DEFAULTS, model, task: OMNI_TASKS["Edit video"] },
+    }, {
+      prompt: inputs.prompt,
+      video: inputs.video,
+      reference_images: [inputs.reference_image],
+    });
+    const body = Object.fromEntries(Object.entries(request.body).filter(([key]) => key !== "variations"));
+    const videoUrl = await callAtlasVideo("/api/atlas/google-video", "Gemini Omni", {
+      model: request.model,
+      ...body,
+    }, log, signal);
+    return { video: videoUrl };
+  },
 };
 
 const GEMINI_MODELS: Record<string, string> = {
@@ -1023,6 +1148,7 @@ const flux3Video: NodeDef = {
 export const registry: Record<string, NodeDef> = Object.fromEntries(
   [
     prompt, number, image, videoInput, promptAssistant, falModel, nanoBanana, geminiImage, gptImage,
-    seedanceVideo, klingVideo, veoVideo, googleOmniVideo, wanVideo, miniMaxVideo, flux3Image, flux3Video, preview,
+    seedanceVideo, klingVideo, veoVideo, googleOmniVideo, wanVideo, miniMaxVideo, flux3Image, flux3Video,
+    vfxExtractFrame, vfxLightingReference, vfxVideoRefine, preview,
   ].map((d) => [d.type, d])
 );

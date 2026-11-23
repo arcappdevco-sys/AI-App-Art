@@ -38,6 +38,12 @@ import {
   getStoryboardVideoParamOverrides,
   videoModelTypes,
 } from "@/lib/workflow-node-factory";
+import {
+  createVfxRelightWorkflow,
+  VFX_EXTRACT_FRAME_NODE_TYPE,
+  VFX_LIGHTING_REFERENCE_NODE_TYPE,
+  VFX_VIDEO_REFINE_NODE_TYPE,
+} from "@/lib/vfx-relight";
 import { validateWorkflow, type WorkflowValidationIssue } from "@/lib/workflow-validation";
 import type { Graph, NodeStatus } from "@/lib/types";
 import WorkflowNode, { WorkflowRunContext } from "@/components/WorkflowNode";
@@ -130,6 +136,7 @@ const utilityGroups = [
   { title: "Inputs", types: ["input/prompt", "input/image", "input/video", "input/number"] },
   { title: "Outputs", types: ["output/preview"] },
   { title: "Advanced", types: ["fal/model"] },
+  { title: "VFX", types: [VFX_EXTRACT_FRAME_NODE_TYPE, VFX_LIGHTING_REFERENCE_NODE_TYPE, VFX_VIDEO_REFINE_NODE_TYPE] },
 ] as const;
 
 type SavedWorkflow = {
@@ -1041,6 +1048,65 @@ export default function Page() {
       };
       window.requestAnimationFrame(groupExampleWhenMeasured);
     }
+  };
+
+  const addVfxRelightWorkflow = () => {
+    try {
+      const additions = createVfxRelightWorkflow(registry, {
+        x: 100 + nodes.length * 30,
+        y: 100 + nodes.length * 20,
+      });
+      setNodes((current) => [...current, ...additions.nodes]);
+      setEdges((current) => [...current, ...additions.edges]);
+      setActiveView("workflow");
+      setStorageStatus("VFX relighting workflow added");
+      setStorageError("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageStatus("Unable to add VFX relighting workflow");
+    }
+  };
+
+  const addCompositorFrameToWorkflow = (dataUrl: string, time: number) => {
+    if (!storageReady || !dataUrl.startsWith("data:image/png;base64,")) {
+      const message = !storageReady
+        ? "Workflow storage is still loading; try sending the frame again."
+        : "The compositor frame is not a valid PNG image.";
+      setStorageError(message);
+      setStorageStatus("Unable to add compositor frame");
+      throw new Error(message);
+    }
+    const node: Node = {
+      id: `input/image-${crypto.randomUUID()}`,
+      type: "workflow",
+      position: { x: 100 + nodes.length * 30, y: 100 + nodes.length * 20 },
+      data: {
+        type: "input/image",
+        params: { url: dataUrl },
+        status: "idle",
+        outputs: {},
+        log: "",
+        title: `Compositor frame · ${time.toFixed(1)} s`,
+      },
+    };
+    const target = nodes.find((candidate) =>
+      (candidate.data as { type?: string }).type === VFX_LIGHTING_REFERENCE_NODE_TYPE
+      && !edges.some((edge) => edge.target === candidate.id && edge.targetHandle === "image"));
+    setNodes((current) => [...current, node]);
+    if (target) {
+      setEdges((current) => [...current, {
+        id: `${node.id}-${target.id}-compositor-frame`,
+        source: node.id,
+        sourceHandle: "image",
+        target: target.id,
+        targetHandle: "image",
+      }]);
+    }
+    setActiveView("workflow");
+    setStorageError("");
+    setStorageStatus(target
+      ? "Compositor frame added to the lighting reference"
+      : "Compositor frame added as a workflow image input");
   };
 
   const exampleDrag = useExampleDrag(groupCanvasRef, (type, screenPosition) => {
@@ -2147,6 +2213,12 @@ export default function Page() {
             <details className="ff-utility-group" key={group.title} open={group.title === "Inputs"}>
               <summary>{group.title}<span aria-hidden="true">⌄</span></summary>
               <div className="ff-utility-items">
+                {group.title === "VFX" && (
+                  <button className="ff-utility-node" onClick={addVfxRelightWorkflow}>
+                    <span>Build VFX relighting workflow<small>Video → frame → lighting reference → refined video</small></span>
+                    <span aria-hidden="true">+</span>
+                  </button>
+                )}
                 {group.types.map((type) => (
                   <button className="ff-utility-node" key={type} onClick={() => addNode(type)}>
                     <span>
@@ -2176,7 +2248,8 @@ export default function Page() {
           onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
           onNodesDelete={(deletedNodes) => {
             const deletedVideoModelIds = new Set(deletedNodes
-              .filter((node) => [WAN_NODE_TYPE, MINIMAX_NODE_TYPE, FLUX3_NODE_TYPE, "video/seedance", "video/veo"].includes((node.data as { type?: string }).type ?? ""))
+              .filter((node) => [WAN_NODE_TYPE, MINIMAX_NODE_TYPE, FLUX3_NODE_TYPE, "video/seedance", "video/veo", VFX_VIDEO_REFINE_NODE_TYPE]
+                .includes((node.data as { type?: string }).type ?? ""))
               .map((node) => node.id));
             for (const node of deletedNodes) {
               const data = node.data as { type?: string; params?: { file?: { id?: unknown } | null } };
@@ -2288,6 +2361,7 @@ export default function Page() {
       <Compositor
         key={`compositor:${projectSession?.sessionKey ?? "local"}`}
         hidden={activeView !== "compositor"}
+        onSendFrameToWorkflow={addCompositorFrameToWorkflow}
         sharedMediaAssets={projectMediaAssets}
         projectSession={projectSession}
         projectSessionReady={projectSessionReady}
