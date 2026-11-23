@@ -16,6 +16,64 @@ const { applyCompositorMask, combineMaskAlpha, convertMaskGeometry, createMaskGe
 const { applyCompositorKeyer } = require(path.join(__dirname, "..", "src", "lib", "compositor-keyer.ts"));
 const { CompositorHistory, compositorHistoryShortcut } = require(path.join(__dirname, "..", "src", "lib", "compositor-history.ts"));
 const { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, invertTrackingMatrix, multiplyTrackingMatrices, planarTrackingMatrix, similarityTrackingMatrix, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingPixels } = require(path.join(__dirname, "..", "src", "lib", "compositor-tracking.ts"));
+const { applySmartMattePixels, smartMatteCost, smartMatteSourceHash, submitSmartMatte, validateSmartMatteSource } = require(path.join(__dirname, "..", "src", "lib", "smart-matte.ts"));
+
+test("Smart Matte applies grayscale alpha without replacing source transparency", () => {
+  const source = new Uint8ClampedArray([10, 20, 30, 200, 30, 40, 50, 128, 40, 50, 60, 255]);
+  const matte = new Uint8ClampedArray([0, 0, 0, 255, 128, 128, 128, 255, 255, 255, 255, 255]);
+  applySmartMattePixels(source, matte);
+  assert.deepEqual([...source], [10, 20, 30, 0, 30, 40, 50, 64, 40, 50, 60, 255]);
+  assert.throws(() => applySmartMattePixels(source, new Uint8ClampedArray(4)), /invalid size/);
+});
+
+test("Smart Matte validates source limits and estimates resolution-based pricing", () => {
+  const video = new File(["video"], "source.mp4", { type: "video/mp4" });
+  assert.equal(validateSmartMatteSource(video, 5, 1920, 1080), 0.5);
+  assert.equal(smartMatteCost(5, 2560, 1440), 1.25);
+  assert.equal(smartMatteCost(5, 3840, 2160), 5);
+  assert.throws(() => smartMatteCost(5, 3841, 2160), /3840/);
+  assert.throws(() => smartMatteCost(5, 640, 100), /aspect ratio/);
+  assert.throws(() => validateSmartMatteSource(new File(["x"], "x.png", { type: "image/png" }), 5, 1920, 1080), /video/);
+});
+
+test("Smart Matte identifies source content across reloads and detects replacements", async () => {
+  const a = new File(["same"], "source.mp4", { type: "video/mp4" });
+  const b = new File(["same"], "renamed.mp4", { type: "video/mp4" });
+  const c = new File(["changed"], "source.mp4", { type: "video/mp4" });
+  assert.equal(await smartMatteSourceHash(a), await smartMatteSourceHash(b));
+  assert.notEqual(await smartMatteSourceHash(a), await smartMatteSourceHash(c));
+  assert.equal(COMPOSITOR_NODE_OPTIONS.filter((option) => option.kind === "smart-matte").length, 1);
+});
+
+test("Smart Matte submits once and treats an ambiguous response as uncertain", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async (url, options) => {
+    calls++;
+    assert.equal(url, "/api/fal/proxy");
+    assert.equal(options.headers["x-fal-target-url"], "https://queue.fal.run/lightricks/ltx-2.5/alpha-gen");
+    assert.deepEqual(JSON.parse(options.body), { video_url: "https://example.test/video.mp4" });
+    return new Response("unavailable", { status: 503 });
+  };
+  try {
+    await assert.rejects(submitSmartMatte("https://example.test/video.mp4"), /uncertain/);
+    assert.equal(calls, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("Smart Matte accepts a request ID and rejects an ambiguous successful response", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => Response.json({ request_id: "request-123" });
+    assert.equal(await submitSmartMatte("https://example.test/video.mp4"), "request-123");
+    global.fetch = async () => Response.json({ status: "IN_QUEUE" });
+    await assert.rejects(submitSmartMatte("https://example.test/video.mp4"), /uncertain/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
 
 test("compositor media fit preserves source aspect ratio and centers letterboxed footage", () => {
   assert.deepEqual(compositorImageFit(1920, 1080, 640, 360), { x: 0, y: 0, width: 640, height: 360 });

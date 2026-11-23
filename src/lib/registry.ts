@@ -302,6 +302,11 @@ const NANO_MODELS: Record<string, string> = {
   "Nano Banana 2.1": "google/nano-banana-2.1",
 };
 
+const GEMINI_MODELS: Record<string, string> = {
+  "Nano Banana": "gemini-2.5-flash-image",
+  "Nano Banana 2": "gemini-3.1-flash-image-preview",
+};
+
 const nanoBanana: NodeDef = {
   type: "fal/nano-banana", label: "Nano Banana · Paid", category: "fal",
   autoPrompt: true,
@@ -367,26 +372,38 @@ const vfxLightingReference: NodeDef = {
       key: "provider",
       label: "Image provider",
       kind: "select",
-      options: ["atlas", "fal"],
-      optionLabels: { atlas: VFX_REFERENCE_PROVIDERS[0], fal: VFX_REFERENCE_PROVIDERS[1] },
+      options: ["atlas", "fal", "google"],
+      optionLabels: {
+        atlas: VFX_REFERENCE_PROVIDERS[0],
+        fal: VFX_REFERENCE_PROVIDERS[1],
+        google: VFX_REFERENCE_PROVIDERS[2],
+      },
       default: "atlas",
     },
     {
       key: "model",
       label: "Image edit model",
       kind: "select",
-      options: [String(FLUX3_DEFAULTS.model), ...Object.keys(NANO_MODELS)],
+      options: [
+        String(FLUX3_DEFAULTS.model),
+        ...Object.keys(NANO_MODELS),
+        ...Object.keys(GEMINI_MODELS),
+      ],
       optionsByParam: {
         param: "provider",
         values: {
           atlas: [String(FLUX3_DEFAULTS.model)],
           fal: Object.keys(NANO_MODELS),
+          google: Object.keys(GEMINI_MODELS),
         },
       },
       optionLabels: {
         [String(FLUX3_DEFAULTS.model)]: "FLUX 3 Image Edit",
+        "Nano Banana": "Nano Banana",
+        "Nano Banana 2": "Nano Banana 2",
       },
       default: String(FLUX3_DEFAULTS.model),
+      helperText: "Uses the extracted frame as an edit reference. Only models with an image-edit path are listed.",
     },
   ],
   execute: async ({ inputs, params, log, signal }) => {
@@ -395,6 +412,32 @@ const vfxLightingReference: NodeDef = {
     }
     if (typeof inputs.image !== "string" || !inputs.image) {
       throw new Error("Connect an extracted or compositor reference frame.");
+    }
+    if (params.provider === "google") {
+      const model = typeof params.model === "string" && params.model in GEMINI_MODELS
+        ? params.model
+        : "Nano Banana";
+      const response = await fetch("/api/gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal,
+        body: JSON.stringify({
+          model: GEMINI_MODELS[model],
+          prompt: inputs.prompt,
+          images: [inputs.image],
+          aspectRatio: "auto",
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as { error?: unknown; image?: unknown };
+      if (!response.ok) {
+        throw new Error(typeof result.error === "string"
+          ? result.error
+          : `Gemini image edit failed (${response.status}).`);
+      }
+      if (typeof result.image !== "string" || !result.image) {
+        throw new Error("Gemini did not return an edited reference image.");
+      }
+      return { image: result.image };
     }
     if (params.provider === "fal") {
       const model = typeof params.model === "string" && params.model in NANO_MODELS
@@ -454,11 +497,6 @@ const vfxVideoRefine: NodeDef = {
     }, log, signal);
     return { video: videoUrl };
   },
-};
-
-const GEMINI_MODELS: Record<string, string> = {
-  "Nano Banana": "gemini-2.5-flash-image",
-  "Nano Banana 2": "gemini-3.1-flash-image-preview",
 };
 
 const geminiImage: NodeDef = {

@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
 
-const API_KEY_NAMES = ["OPENAI_API_KEY", "GEMINI_API_KEY", "ATLASCLOUD_API_KEY", "FAL_KEY"];
+const API_KEY_NAMES = ["OPENAI_API_KEY", "GEMINI_API_KEY", "ATLASCLOUD_API_KEY", "FAL_KEY", "TOPVIEW_API_KEY"];
 let serverProcess = null;
 let mainWindow = null;
 let isQuitting = false;

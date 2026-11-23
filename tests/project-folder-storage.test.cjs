@@ -515,6 +515,28 @@ test("saves and reloads the project compositor graph, settings, and media refere
   }), /is not in this project/);
 });
 
+test("saves and reloads a Smart Matte and its generated matte media", async () => {
+  const handle = createMemoryDirectoryHandle();
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  const asset = {
+    id: "generated-matte", name: "matte.mp4", mediaKind: "video", mimeType: "video/mp4",
+    source: { kind: "storage", storageKey: "generated-matte" }, metadata: {},
+  };
+  const updated = await addMediaToProjectFolder(handle, manifest, asset, new File(["matte"], "matte.mp4", { type: "video/mp4" }));
+  const state = {
+    nodes: [{ id: "matte-node", type: "comp", position: { x: 0, y: 0 },
+      data: { kind: "smart-matte", label: "Smart Matte", params: { mode: "auto", sourceHash: "source-hash" } } }],
+    edges: [], mediaRefs: { "matte-node": asset.id }, mediaMetadata: {}, tracks: {},
+    marks: { inPoint: null, outPoint: null }, time: 0, viewerTransform: { zoom: 1, x: 0, y: 0 },
+    previewBackground: "checkerboard", previewColor: "#ffffff", viewChannel: "rgb",
+  };
+  await saveProjectCompositorState(handle, updated.id, state);
+  const restored = await loadProjectCompositorState(handle, updated.id);
+  assert.equal(restored.nodes[0].data.params.sourceHash, "source-hash");
+  assert.equal(restored.mediaRefs["matte-node"], asset.id);
+  assert.equal(await (await readProjectMediaAssetFile(handle, updated.id, asset.id)).text(), "matte");
+});
+
 test("saves and reloads the project workflow library and active workflow", async () => {
   const handle = createMemoryDirectoryHandle();
   const { manifest } = await readOrCreateProjectManifest(handle);

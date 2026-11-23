@@ -10,6 +10,7 @@ const API_KEYS = [
   { name: "GEMINI_API_KEY", provider: "Google Gemini", description: "Nano Banana image generation." },
   { name: "ATLASCLOUD_API_KEY", provider: "Atlas Cloud", description: "Video generation, FLUX 3, uploads, and related models." },
   { name: "FAL_KEY", provider: "fal", description: "fal-hosted image generation." },
+  { name: "TOPVIEW_API_KEY", provider: "Topview", description: "Key setup only; Topview model integration is not yet available." },
 ] as const;
 
 type ApiKeyName = (typeof API_KEYS)[number]["name"];
@@ -22,6 +23,7 @@ const EMPTY_KEY_STATE: KeyState = {
   GEMINI_API_KEY: false,
   ATLASCLOUD_API_KEY: false,
   FAL_KEY: false,
+  TOPVIEW_API_KEY: false,
 };
 
 export default function SetupPage() {
@@ -31,6 +33,7 @@ export default function SetupPage() {
     GEMINI_API_KEY: "",
     ATLASCLOUD_API_KEY: "",
     FAL_KEY: "",
+    TOPVIEW_API_KEY: "",
   });
   const [configured, setConfigured] = useState<KeyState>(EMPTY_KEY_STATE);
   const [firstRun, setFirstRun] = useState(false);
@@ -82,7 +85,7 @@ export default function SetupPage() {
       const result = await response.json() as { error?: string; configured?: KeyState };
       if (!response.ok) throw new Error(result.error || `Could not save API keys (status ${response.status}).`);
       if (result.configured) setConfigured({ ...EMPTY_KEY_STATE, ...result.configured });
-      setValues({ OPENAI_API_KEY: "", GEMINI_API_KEY: "", ATLASCLOUD_API_KEY: "", FAL_KEY: "" });
+      setValues({ OPENAI_API_KEY: "", GEMINI_API_KEY: "", ATLASCLOUD_API_KEY: "", FAL_KEY: "", TOPVIEW_API_KEY: "" });
       setSaved(true);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not save API keys.");

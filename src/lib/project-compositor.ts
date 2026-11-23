@@ -5,7 +5,7 @@ import type { TrackingData } from "./compositor-tracking";
 import type { Edge } from "@xyflow/react";
 import type { ProjectManifest } from "./project-manifest";
 
-const COMPOSITOR_KINDS = ["media", "transform", "key", "mask", "color", "merge", "tracker", "viewer"];
+const COMPOSITOR_KINDS = ["media", "transform", "key", "mask", "color", "merge", "tracker", "viewer", "smart-matte"];
 
 export const PROJECT_COMPOSITOR_DOCUMENT_FILE_NAME = "fal-flow.compositor.json";
 export const PROJECT_COMPOSITOR_DOCUMENT_FORMAT = "fal-flow-compositor";
@@ -99,7 +99,7 @@ function normalizeState(value: unknown, manifest: ProjectManifest): ProjectCompo
   const assetIds = new Set(manifest.assets.map((asset) => asset.id));
   const mediaRefs: Record<string, string> = {};
   for (const [nodeId, assetId] of Object.entries(value.mediaRefs)) {
-    if (!nodes.some((node) => node.id === nodeId && node.data.kind === "media")
+    if (!nodes.some((node) => node.id === nodeId && (node.data.kind === "media" || node.data.kind === "smart-matte"))
       || !isText(assetId) || !assetIds.has(assetId)) {
       throw new Error(`Compositor media reference for node "${nodeId}" is not in this project.`);
     }

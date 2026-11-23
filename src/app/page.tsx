@@ -6,7 +6,7 @@ import "./canvas-groups.css";
 import "./example-drag.css";
 import "./ollama-chat.css";
 import "../components/StoryboardTab.css";
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type WheelEvent as ReactWheelEvent } from "react";
 import { useRouter } from "next/navigation";
 import ApiKeySetupRedirect from "@/components/ApiKeySetupRedirect";
 import {
@@ -93,6 +93,7 @@ import { ExampleDragPreview, useExampleDrag } from "@/components/ExampleDrag";
 import OllamaChat from "@/components/OllamaChat";
 import { createCanvasGroup, groupBoundsForNodes, normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
 import { autoLayoutWorkflow } from "@/lib/workflow-layout";
+import { zoomCanvasAtPoint } from "@/lib/canvas-zoom";
 
 const nodeTypes = { workflow: WorkflowNode };
 const storyboardVideoModelOptions = getImageToVideoModelOptions(registry);
@@ -442,6 +443,22 @@ export default function Page() {
   const [registeredSaveHandlers, setRegisteredSaveHandlers] = useState({ editor: false, compositor: false });
   const groupCanvasRef = useRef<HTMLElement>(null);
   const groupFlowRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
+  const zoomWorkflowOnNodeWheel = (event: ReactWheelEvent<HTMLElement>) => {
+    if (event.deltaY === 0 || !(event.target instanceof Element)) return;
+    if (!event.target.closest(".react-flow__node") || event.target.closest(".nowheel, input, textarea, select, [contenteditable='true']")) return;
+    const flow = groupFlowRef.current;
+    if (!flow) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    void flow.setViewport(zoomCanvasAtPoint(
+      flow.getViewport(),
+      { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+      event.deltaY,
+      0.001,
+      2,
+    ), { duration: 0 });
+  };
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
   const [workflows, setWorkflows] = useState<SavedWorkflow[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState("");
@@ -2240,7 +2257,7 @@ export default function Page() {
         </div>
       </aside>
 
-      <main className="ff-canvas" ref={groupCanvasRef}>
+      <main className="ff-canvas" ref={groupCanvasRef} onWheelCapture={zoomWorkflowOnNodeWheel}>
         <WorkflowRunContext.Provider value={{ runNode, isRunning, lowSettingsNodeIds, openEditor: () => setActiveView("editor") }}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}

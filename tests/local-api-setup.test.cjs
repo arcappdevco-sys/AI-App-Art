@@ -27,18 +27,20 @@ test("local API setup saves keys without replacing unrelated environment setting
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fal-flow-api-setup-"));
   process.chdir(directory);
   process.env.NODE_ENV = "development";
-  fs.writeFileSync(".env.local", "KEEP_ME=value\nOPENAI_API_KEY=old-key\n");
+  fs.writeFileSync(".env.local", "KEEP_ME=value\nOPENAI_API_KEY=old-key\nTOPVIEW_API_KEY=old-topview\n");
 
   try {
     const secret = 'new$key"with-quotes';
-    const response = await POST(setupRequest({ OPENAI_API_KEY: secret, ATLASCLOUD_API_KEY: "atlas-key" }));
+    const response = await POST(setupRequest({ OPENAI_API_KEY: secret, ATLASCLOUD_API_KEY: "atlas-key", TOPVIEW_API_KEY: "topview-key" }));
     assert.equal(response.status, 200);
-    assert.doesNotMatch(await response.clone().text(), /new\$key|atlas-key/);
+    assert.doesNotMatch(await response.clone().text(), /new\$key|atlas-key|topview-key/);
 
     const file = fs.readFileSync(".env.local", "utf8");
     assert.match(file, /KEEP_ME=value/);
     assert.match(file, /OPENAI_API_KEY="new\\\$key\\"with-quotes"/);
     assert.match(file, /ATLASCLOUD_API_KEY="atlas-key"/);
+    assert.match(file, /TOPVIEW_API_KEY="topview-key"/);
+    assert.doesNotMatch(file, /TOPVIEW_API_KEY=old-topview/);
     assert.doesNotMatch(file, /OPENAI_API_KEY=old-key/);
   } finally {
     process.chdir(originalCwd);
@@ -92,6 +94,7 @@ test("desktop API setup stores keys in the current user's settings folder", asyn
     "GEMINI_API_KEY",
     "ATLASCLOUD_API_KEY",
     "FAL_KEY",
+    "TOPVIEW_API_KEY",
   ];
   const originalValues = Object.fromEntries(names.map((name) => [name, process.env[name]]));
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fal-flow-desktop-keys-"));
@@ -108,20 +111,24 @@ test("desktop API setup stores keys in the current user's settings folder", asyn
     ));
     assert.equal(remote.status, 403);
 
-    const response = await POST(setupRequest({ OPENAI_API_KEY: "user-openai-key" }, url));
+    const response = await POST(setupRequest({ OPENAI_API_KEY: "user-openai-key", TOPVIEW_API_KEY: "user-topview-key" }, url));
     assert.equal(response.status, 200);
-    assert.doesNotMatch(await response.clone().text(), /user-openai-key/);
+    assert.doesNotMatch(await response.clone().text(), /user-openai-key|user-topview-key/);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory, "api-keys.json"), "utf8")), {
       OPENAI_API_KEY: "user-openai-key",
       GEMINI_API_KEY: "",
       ATLASCLOUD_API_KEY: "",
       FAL_KEY: "",
+      TOPVIEW_API_KEY: "user-topview-key",
     });
     assert.equal(process.env.OPENAI_API_KEY, "user-openai-key");
+    assert.equal(process.env.TOPVIEW_API_KEY, "user-topview-key");
 
     const status = await GET(new Request(url, { headers: { Host: new URL(url).host } }));
     assert.equal(status.status, 200);
-    assert.equal((await status.json()).configured.OPENAI_API_KEY, true);
+    const configured = (await status.json()).configured;
+    assert.equal(configured.OPENAI_API_KEY, true);
+    assert.equal(configured.TOPVIEW_API_KEY, true);
   } finally {
     for (const name of names) {
       if (originalValues[name] === undefined) delete process.env[name];

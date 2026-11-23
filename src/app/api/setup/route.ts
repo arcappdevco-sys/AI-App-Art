@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
-const API_KEY_NAMES = ["OPENAI_API_KEY", "GEMINI_API_KEY", "ATLASCLOUD_API_KEY", "FAL_KEY"] as const;
+const API_KEY_NAMES = ["OPENAI_API_KEY", "GEMINI_API_KEY", "ATLASCLOUD_API_KEY", "FAL_KEY", "TOPVIEW_API_KEY"] as const;
 type ApiKeyName = (typeof API_KEY_NAMES)[number];
 type ApiKeyValues = Record<ApiKeyName, string>;
 
@@ -53,6 +53,7 @@ function configuredKeys(): Record<ApiKeyName, boolean> {
     GEMINI_API_KEY: Boolean(process.env.GEMINI_API_KEY?.trim()),
     ATLASCLOUD_API_KEY: Boolean(process.env.ATLASCLOUD_API_KEY?.trim()),
     FAL_KEY: Boolean(process.env.FAL_KEY?.trim()),
+    TOPVIEW_API_KEY: Boolean(process.env.TOPVIEW_API_KEY?.trim()),
   };
 }
 
@@ -62,6 +63,7 @@ function emptyApiKeyValues(): ApiKeyValues {
     GEMINI_API_KEY: "",
     ATLASCLOUD_API_KEY: "",
     FAL_KEY: "",
+    TOPVIEW_API_KEY: "",
   };
 }
 
@@ -110,7 +112,7 @@ function updateEnvFile(existing: string, values: ApiKeyValues) {
 
   const written = new Set<ApiKeyName>();
   const updatedLines: string[] = [];
-  const keyPattern = /^\s*(OPENAI_API_KEY|GEMINI_API_KEY|ATLASCLOUD_API_KEY|FAL_KEY)\s*=/;
+  const keyPattern = /^\s*(OPENAI_API_KEY|GEMINI_API_KEY|ATLASCLOUD_API_KEY|FAL_KEY|TOPVIEW_API_KEY)\s*=/;
 
   for (const line of lines) {
     const match = line.match(keyPattern);

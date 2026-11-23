@@ -2,7 +2,7 @@
 
 import {
   useCallback, useEffect, useEffectEvent, useRef, useState,
-  type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
   ReactFlow, Background, Controls, Handle, Position, addEdge, useEdgesState, useNodesState,
@@ -30,6 +30,9 @@ import {
 } from "@/lib/project-folder-storage";
 import { loadProjectMediaFile, registerProjectMediaAsset } from "@/lib/project-media-storage";
 import type { ProjectCompositorState } from "@/lib/project-compositor";
+import { zoomCanvasAtPoint } from "@/lib/canvas-zoom";
+import SmartMatteControls from "@/components/SmartMatteControls";
+import { applySmartMatte, collectSmartMatte, smartMatteSourceHash, submitSmartMatte, uploadSmartMatteSource, validateSmartMatteSource } from "@/lib/smart-matte";
 
 type CompNode = CompositorNode;
 type Project = {
@@ -184,6 +187,7 @@ async function seek(video: HTMLVideoElement, time: number) {
 
 type Media = {
   element: HTMLImageElement | HTMLVideoElement;
+  file: File;
   url: string;
   duration: number;
   metadata: MediaAssetMetadata;
@@ -200,6 +204,7 @@ async function createMedia(file: File): Promise<Media> {
       });
       return {
         element: image,
+        file,
         url,
         duration: 0,
         metadata: { ...createUnknownMediaAssetMetadata(), width: image.naturalWidth, height: image.naturalHeight },
@@ -214,6 +219,7 @@ async function createMedia(file: File): Promise<Media> {
     if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error("Video duration could not be determined.");
     return {
       element: video,
+      file,
       url,
       duration: video.duration,
       metadata: {
@@ -264,6 +270,25 @@ async function renderGraph(
         ctx.drawImage(item.element, fit.x, fit.y, fit.width, fit.height);
       } else if (node.data.kind === "tracker") {
         throw new Error("Tracker outputs motion only. Connect it to a Transform or Mask motion input.");
+      } else if (node.data.kind === "smart-matte") {
+        const source = await input("image");
+        if (params.mode === "manual") {
+          return applyCompositorMask(source, getMaskLayers(params), time, Boolean(params.invert), IDENTITY_TRACKING_MATRIX);
+        }
+        const edge = edges.find((item) => item.target === id && item.targetHandle === "image");
+        const sourceNode = edge && byId.get(edge.source);
+        const sourceMedia = edge && media[edge.source];
+        const matte = media[id];
+        if (!sourceNode || sourceNode.data.kind !== "media" || compositorMediaSource(sourceNode.data.params) !== "file"
+          || sourceNode.data.disabled || !sourceMedia || !(sourceMedia.element instanceof HTMLVideoElement)) {
+          throw new Error("Smart Matte: connect the original Media video directly.");
+        }
+        if (!matte || !(matte.element instanceof HTMLVideoElement)) throw new Error("Smart Matte: generate a matte first.");
+        if (params.sourceHash !== await smartMatteSourceHash(sourceMedia.file)) {
+          throw new Error("Smart Matte: the source video changed. Generate a new matte.");
+        }
+        await seek(matte.element, time);
+        return applySmartMatte(source, matte.element);
       } else if (node.data.kind === "merge") {
         ctx.drawImage(await input("background"), 0, 0);
         ctx.globalAlpha = Math.max(0, Math.min(1, number(params, "opacity", 100) / 100));
@@ -357,6 +382,7 @@ export default function Compositor({
   const [status, setStatus] = useState("Loading project...");
   const [ready, setReady] = useState(false);
   const [mediaVersion, setMediaVersion] = useState(0);
+  const [smartMatteRevision, setSmartMatteRevision] = useState(0);
   const [templateVersion, setTemplateVersion] = useState(0);
   const [mediaDurations, setMediaDurations] = useState<Record<string, number>>({});
   const [viewerRatio, setViewerRatio] = useState(0.55);
@@ -364,6 +390,8 @@ export default function Compositor({
   const [resizingViewer, setResizingViewer] = useState(false);
   const projectHandle = projectSession?.handle ?? null;
   const projectId = projectSession?.projectId ?? null;
+  const smartMatteProjectRef = useRef({ projectHandle, projectId });
+  useEffect(() => { smartMatteProjectRef.current = { projectHandle, projectId }; }, [projectHandle, projectId]);
   const [viewerTransform, setViewerTransform] = useState(DEFAULT_VIEWER_TRANSFORM);
   const [previewBackground, setPreviewBackground] = useState<"checkerboard" | "color">("checkerboard");
   const [previewColor, setPreviewColor] = useState("#ffffff");
@@ -388,15 +416,39 @@ export default function Compositor({
   const viewerResizeRef = useRef<ViewerResizeDrag | null>(null);
   const panRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const smartMatteActive = useRef(false);
+  const smartMatteMounted = useRef(true);
+  const autosaveTimer = useRef<number | null>(null);
+  useEffect(() => {
+    smartMatteMounted.current = true;
+    return () => { smartMatteMounted.current = false; };
+  }, []);
   const drawing = useRef<Promise<void>>(Promise.resolve());
   const flowRef = useRef<ReactFlowInstance<CompNode, Edge> | null>(null);
+  const zoomCompositorOnNodeWheel = (event: ReactWheelEvent<HTMLElement>) => {
+    if (event.deltaY === 0 || !(event.target instanceof Element)) return;
+    if (!event.target.closest(".react-flow__node") || event.target.closest(".nowheel, input, textarea, select, [contenteditable='true']")) return;
+    const flow = flowRef.current;
+    if (!flow) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    void flow.setViewport(zoomCanvasAtPoint(
+      flow.getViewport(),
+      { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+      event.deltaY,
+      0.5,
+      2,
+    ), { duration: 0 });
+  };
   const history = useRef(new CompositorHistory<HistorySnapshot>(HISTORY_LIMIT));
   const historyGroup = useRef<{ recorded: boolean; type: "text" | "pointer"; target: EventTarget } | null>(null);
   const restoringHistory = useRef(false);
   const trackingCancelled = useRef(false);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const selectedNode = nodes.find((node) => node.id === selected);
-  const selectedMaskLayers = selectedNode?.data.kind === "mask" ? getMaskLayers(selectedNode.data.params) : [];
+  const selectedMaskLayers = selectedNode?.data.kind === "mask" || selectedNode?.data.kind === "smart-matte" && selectedNode.data.params.mode === "manual"
+    ? getMaskLayers(selectedNode.data.params) : [];
   const selectedMaskLayerId = selectedNode ? maskLayerSelection[selectedNode.id] : undefined;
   const selectedMaskLayer = selectedMaskLayers.find((layer) => layer.id === selectedMaskLayerId) ?? selectedMaskLayers[0];
   const selectedMaskLayerIndex = selectedMaskLayers.findIndex((layer) => layer.id === selectedMaskLayer?.id);
@@ -407,7 +459,8 @@ export default function Compositor({
   const selectedEdges = edges.filter((edge) => edge.selected);
   const viewer = nodes.find((node) => node.data.kind === "viewer");
   const viewerId = viewer?.id;
-  const editingMask = selectedNode?.data.kind === "mask" && !selectedNode.data.disabled && editMaskOnSource;
+  const editingMask = (selectedNode?.data.kind === "mask" || selectedNode?.data.kind === "smart-matte" && selectedNode.data.params.mode === "manual")
+    && !selectedNode.data.disabled && editMaskOnSource;
   const maskInput = editingMask ? edges.find((edge) => edge.target === selectedNode.id && edge.targetHandle === "image") : undefined;
   const editingTracker = selectedNode?.data.kind === "tracker" && !selectedNode.data.disabled;
   const trackerInput = editingTracker ? edges.find((edge) => edge.target === selectedNode.id && edge.targetHandle === "image") : undefined;
@@ -596,6 +649,7 @@ export default function Compositor({
 
   const saveCompositorNow = useCallback(async () => {
     if (!ready) throw new Error("The compositor is still loading and cannot be saved yet.");
+    if (smartMatteActive.current) throw new Error("Wait for Smart Matte to finish before saving the compositor.");
     const state: ProjectCompositorState = {
       nodes,
       edges,
@@ -656,10 +710,16 @@ export default function Compositor({
   }, [saveCompositorNow]);
 
   useEffect(() => {
-    if (!ready) return;
-    const timer = window.setTimeout(() => { void saveCompositorNow().catch(() => {}); }, 500);
-    return () => window.clearTimeout(timer);
-  }, [ready, mediaVersion, saveCompositorNow]);
+    if (!ready || smartMatteActive.current) return;
+    autosaveTimer.current = window.setTimeout(() => {
+      autosaveTimer.current = null;
+      if (!smartMatteActive.current) void saveCompositorNow().catch(() => {});
+    }, 500);
+    return () => {
+      if (autosaveTimer.current !== null) window.clearTimeout(autosaveTimer.current);
+      autosaveTimer.current = null;
+    };
+  }, [ready, mediaVersion, saveCompositorNow, smartMatteRevision]);
 
   useEffect(() => {
     const save = () => saveCompositorNowRef.current();
@@ -969,11 +1029,11 @@ export default function Compositor({
   };
   const update = (key: string, value: CompositorParamValue) => updateParams({ [key]: value });
   const updateMaskLayer = (layer: MaskLayer) => {
-    if (!selectedNode || selectedNode.data.kind !== "mask") return;
+    if (!selectedNode || !(selectedNode.data.kind === "mask" || selectedNode.data.kind === "smart-matte" && selectedNode.data.params.mode === "manual")) return;
     update("layers", selectedMaskLayers.map((current) => current.id === layer.id ? layer : current));
   };
   const addMaskLayer = (kind: MaskShapeKind) => {
-    if (!selectedNode || selectedNode.data.kind !== "mask") return;
+    if (!selectedNode || !(selectedNode.data.kind === "mask" || selectedNode.data.kind === "smart-matte" && selectedNode.data.params.mode === "manual")) return;
     const layer = createMaskLayer(kind, crypto.randomUUID());
     update("layers", [...selectedMaskLayers, layer]);
     setEditMaskOnSource(true);
@@ -1151,6 +1211,135 @@ export default function Compositor({
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
       setError(caught instanceof Error ? caught.message : "Could not choose compositor media.");
+    }
+  };
+  const runSmartMatte = async (resume: boolean) => {
+    if (!selectedNode || selectedNode.data.kind !== "smart-matte" || selectedNode.data.disabled || busy || smartMatteActive.current) return;
+    const nodeId = selectedNode.id;
+    const edge = edges.find((item) => item.target === nodeId && item.targetHandle === "image");
+    const sourceNode = edge && nodes.find((node) => node.id === edge.source);
+    const source = edge && mediaRef.current[edge.source];
+    if (!sourceNode || sourceNode.data.kind !== "media" || sourceNode.data.disabled
+      || compositorMediaSource(sourceNode.data.params) !== "file" || !source || !(source.element instanceof HTMLVideoElement)) {
+      setError("Smart Matte requires a direct connection from a Media node containing the original video.");
+      return;
+    }
+    let estimate: number;
+    try {
+      estimate = validateSmartMatteSource(source.file, source.duration, source.element.videoWidth, source.element.videoHeight);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      return;
+    }
+    if (!resume && !window.confirm(
+      `Send "${source.file.name}" to fal.ai for LTX Alpha Gen? Estimated cost: $${estimate.toFixed(2)} USD. The final charge is determined by fal.ai. The entire video will be uploaded and processed, with a maximum of 3072 frames. Continue?`,
+    )) return;
+    smartMatteActive.current = true;
+    if (autosaveTimer.current !== null) window.clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = null;
+    setBusy(true); setPlaying(false); setError("");
+    let currentNodes = nodes;
+    let currentFiles = files;
+    let currentRefs = mediaReferences;
+    let currentMetadata = mediaMetadata;
+    let loadedMatte: Media | undefined;
+    let requestId = typeof selectedNode.data.params.pendingRequest === "string" ? selectedNode.data.params.pendingRequest : "";
+    const ensureSmartMatteProject = () => {
+      if (!smartMatteMounted.current || smartMatteProjectRef.current.projectId !== projectId || smartMatteProjectRef.current.projectHandle !== projectHandle) {
+        throw new Error("The project changed while Smart Matte was running.");
+      }
+    };
+    const persistSmartMatte = async (patch: CompositorParams) => {
+      ensureSmartMatteProject();
+      currentNodes = currentNodes.map((node) => node.id === nodeId
+        ? { ...node, data: { ...node.data, params: { ...node.data.params, ...patch } } } : node);
+      setNodes(currentNodes);
+      const state: ProjectCompositorState = {
+        nodes: currentNodes, edges, mediaRefs: currentRefs, mediaMetadata: currentMetadata,
+        tracks, marks, time, viewerTransform, previewBackground, previewColor, viewChannel,
+      };
+      saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
+        ensureSmartMatteProject();
+        if (projectHandle && projectId) {
+          if (Object.keys(currentFiles).length) throw new Error("Copy compositor media into the project before saving its graph.");
+          await saveProjectCompositorState(projectHandle, projectId, state);
+        } else {
+          await saveProject({ ...state, media: Object.fromEntries(Object.entries(currentFiles).filter(([id]) => !currentRefs[id])) });
+        }
+      });
+      await saveQueue.current;
+    };
+    try {
+      const hash = await smartMatteSourceHash(source.file);
+      if (resume) {
+        if (!requestId || requestId === "submitting") throw new Error("There is no saved request to resume.");
+        if (selectedNode.data.params.pendingSourceHash !== hash) {
+          throw new Error("Reconnect the original video used for this request before resuming.");
+        }
+      } else {
+        if (requestId) throw new Error("Resume or resolve the existing request before submitting another.");
+        setStatus("Uploading video to fal.ai...");
+        const uploadedUrl = await uploadSmartMatteSource(source.file);
+        await persistSmartMatte({ pendingRequest: "submitting", pendingSourceHash: hash });
+        ensureSmartMatteProject();
+        setStatus("Submitting LTX Alpha Gen...");
+        requestId = await submitSmartMatte(uploadedUrl);
+        await persistSmartMatte({ pendingRequest: requestId });
+      }
+      setStatus("Waiting for LTX Alpha Gen...");
+      const file = await collectSmartMatte(requestId, setStatus);
+      const loaded = await createMedia(file);
+      loadedMatte = loaded;
+      if (!(loaded.element instanceof HTMLVideoElement)
+        || loaded.element.videoWidth !== source.element.videoWidth
+        || loaded.element.videoHeight !== source.element.videoHeight
+        || Math.abs(loaded.duration - source.duration) > 0.25) {
+        throw new Error("The generated matte does not match the source video's dimensions or duration.");
+      }
+      ensureSmartMatteProject();
+      let assetId: string | undefined;
+      let revision: number | undefined;
+      if (projectSession && projectId) {
+        const { manifest } = await readOrCreateProjectManifest(projectSession.handle);
+        ensureSmartMatteProject();
+        if (manifest.id !== projectId) throw new Error("The project folder changed before the matte could be saved.");
+        assetId = `compositor-matte-${crypto.randomUUID()}`;
+        const asset: ProjectMediaAsset = {
+          id: assetId, name: file.name, mediaKind: "video", mimeType: file.type,
+          source: { kind: "storage", storageKey: assetId }, metadata: loaded.metadata,
+        };
+        await addMediaToProjectFolder(projectSession.handle, manifest, asset, file);
+        ensureSmartMatteProject();
+        const registered = await registerProjectMediaAsset(asset, file);
+        ensureSmartMatteProject();
+        revision = registered.revision;
+        currentRefs = { ...currentRefs, [nodeId]: assetId };
+        currentFiles = Object.fromEntries(Object.entries(currentFiles).filter(([id]) => id !== nodeId));
+        onProjectSessionChange?.(projectSession);
+        await onProjectMediaChange?.();
+        ensureSmartMatteProject();
+      } else {
+        currentFiles = { ...currentFiles, [nodeId]: file };
+        currentRefs = Object.fromEntries(Object.entries(currentRefs).filter(([id]) => id !== nodeId));
+      }
+      currentMetadata = { ...currentMetadata, [nodeId]: loaded.metadata };
+      await persistSmartMatte({ sourceHash: hash, pendingRequest: "", pendingSourceHash: "" });
+      const old = mediaRef.current[nodeId];
+      if (old) URL.revokeObjectURL(old.url);
+      mediaRef.current[nodeId] = { ...loaded, projectAssetId: assetId, projectAssetRevision: revision };
+      loadedMatte = undefined;
+      setFiles(currentFiles); setMediaReferences(currentRefs); setMediaMetadata(currentMetadata);
+      setMediaDurations((current) => ({ ...current, [nodeId]: loaded.duration }));
+      setMediaVersion((current) => current + 1);
+      setStatus("Smart Matte saved");
+    } catch (caught) {
+      setError(`${caught instanceof Error ? caught.message : String(caught)}${requestId && requestId !== "submitting" ? ` Request ID: ${requestId}.` : ""} Check the request before submitting again; fal.ai may still charge for a submitted job.`);
+      setStatus("Smart Matte could not be completed");
+    } finally {
+      if (loadedMatte) URL.revokeObjectURL(loadedMatte.url);
+      smartMatteActive.current = false;
+      if (smartMatteMounted.current) setSmartMatteRevision((value) => value + 1);
+      setBusy(false);
     }
   };
   const runTracking = async (resume = false) => {
@@ -1446,7 +1635,15 @@ export default function Compositor({
           {keyRange("edgeChoke", "Choke / expand (pixels)", -20, 20, 0)}
           {keyRange("edgeFeather", "Edge feather (pixels)", 0, 20, 0)}
         </>}
-        {selectedNode.data.kind === "mask" && <>
+        {selectedNode.data.kind === "smart-matte" && <SmartMatteControls params={selectedNode.data.params} busy={busy} disabled={Boolean(selectedNode.data.disabled)}
+          onMode={(mode) => { update("mode", mode); setEditMaskOnSource(true); setPlaying(false); }}
+          onGenerate={() => void runSmartMatte(false)} onResume={() => void runSmartMatte(true)}
+          onClear={() => {
+            if (window.confirm("Clear this saved request? Check fal.ai first. A new request may be billed even if the previous one is still processing.")) {
+              updateParams({ pendingRequest: "", pendingSourceHash: "" });
+            }
+          }} />}
+        {(selectedNode.data.kind === "mask" || selectedNode.data.kind === "smart-matte" && params?.mode === "manual") && <>
           <div className="comp-mask-add">
             {(["rectangle", "ellipse", "polygon", "freehand", "bezier"] as const).map((kind) =>
               <button type="button" key={kind} disabled={busy} onClick={() => addMaskLayer(kind)}>+ {kind}</button>)}
@@ -1682,7 +1879,7 @@ export default function Compositor({
           onActive={setActiveTrackingPoint} onMove={updateTrackerAnchor} />}
         </div>
         <div className="comp-viewer-options">
-          {selectedNode?.data.kind === "mask" && !selectedNode.data.disabled && <label>
+          {(selectedNode?.data.kind === "mask" || selectedNode?.data.kind === "smart-matte" && selectedNode.data.params.mode === "manual") && !selectedNode.data.disabled && <label>
             <input type="checkbox" checked={editMaskOnSource} onChange={(event) => setEditMaskOnSource(event.target.checked)} />
             Edit mask on input (uncheck to preview result)
           </label>}
@@ -1762,7 +1959,7 @@ export default function Compositor({
       >
         <span aria-hidden="true" />
       </div>
-      <section id="comp-graph" className="comp-graph" aria-label="Compositor node graph" style={{ pointerEvents: busy ? "none" : undefined }}>
+      <section id="comp-graph" className="comp-graph" aria-label="Compositor node graph" style={{ pointerEvents: busy ? "none" : undefined }} onWheelCapture={zoomCompositorOnNodeWheel}>
         {!hidden && <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={(instance) => { flowRef.current = instance; }} onNodesChange={(changes) => {
           if (changes.some((change) => change.type === "remove")) setTracks({});
           onNodesChange(changes);

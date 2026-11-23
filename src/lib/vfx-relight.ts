@@ -6,7 +6,7 @@ export const VFX_LIGHTING_REFERENCE_NODE_TYPE = "vfx/lighting-reference";
 export const VFX_VIDEO_REFINE_NODE_TYPE = "video/vfx-relight";
 export const VFX_FRAME_MAX_EDGE = 2048;
 export const VFX_FRAME_MAX_BYTES = 512 * 1024 * 1024;
-export const VFX_REFERENCE_PROVIDERS = ["Atlas Cloud", "fal.ai"] as const;
+export const VFX_REFERENCE_PROVIDERS = ["Atlas Cloud", "fal.ai", "Google Gemini"] as const;
 export type VfxReferenceProvider = (typeof VFX_REFERENCE_PROVIDERS)[number];
 
 export function normalizeVfxFrameTime(value: unknown) {

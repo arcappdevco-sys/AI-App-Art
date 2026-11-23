@@ -98,6 +98,44 @@ test("manual VFX edit nodes receive a prompt and video preview without entering 
   assert.equal(getFirstLastFrameModelOptions(registry).some((option) => option.type === VFX_VIDEO_REFINE_NODE_TYPE), false);
 });
 
+test("Google Gemini image-edit choices receive the extracted frame and prompt", async () => {
+  const lightingReference = registry[VFX_LIGHTING_REFERENCE_NODE_TYPE];
+  const providerParam = lightingReference.params.find((param) => param.key === "provider");
+  const modelParam = lightingReference.params.find((param) => param.key === "model");
+  assert.deepEqual(providerParam.options, ["atlas", "fal", "google"]);
+  assert.deepEqual(modelParam.optionsByParam.values.google, ["Nano Banana", "Nano Banana 2"]);
+
+  const originalFetch = global.fetch;
+  let submittedUrl;
+  let submittedBody;
+  global.fetch = async (url, options = {}) => {
+    submittedUrl = url;
+    submittedBody = JSON.parse(options.body);
+    return Response.json({ image: "data:image/png;base64,ZWQ=" });
+  };
+  try {
+    const result = await lightingReference.execute({
+      inputs: {
+        prompt: "Add a warm key light from camera-left.",
+        image: "data:image/png;base64,Zm9v",
+      },
+      params: { provider: "google", model: "Nano Banana 2" },
+      log: () => {},
+      signal: new AbortController().signal,
+    });
+    assert.equal(submittedUrl, "/api/gemini");
+    assert.deepEqual(submittedBody, {
+      model: "gemini-3.1-flash-image-preview",
+      prompt: "Add a warm key light from camera-left.",
+      images: ["data:image/png;base64,Zm9v"],
+      aspectRatio: "auto",
+    });
+    assert.equal(result.image, "data:image/png;base64,ZWQ=");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("passes uploaded source duration to the VFX edit preflight", async () => {
   const originalExecute = registry[VFX_VIDEO_REFINE_NODE_TYPE].execute;
   let receivedInputs;

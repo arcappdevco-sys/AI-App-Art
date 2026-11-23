@@ -1,7 +1,7 @@
 import type { CurvePoint } from "./compositor-color";
 import type { MaskLayer } from "./compositor-mask";
 
-export type CompositorKind = "media" | "transform" | "key" | "mask" | "color" | "merge" | "tracker" | "viewer";
+export type CompositorKind = "media" | "transform" | "key" | "mask" | "color" | "merge" | "tracker" | "viewer" | "smart-matte";
 export type CompositorParamValue = string | number | boolean | CurvePoint[] | MaskLayer[];
 export type CompositorParams = Record<string, CompositorParamValue>;
 export type TrackPoint = { time: number; x: number; y: number; confidence: number };
@@ -23,7 +23,7 @@ export function nextCompositorTime(current: number, start: number, end: number, 
 
 export function compositorBypassInput(kind: CompositorKind): "image" | "background" | null {
   if (kind === "merge") return "background";
-  if (kind === "transform" || kind === "key" || kind === "mask" || kind === "color") return "image";
+  if (kind === "transform" || kind === "key" || kind === "mask" || kind === "color" || kind === "smart-matte") return "image";
   return null;
 }
 
@@ -34,11 +34,13 @@ export function compositorMediaSource(params: CompositorParams): "file" | "solid
 export const COMPOSITOR_INPUTS: Record<CompositorKind, string[]> = {
   media: [], transform: ["image", "motion"], key: ["image"], mask: ["image", "motion"],
   color: ["image"], merge: ["background", "foreground"], tracker: ["image"], viewer: ["image"],
+  "smart-matte": ["image"],
 };
 
 export const COMPOSITOR_LABELS: Record<CompositorKind, string> = {
   media: "Media", transform: "Transform", key: "Keyer", mask: "Mask",
   color: "Color correction", merge: "Merge", tracker: "Tracker", viewer: "Viewer",
+  "smart-matte": "Smart Matte",
 };
 
 export function compositorImageFit(
@@ -66,6 +68,7 @@ export const COMPOSITOR_DESCRIPTIONS: Record<CompositorKind, string> = {
   merge: "Composite a foreground over a background and control its opacity.",
   tracker: "Track image features and send motion data to a Mask or Transform node.",
   viewer: "Preview the output of the connected node graph.",
+  "smart-matte": "Generate a foreground matte from a connected Media video, or draw an offline mask.",
 };
 
 export const COMPOSITOR_DEFAULTS: Record<CompositorKind, CompositorParams> = {
@@ -73,6 +76,7 @@ export const COMPOSITOR_DEFAULTS: Record<CompositorKind, CompositorParams> = {
   mask: { layers: [], invert: false },
   color: { brightness: 0, contrast: 100, saturation: 100 }, merge: { opacity: 100 },
   tracker: { x: 320, y: 180 }, viewer: {},
+  "smart-matte": { mode: "auto", layers: [], invert: false },
 };
 
 export type ViewerTransform = { zoom: number; x: number; y: number };
