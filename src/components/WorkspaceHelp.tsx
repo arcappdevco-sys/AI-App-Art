@@ -18,6 +18,7 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
     title: "Workflow",
     steps: [
       "Add input and model nodes from the library, then connect their ports.",
+      "Use Auto layout to arrange connected workflows and group related nodes.",
       "Configure nodes and check the run mode and cost estimate before running; provider usage may be billed.",
       "Camera-track JSON is prompt guidance only; it does not lock a model to exact 3D motion.",
     ],
@@ -26,6 +27,7 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
     title: "Video editor",
     steps: [
       "Add a shared workflow video with +, or upload video and audio in Footage.",
+      "Drag the divider below the viewer to resize the preview and timeline panels.",
       "Arrange and trim clips; choose Transition, then click between clips to add a dissolve.",
       "Export MOV or MP4 when ready. Server export requires FFmpeg with libx264.",
     ],
@@ -33,6 +35,7 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
   compositor: {
     title: "Compositor",
     steps: [
+      "Drag the divider below the Viewer to resize it and the node graph.",
       "Start with a template or add nodes, then connect their image ports.",
       "Choose media in a Media node and preview the result in Viewer.",
       "Hover over a node for a short description. Connect Tracker motion to a Mask or Transform when needed.",

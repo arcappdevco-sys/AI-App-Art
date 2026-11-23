@@ -1,6 +1,6 @@
 "use client";
 import { createContext, Fragment, useContext, useState, useSyncExternalStore } from "react";
-import { Handle, Position, useEdges, useNodesData, useReactFlow, type NodeProps } from "@xyflow/react";
+import { Handle, NodeResizeControl, Position, useEdges, useNodesData, useReactFlow, type NodeProps } from "@xyflow/react";
 import { registry, PORT_COLORS } from "@/lib/registry";
 import {
   addFileToEditorUploads,
@@ -274,7 +274,7 @@ function Media({ value, type: declaredType, atlasVideo, previewLabel }: {
   );
 }
 
-export default function WorkflowNode({ id, data }: NodeProps) {
+export default function WorkflowNode({ id, data, selected }: NodeProps) {
   const { addEdges, addNodes, deleteElements, getEdges, getNode, getNodes, updateNodeData } = useReactFlow();
   const runControl = useContext(WorkflowRunContext);
   const renderedEdges = useEdges();
@@ -1485,7 +1485,20 @@ export default function WorkflowNode({ id, data }: NodeProps) {
   };
 
   return (
-    <div className="ff-node" data-status={d.status}>
+    <>
+    {selected && (
+      <NodeResizeControl
+        position="bottom-right"
+        minWidth={250}
+        minHeight={isPromptNode ? 220 : 160}
+        maxWidth={900}
+        maxHeight={1200}
+        className="ff-node-resize-control"
+      >
+        <span className="ff-node-resize-glyph" title="Drag to resize node" aria-hidden="true" />
+      </NodeResizeControl>
+    )}
+    <div className={`ff-node${isPromptNode ? " ff-node-prompt" : ""}`} data-status={d.status}>
       <div className="ff-head">
         <span className="ff-node-label">{d.title ?? def.label}</span>
         {d.status && d.status !== "idle" && (
@@ -1951,7 +1964,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
         if (isKling && !klingIsMotion && ["character_orientation", "keep_original_audio"].includes(param.key)) return false;
         return true;
       }).map((p) => (
-        <label className={`ff-param${p.kind === "toggle" ? " ff-param-toggle" : ""}`} key={p.key}>
+        <label className={`ff-param${p.kind === "toggle" ? " ff-param-toggle" : ""}${isPromptNode && p.key === "text" ? " ff-prompt-editor-param" : ""}`} key={p.key}>
           <span>
             {p.key === "duration" && isOmni && omniTask === OMNI_TASKS["Extend video"]
               ? "Extension length (seconds)"
@@ -2015,7 +2028,7 @@ export default function WorkflowNode({ id, data }: NodeProps) {
               );
             })()
           ) : p.kind === "textarea" ? (
-            <textarea className="nodrag nowheel" rows={3} value={d.params[p.key] ?? ""}
+            <textarea className={`nodrag nowheel${isPromptNode && p.key === "text" ? " ff-prompt-editor" : ""}`} rows={3} value={d.params[p.key] ?? ""}
               onChange={(e) => setParam(p.key, e.target.value)} />
           ) : p.kind === "number" ? (
             <input className="nodrag" type={isKling && p.key === "cfg_scale" ? "range" : "number"}
@@ -2201,5 +2214,6 @@ export default function WorkflowNode({ id, data }: NodeProps) {
       )}
       {d.log ? <div className="ff-log">{d.log}</div> : null}
     </div>
+    </>
   );
 }

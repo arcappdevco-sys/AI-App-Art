@@ -46,7 +46,7 @@ export function normalizeCanvasGroups(value: unknown): CanvasGroup[] {
   });
 }
 
-function nodeSize(node: Node) {
+export function getNodeDimensions(node: Node) {
   return {
     width: node.measured?.width ?? node.width ?? node.initialWidth ?? 0,
     height: node.measured?.height ?? node.height ?? node.initialHeight ?? 0,
@@ -55,7 +55,7 @@ function nodeSize(node: Node) {
 
 export function nodesInsideGroup(group: CanvasGroup, nodes: Node[]) {
   return nodes.filter((node) => {
-    const { width, height } = nodeSize(node);
+    const { width, height } = getNodeDimensions(node);
     const x = node.position.x + width / 2;
     const y = node.position.y + height / 2;
     return x >= group.x && x <= group.x + group.width && y >= group.y && y <= group.y + group.height;
@@ -66,8 +66,8 @@ export function groupBoundsForNodes(nodes: Node[]) {
   if (!nodes.length) return null;
   const left = Math.min(...nodes.map((node) => node.position.x));
   const top = Math.min(...nodes.map((node) => node.position.y));
-  const right = Math.max(...nodes.map((node) => node.position.x + nodeSize(node).width));
-  const bottom = Math.max(...nodes.map((node) => node.position.y + nodeSize(node).height));
+  const right = Math.max(...nodes.map((node) => node.position.x + getNodeDimensions(node).width));
+  const bottom = Math.max(...nodes.map((node) => node.position.y + getNodeDimensions(node).height));
   return {
     x: left - 40, y: top - 70,
     width: Math.max(GROUP_MIN_WIDTH, right - left + 80),

@@ -1,6 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  useCallback, useEffect, useEffectEvent, useRef, useState,
+  type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   ReactFlow, Background, Controls, Handle, Position, addEdge, useEdgesState, useNodesState,
   type Connection, type Edge, type NodeProps, type ReactFlowInstance,
@@ -55,7 +58,23 @@ type HistorySnapshot = {
 };
 const HISTORY_LIMIT = 50;
 const WIDTH = 640, HEIGHT = 360;
+const VIEWER_MIN_HEIGHT = 250;
+const GRAPH_MIN_HEIGHT = 200;
+const VIEWER_DIVIDER_HEIGHT = 12;
+const COMPOSITOR_SPLIT_MIN_HEIGHT = VIEWER_MIN_HEIGHT + GRAPH_MIN_HEIGHT;
 const labels = COMPOSITOR_LABELS;
+
+type ViewerResizeDrag = {
+  pointerId: number;
+  startClientY: number;
+  startHeight: number;
+  availableHeight: number;
+};
+
+function getViewerFlexRatio(height: number, availableHeight: number) {
+  const flexibleHeight = Math.max(1, availableHeight - COMPOSITOR_SPLIT_MIN_HEIGHT);
+  return Math.min(1, Math.max(0, (height - VIEWER_MIN_HEIGHT) / flexibleHeight));
+}
 
 function CompNodeView({ data }: NodeProps<CompNode>) {
   const inputs = COMPOSITOR_INPUTS[data.kind];
@@ -338,6 +357,9 @@ export default function Compositor({
   const [mediaVersion, setMediaVersion] = useState(0);
   const [templateVersion, setTemplateVersion] = useState(0);
   const [mediaDurations, setMediaDurations] = useState<Record<string, number>>({});
+  const [viewerRatio, setViewerRatio] = useState(0.55);
+  const [viewerAvailableHeight, setViewerAvailableHeight] = useState(COMPOSITOR_SPLIT_MIN_HEIGHT);
+  const [resizingViewer, setResizingViewer] = useState(false);
   const projectHandle = projectSession?.handle ?? null;
   const projectId = projectSession?.projectId ?? null;
   const [viewerTransform, setViewerTransform] = useState(DEFAULT_VIEWER_TRANSFORM);
@@ -357,7 +379,11 @@ export default function Compositor({
   const mediaRef = useRef<Record<string, Media>>({});
   const previewRef = useRef<HTMLCanvasElement>(null);
   const channelRef = useRef<HTMLCanvasElement>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const viewerPanelRef = useRef<HTMLElement>(null);
+  const viewerDividerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const viewerResizeRef = useRef<ViewerResizeDrag | null>(null);
   const panRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const drawing = useRef<Promise<void>>(Promise.resolve());
@@ -411,6 +437,88 @@ export default function Compositor({
   const durationFor = (id: string) => graphDuration(id, nodes, edges, mediaDurations);
   const duration = Math.max(viewer ? durationFor(viewer.id) : 0, trackerInput ? durationFor(trackerInput.source) : 0);
   const range = compositorRange(marks, duration);
+
+  const measureViewerAvailableHeight = useCallback(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return COMPOSITOR_SPLIT_MIN_HEIGHT;
+    const dividerHeight = viewerDividerRef.current?.getBoundingClientRect().height || VIEWER_DIVIDER_HEIGHT;
+    return Math.max(COMPOSITOR_SPLIT_MIN_HEIGHT, workspace.clientHeight - dividerHeight);
+  }, []);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const updateAvailableHeight = () => {
+      const next = measureViewerAvailableHeight();
+      setViewerAvailableHeight((current) => current === next ? current : next);
+    };
+    const observer = new ResizeObserver(updateAvailableHeight);
+    observer.observe(workspace);
+    updateAvailableHeight();
+    return () => observer.disconnect();
+  }, [measureViewerAvailableHeight]);
+
+  const handleViewerDividerPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || busy) return;
+    const viewerPanel = viewerPanelRef.current;
+    if (!viewerPanel) return;
+    event.preventDefault();
+    viewerResizeRef.current = {
+      pointerId: event.pointerId,
+      startClientY: event.clientY,
+      startHeight: viewerPanel.getBoundingClientRect().height,
+      availableHeight: measureViewerAvailableHeight(),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResizingViewer(true);
+  };
+
+  const handleViewerDividerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = viewerResizeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const maxHeight = Math.max(VIEWER_MIN_HEIGHT, drag.availableHeight - GRAPH_MIN_HEIGHT);
+    const height = Math.min(maxHeight, Math.max(
+      VIEWER_MIN_HEIGHT,
+      drag.startHeight + event.clientY - drag.startClientY,
+    ));
+    setViewerRatio(getViewerFlexRatio(height, drag.availableHeight));
+  };
+
+  const finishViewerDividerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (viewerResizeRef.current?.pointerId !== event.pointerId) return;
+    viewerResizeRef.current = null;
+    setResizingViewer(false);
+  };
+
+  const handleViewerDividerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (busy) return;
+    const availableHeight = measureViewerAvailableHeight();
+    const viewerHeight = viewerPanelRef.current?.getBoundingClientRect().height
+      ?? VIEWER_MIN_HEIGHT + viewerRatio * Math.max(0, availableHeight - COMPOSITOR_SPLIT_MIN_HEIGHT);
+    const maxHeight = Math.max(VIEWER_MIN_HEIGHT, availableHeight - GRAPH_MIN_HEIGHT);
+    let nextHeight: number;
+    switch (event.key) {
+      case "ArrowUp":
+        nextHeight = viewerHeight - 24;
+        break;
+      case "ArrowDown":
+        nextHeight = viewerHeight + 24;
+        break;
+      case "Home":
+        nextHeight = VIEWER_MIN_HEIGHT;
+        break;
+      case "End":
+        nextHeight = maxHeight;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    setViewerRatio(getViewerFlexRatio(
+      Math.min(maxHeight, Math.max(VIEWER_MIN_HEIGHT, nextHeight)),
+      availableHeight,
+    ));
+  };
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -1196,6 +1304,12 @@ export default function Compositor({
         value={number(params ?? {}, key, fallback)} onChange={(event) => update(key, Number(event.target.value))} />
     </label>
   );
+  const viewerFlexibleHeight = Math.max(0, viewerAvailableHeight - COMPOSITOR_SPLIT_MIN_HEIGHT);
+  const currentViewerHeight = VIEWER_MIN_HEIGHT + viewerRatio * viewerFlexibleHeight;
+  const viewerMinValue = Math.round(VIEWER_MIN_HEIGHT / viewerAvailableHeight * 100);
+  const viewerMaxValue = Math.round(
+    (viewerAvailableHeight - GRAPH_MIN_HEIGHT) / viewerAvailableHeight * 100,
+  );
   return <main className="comp-layout" hidden={hidden} onKeyDownCapture={(event) => {
     if (busy || event.ctrlKey || event.metaKey || event.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
     const target = event.target;
@@ -1488,8 +1602,10 @@ export default function Compositor({
         </details>
       </section>
     </aside>
-    <div className="comp-workspace">
-      <section className="comp-viewer">
+    <div className="comp-workspace" ref={workspaceRef} style={{
+      gridTemplateRows: `minmax(${VIEWER_MIN_HEIGHT}px, ${currentViewerHeight}px) ${VIEWER_DIVIDER_HEIGHT}px minmax(${GRAPH_MIN_HEIGHT}px, 1fr)`,
+    }}>
+      <section id="comp-viewer" className="comp-viewer" ref={viewerPanelRef}>
         <div className="comp-viewer-header"><strong>Viewer</strong><span>{editingMask ? "Mask input · editing preview" : editingTracker && trackerInput ? "Tracker input · tracking preview" : "640 × 360 · silent preview"}</span></div>
         <div ref={viewportRef} className={`comp-viewer-viewport${panning ? " is-panning" : ""}`}
           aria-label="Viewer navigation" onPointerDownCapture={(event) => {
@@ -1601,7 +1717,28 @@ export default function Compositor({
         {error && <p className="comp-error" role="alert">{error}</p>}
         {renderError && <p className="comp-error" role="alert">{renderError}</p>}
       </section>
-      <section className="comp-graph" aria-label="Compositor node graph" style={{ pointerEvents: busy ? "none" : undefined }}>
+      <div
+        ref={viewerDividerRef}
+        className={`comp-viewer-divider${resizingViewer ? " comp-viewer-divider-active" : ""}`}
+        role="separator"
+        aria-label="Resize compositor viewer"
+        aria-orientation="horizontal"
+        aria-controls="comp-viewer comp-graph"
+        aria-valuemin={viewerMinValue}
+        aria-valuemax={viewerMaxValue}
+        aria-valuenow={Math.round(currentViewerHeight / viewerAvailableHeight * 100)}
+        aria-valuetext={`${Math.round(currentViewerHeight / viewerAvailableHeight * 100)}% viewer height`}
+        aria-disabled={busy}
+        tabIndex={busy ? -1 : 0}
+        onPointerDown={handleViewerDividerPointerDown}
+        onPointerMove={handleViewerDividerPointerMove}
+        onPointerUp={finishViewerDividerResize}
+        onPointerCancel={finishViewerDividerResize}
+        onKeyDown={handleViewerDividerKeyDown}
+      >
+        <span aria-hidden="true" />
+      </div>
+      <section id="comp-graph" className="comp-graph" aria-label="Compositor node graph" style={{ pointerEvents: busy ? "none" : undefined }}>
         {!hidden && <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={(instance) => { flowRef.current = instance; }} onNodesChange={(changes) => {
           if (changes.some((change) => change.type === "remove")) setTracks({});
           onNodesChange(changes);

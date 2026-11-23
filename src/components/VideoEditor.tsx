@@ -93,6 +93,10 @@ type EditorTool = "select" | "razor" | "transition";
 type KeyerViewChannel = "rgb" | "red" | "green" | "blue" | "alpha";
 type CompositeBackgroundMode = "checkerboard" | "color" | "image";
 const EDITOR_HISTORY_LIMIT = 50;
+const PREVIEW_MIN_HEIGHT = 190;
+const TIMELINE_MIN_HEIGHT = 250;
+const PREVIEW_DIVIDER_HEIGHT = 12;
+const PREVIEW_FLEX_HEIGHT = PREVIEW_MIN_HEIGHT + TIMELINE_MIN_HEIGHT;
 const COMPOSITE_BACKGROUND_PRESETS = [
   { name: "Midnight", color: "#0c1112" },
   { name: "Ocean", color: "#0b141b" },
@@ -150,6 +154,18 @@ type PreviewPanDrag = {
   startX: number;
   startY: number;
 };
+
+type PreviewResizeDrag = {
+  pointerId: number;
+  startClientY: number;
+  startHeight: number;
+  availableHeight: number;
+};
+
+function getPreviewFlexRatio(height: number, availableHeight: number) {
+  const flexibleHeight = Math.max(1, availableHeight - PREVIEW_FLEX_HEIGHT);
+  return Math.min(1, Math.max(0, (height - PREVIEW_MIN_HEIGHT) / flexibleHeight));
+}
 
 function getClipTimelineOffset(clips: TimelineClip[], transitions: TimelineTransition[], clipId: string) {
   const index = clips.findIndex((clip) => clip.id === clipId);
@@ -397,6 +413,9 @@ export default function VideoEditor({
   const [previewZoom, setPreviewZoom] = useState(1);
   const [previewPan, setPreviewPan] = useState<PreviewPanPosition>({ clipId: "", x: 0, y: 0 });
   const [isPreviewPanning, setIsPreviewPanning] = useState(false);
+  const [previewRatio, setPreviewRatio] = useState(0.54);
+  const [previewAvailableHeight, setPreviewAvailableHeight] = useState(PREVIEW_MIN_HEIGHT + TIMELINE_MIN_HEIGHT);
+  const [isResizingPreview, setIsResizingPreview] = useState(false);
   const [isMatteEditActive, setIsMatteEditActive] = useState(false);
   const [keyerViewChannel, setKeyerViewChannel] = useState<KeyerViewChannel>("rgb");
   const [keyerColorPickerClipId, setKeyerColorPickerClipId] = useState("");
@@ -415,7 +434,9 @@ export default function VideoEditor({
   const previewRef = useRef<HTMLVideoElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const workflowClipUrls = useRef(new Set<string>());
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const previewContainerRef = useRef<HTMLDivElement>(null);
+  const previewDividerRef = useRef<HTMLDivElement>(null);
   const keyerCanvasRef = useRef<HTMLCanvasElement>(null);
   const compositeBackgroundInputRef = useRef<HTMLInputElement>(null);
   const compositeBackgroundLoadId = useRef(0);
@@ -429,6 +450,7 @@ export default function VideoEditor({
   const reorderDrag = useRef<ClipReorderDrag | null>(null);
   const transitionResizeDrag = useRef<TransitionResizeDrag | null>(null);
   const previewPanDrag = useRef<PreviewPanDrag | null>(null);
+  const previewResizeDrag = useRef<PreviewResizeDrag | null>(null);
   const selectedClipIdRef = useRef("");
   const suppressClipClick = useRef(false);
   const uploadsHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -1041,6 +1063,43 @@ export default function VideoEditor({
     setPreviewZoom(nextZoom);
   }, [getPreviewPanBounds]);
 
+  const measurePreviewAvailableHeight = useCallback(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return PREVIEW_FLEX_HEIGHT;
+    const styles = window.getComputedStyle(workspace);
+    const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+    const dividerHeight = previewDividerRef.current?.getBoundingClientRect().height || PREVIEW_DIVIDER_HEIGHT;
+    return Math.max(
+      PREVIEW_FLEX_HEIGHT,
+      workspace.clientHeight - verticalPadding - dividerHeight,
+    );
+  }, []);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const updateAvailableHeight = () => {
+      const next = measurePreviewAvailableHeight();
+      setPreviewAvailableHeight((current) => current === next ? current : next);
+    };
+    const observer = new ResizeObserver(updateAvailableHeight);
+    observer.observe(workspace);
+    updateAvailableHeight();
+    return () => observer.disconnect();
+  }, [measurePreviewAvailableHeight]);
+
+  useEffect(() => {
+    const preview = previewContainerRef.current;
+    if (!preview) return;
+    const observer = new ResizeObserver(() => {
+      setPreviewPan((current) => current.clipId === selectedClip?.id
+        ? { ...current, ...clampPreviewPan(current.x, current.y) }
+        : current);
+    });
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, [clampPreviewPan, selectedClip?.id]);
+
   useEffect(() => {
     selectedClipIdRef.current = selectedClipId;
   }, [selectedClipId]);
@@ -1077,6 +1136,68 @@ export default function VideoEditor({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+  };
+
+  const handlePreviewDividerPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || isExporting) return;
+    const preview = previewContainerRef.current;
+    if (!preview) return;
+    event.preventDefault();
+    previewResizeDrag.current = {
+      pointerId: event.pointerId,
+      startClientY: event.clientY,
+      startHeight: preview.getBoundingClientRect().height,
+      availableHeight: measurePreviewAvailableHeight(),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setIsResizingPreview(true);
+  };
+
+  const handlePreviewDividerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = previewResizeDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const maxHeight = Math.max(PREVIEW_MIN_HEIGHT, drag.availableHeight - TIMELINE_MIN_HEIGHT);
+    const height = Math.min(maxHeight, Math.max(
+      PREVIEW_MIN_HEIGHT,
+      drag.startHeight + event.clientY - drag.startClientY,
+    ));
+    setPreviewRatio(getPreviewFlexRatio(height, drag.availableHeight));
+  };
+
+  const finishPreviewDividerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (previewResizeDrag.current?.pointerId !== event.pointerId) return;
+    previewResizeDrag.current = null;
+    setIsResizingPreview(false);
+  };
+
+  const handlePreviewDividerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (isExporting) return;
+    const availableHeight = measurePreviewAvailableHeight();
+    const previewHeight = previewContainerRef.current?.getBoundingClientRect().height
+      ?? previewRatio * availableHeight;
+    const maxHeight = Math.max(PREVIEW_MIN_HEIGHT, availableHeight - TIMELINE_MIN_HEIGHT);
+    let nextHeight: number;
+    switch (event.key) {
+      case "ArrowUp":
+        nextHeight = previewHeight - 24;
+        break;
+      case "ArrowDown":
+        nextHeight = previewHeight + 24;
+        break;
+      case "Home":
+        nextHeight = PREVIEW_MIN_HEIGHT;
+        break;
+      case "End":
+        nextHeight = maxHeight;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    setPreviewRatio(getPreviewFlexRatio(
+      Math.min(maxHeight, Math.max(PREVIEW_MIN_HEIGHT, nextHeight)),
+      availableHeight,
+    ));
   };
 
   useEffect(() => {
@@ -2534,6 +2655,13 @@ export default function VideoEditor({
     }
   };
 
+  const previewFlexibleHeight = Math.max(0, previewAvailableHeight - PREVIEW_FLEX_HEIGHT);
+  const currentPreviewHeight = PREVIEW_MIN_HEIGHT + previewRatio * previewFlexibleHeight;
+  const previewMinValue = Math.round(PREVIEW_MIN_HEIGHT / previewAvailableHeight * 100);
+  const previewMaxValue = Math.round(
+    (previewAvailableHeight - TIMELINE_MIN_HEIGHT) / previewAvailableHeight * 100,
+  );
+
   return (
     <section className="ff-editor-layout" hidden={hidden} onKeyDown={handleEditorKeyDown} onClick={() => clipContextMenu && setClipContextMenu(null)}>
       <aside className="ff-editor-sidebar">
@@ -2640,8 +2768,15 @@ export default function VideoEditor({
         </p>
       </aside>
 
-      <div className="ff-editor-workspace">
+      <div
+        className="ff-editor-workspace"
+        ref={workspaceRef}
+        style={{
+          "--ff-editor-preview-height": `${currentPreviewHeight}px`,
+        } as CSSProperties}
+      >
         <div
+          id="ff-editor-preview"
           className={`ff-editor-preview${showKeyerPreview ? " ff-editor-key-preview" : ""}${isPreviewPanning ? " ff-editor-preview-panning" : ""}`}
           ref={previewContainerRef}
           style={compositePreviewStyle}
@@ -2792,7 +2927,29 @@ export default function VideoEditor({
           )}
         </div>
 
-        <div className="ff-editor-timeline">
+        <div
+          ref={previewDividerRef}
+          className={`ff-editor-preview-divider${isResizingPreview ? " ff-editor-preview-divider-active" : ""}`}
+          role="separator"
+          aria-label="Resize video preview"
+          aria-orientation="horizontal"
+          aria-controls="ff-editor-preview ff-editor-timeline"
+          aria-valuemin={previewMinValue}
+          aria-valuemax={previewMaxValue}
+          aria-valuenow={Math.round(currentPreviewHeight / previewAvailableHeight * 100)}
+          aria-valuetext={`${Math.round(currentPreviewHeight / previewAvailableHeight * 100)}% viewer height`}
+          aria-disabled={isExporting}
+          tabIndex={isExporting ? -1 : 0}
+          onPointerDown={handlePreviewDividerPointerDown}
+          onPointerMove={handlePreviewDividerPointerMove}
+          onPointerUp={finishPreviewDividerResize}
+          onPointerCancel={finishPreviewDividerResize}
+          onKeyDown={handlePreviewDividerKeyDown}
+        >
+          <span aria-hidden="true" />
+        </div>
+
+        <div id="ff-editor-timeline" className="ff-editor-timeline">
           <div className="ff-editor-timeline-heading">
             <div>
               <span className="ff-editor-sequence-label">Sequence</span>

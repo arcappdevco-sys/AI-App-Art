@@ -86,6 +86,7 @@ import CanvasGroups from "@/components/CanvasGroups";
 import { ExampleDragPreview, useExampleDrag } from "@/components/ExampleDrag";
 import OllamaChat from "@/components/OllamaChat";
 import { createCanvasGroup, groupBoundsForNodes, normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
+import { autoLayoutWorkflow } from "@/lib/workflow-layout";
 
 const nodeTypes = { workflow: WorkflowNode };
 const storyboardVideoModelOptions = getImageToVideoModelOptions(registry);
@@ -203,10 +204,17 @@ function normalizeWorkflow(value: unknown): Pick<SavedWorkflow, "name" | "nodes"
     const isWanAutoImage = type === "input/image" && typeof autoOwner === "string" && rawWanNodeIds.has(autoOwner);
     const isMiniMaxAutoImage = type === "input/image" && typeof autoOwner === "string" && rawMiniMaxNodeIds.has(autoOwner);
     const isFlux3AutoImage = type === "input/image" && typeof autoOwner === "string" && rawFlux3NodeIds.has(autoOwner);
+    const minNodeHeight = type === "input/prompt" ? 220 : 160;
+    const width = typeof item.width === "number" && Number.isFinite(item.width)
+      && item.width >= 250 && item.width <= 900 ? item.width : undefined;
+    const height = typeof item.height === "number" && Number.isFinite(item.height)
+      && item.height >= minNodeHeight && item.height <= 1200 ? item.height : undefined;
     return {
       id: item.id,
       type: "workflow",
       position: item.position as Node["position"],
+      ...(width === undefined ? {} : { width }),
+      ...(height === undefined ? {} : { height }),
       data: {
         ...data,
         type,
@@ -974,6 +982,22 @@ export default function Page() {
     setShowValidation(false);
     setValidationIssues([]);
     cache.current.clear();
+  };
+
+  const autoLayout = () => {
+    if (!nodes.length) return;
+    const layout = autoLayoutWorkflow(nodes, edges, groups, (node) => {
+      const type = (node.data as { type?: string }).type;
+      if (!type || type.startsWith("input/") || type.startsWith("output/")) return undefined;
+      return registry[type]?.label ?? type;
+    });
+    setNodes(layout.nodes);
+    setGroups(layout.groups);
+    setStorageStatus("Canvas organized");
+    setStorageError("");
+    window.requestAnimationFrame(() => {
+      groupFlowRef.current?.fitView({ duration: 300, padding: 0.2 });
+    });
   };
 
   useEffect(() => {
@@ -1889,6 +1913,7 @@ export default function Page() {
             <>
           <button className="ff-toolbar-button" onClick={createWorkflow} disabled={!storageReady || isRunning}>New</button>
           <button className="ff-toolbar-button" onClick={deleteWorkflow} disabled={!storageReady || isRunning || workflows.length <= 1}>Delete</button>
+          <button className="ff-toolbar-button" onClick={autoLayout} disabled={!storageReady || isRunning || nodes.length === 0} title="Arrange connected nodes and group workflows">Auto layout</button>
           <button className="ff-toolbar-button" onClick={clearCanvas} disabled={!storageReady || isRunning}>Clear</button>
           <button className="ff-toolbar-button" onClick={() => saveWorkflowLocally(true)} disabled={!storageReady}>Save</button>
           <button className="ff-toolbar-button" onClick={exportJSON} disabled={!storageReady}>Export</button>
@@ -2201,7 +2226,8 @@ export default function Page() {
             ));
           }}
           onConnect={onConnect} isValidConnection={isValidConnection}
-          colorMode={uiTheme === "light" ? "light" : "dark"} fitView deleteKeyCode={["Backspace", "Delete"]}
+          colorMode={uiTheme === "light" ? "light" : "dark"} fitView
+          minZoom={0.001} zoomOnScroll deleteKeyCode={["Backspace", "Delete"]}
         >
           <Background gap={28} size={1} />
           <CanvasGroups key={activeWorkflowId} groups={groups} setGroups={setGroups} canvasRef={groupCanvasRef} active={activeView === "workflow"} />

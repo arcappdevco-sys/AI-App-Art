@@ -1278,12 +1278,74 @@ body {
 }
 
 .ff-node {
-  width: 250px;
+  width: 100%;
+  min-width: 250px;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
   padding-bottom: 8px;
   border: 1px solid var(--line-strong);
   border-radius: 9px;
   background: var(--node);
   box-shadow: 0 10px 28px #0003;
+}
+
+.ff-node-prompt {
+  display: flex;
+  flex-direction: column;
+}
+
+.ff-node-prompt > * {
+  flex-shrink: 0;
+}
+
+.ff-node-prompt .ff-prompt-editor-param {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ff-node-prompt .ff-prompt-editor-param > span {
+  flex: 0 0 auto;
+}
+
+.ff-node-prompt .ff-prompt-editor {
+  flex: 1 1 auto;
+  min-height: 100px;
+  resize: none;
+}
+
+.ff-node .ff-port .react-flow__handle-left {
+  left: 6px;
+}
+
+.ff-node .ff-port .react-flow__handle-right {
+  right: 6px;
+  left: auto;
+}
+
+.ff-node-resize-control {
+  z-index: 4;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 2px solid var(--panel);
+  border-radius: 4px;
+  background: var(--accent);
+  opacity: 0.9;
+}
+
+.ff-node-resize-control:hover {
+  opacity: 1;
+}
+
+.ff-node-resize-glyph {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-right: 1px solid var(--accent-contrast);
+  border-bottom: 1px solid var(--accent-contrast);
 }
 
 .ff-node[data-status="running"] {
@@ -1792,7 +1854,7 @@ body {
   border: 1px solid var(--line-control); border-radius: 4px; padding: 5px;
 }
 .comp-inspector select, .comp-viewer-options select { color: var(--text); background: var(--surface-deep); border: 1px solid var(--line-control); border-radius: 4px; padding: 5px; }
-.comp-workspace { display: grid; grid-template-rows: minmax(250px, 55%) minmax(200px, 45%); min-height: 0; min-width: 0; }
+.comp-workspace { display: grid; grid-template-rows: minmax(250px, 55%) 12px minmax(200px, 1fr); min-height: 0; min-width: 0; }
 .comp-viewer { min-height: 0; display: flex; flex-direction: column; padding: 10px; gap: 7px; background: var(--surface-deep); }
 .comp-viewer-header { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
 .comp-viewer-viewport { flex: 1; min-height: 0; min-width: 0; overflow: hidden; display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); place-items: center; }
@@ -1829,7 +1891,7 @@ body {
 @media (max-width: 680px) {
   .comp-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(400px, 1fr); overflow: auto; }
   .comp-sidebar { max-height: 220px; border-right: 0; }
-  .comp-workspace { min-height: 650px; grid-template-rows: minmax(420px, 1fr) minmax(200px, 0.6fr); }
+  .comp-workspace { min-height: 650px; grid-template-rows: minmax(250px, 55%) 12px minmax(200px, 1fr); }
 }
 
 .ff-editor-sidebar {
@@ -2027,10 +2089,49 @@ body {
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-rows: minmax(190px, 1fr) minmax(250px, 0.85fr);
-  gap: 12px;
+  grid-template-rows:
+    minmax(190px, var(--ff-editor-preview-height, 1fr))
+    12px
+    minmax(250px, 1fr);
+  gap: 0;
   overflow: auto;
   padding: 14px;
+}
+
+.ff-editor-preview-divider,
+.comp-viewer-divider {
+  display: grid;
+  min-width: 0;
+  min-height: 12px;
+  place-items: center;
+  cursor: row-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.ff-editor-preview-divider > span,
+.comp-viewer-divider > span {
+  width: 48px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line-control);
+  transition: width 120ms ease, background 120ms ease;
+}
+
+.ff-editor-preview-divider:hover > span,
+.ff-editor-preview-divider:focus-visible > span,
+.ff-editor-preview-divider-active > span,
+.comp-viewer-divider:hover > span,
+.comp-viewer-divider:focus-visible > span,
+.comp-viewer-divider-active > span {
+  width: 64px;
+  background: var(--accent);
+}
+
+.ff-editor-preview-divider:focus-visible,
+.comp-viewer-divider:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .ff-editor-preview {
@@ -3457,7 +3558,10 @@ body {
   }
 
   .ff-editor-workspace {
-    grid-template-rows: minmax(190px, 38dvh) minmax(250px, 1fr);
+    grid-template-rows:
+      minmax(190px, var(--ff-editor-preview-height, 1fr))
+      12px
+      minmax(250px, 1fr);
     overflow: visible;
     padding: 10px;
   }
