@@ -362,7 +362,7 @@ test("add-node options cover every template node, including named media inputs",
 });
 
 test("templates create connected, typed, independent node graphs", () => {
-  assert.deepEqual(COMPOSITOR_TEMPLATES.map((item) => item.id), ["color", "key", "mask", "tracking"]);
+  assert.deepEqual(COMPOSITOR_TEMPLATES.map((item) => item.id), ["color", "key", "mask", "smart-matte", "tracking"]);
   let sequence = 0;
   for (const template of COMPOSITOR_TEMPLATES) {
     const graph = createCompositorTemplate(template.id, () => `id-${++sequence}`);
@@ -437,10 +437,30 @@ test("tracking template shows background until the track is ready", () => {
   assert.equal(reachesCompositorNode(edges, byKind("merge").id, byKind("viewer").id), false);
 });
 
+test("Smart Matte template connects the original Media directly to the matte and Viewer", () => {
+  let id = 0;
+  const graph = createCompositorTemplate("smart-matte", () => `id-${++id}`);
+  const source = graph.nodes.find((node) => node.data.kind === "media");
+  const matte = graph.nodes.find((node) => node.data.kind === "smart-matte");
+  const viewer = graph.nodes.find((node) => node.data.kind === "viewer");
+  assert.equal(graph.nodes.length, 3);
+  assert.equal(matte.data.params.mode, "auto");
+  assert.ok(graph.edges.some((edge) => edge.source === source.id && edge.target === matte.id && edge.targetHandle === "image"));
+  assert.ok(graph.edges.some((edge) => edge.source === matte.id && edge.target === viewer.id && edge.targetHandle === "image"));
+
+  const current = createCompositorTemplate("color", () => `id-${++id}`);
+  const existingViewer = current.nodes.find((node) => node.data.kind === "viewer");
+  const added = appendCompositorTemplate(current.nodes, current.edges, graph);
+  assert.equal(added.nodes.filter((node) => node.data.kind === "viewer").length, 1);
+  assert.ok(added.edges.some((edge) => edge.source === matte.id && edge.target === existingViewer.id && edge.targetHandle === "image"));
+  assert.equal(added.selectedId, matte.id);
+});
+
 test("each template includes correctly connected media inputs", () => {
   const expected = {
     color: ["Media->color.image"],
     mask: ["Media->mask.image"],
+    "smart-matte": ["Media->smart-matte.image"],
     key: ["Background->merge.background", "Foreground->key.image"],
     tracking: ["Background video->tracker.image", "Background video->merge.background",
       "Background video->viewer.image", "Overlay image->transform.image"],

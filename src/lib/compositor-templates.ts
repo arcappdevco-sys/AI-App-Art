@@ -3,7 +3,7 @@ import { COMPOSITOR_DEFAULTS, COMPOSITOR_LABELS, type CompositorKind, type Compo
 
 export type CompositorNodeData = { kind: CompositorKind; params: CompositorParams; label: string; disabled?: boolean };
 export type CompositorNode = Node<CompositorNodeData>;
-export type TemplateId = "color" | "key" | "mask" | "tracking";
+export type TemplateId = "color" | "key" | "mask" | "tracking" | "smart-matte";
 type TemplateNode = { key: string; kind: CompositorKind; x: number; y: number; label?: string };
 type TemplateEdge = { from: string; to: string; input: string };
 type Template = { id: TemplateId; name: string; description: string; nodes: TemplateNode[]; edges: TemplateEdge[] };
@@ -29,6 +29,12 @@ export const COMPOSITOR_TEMPLATES: Template[] = [
     id: "mask", name: "Masking", description: "Combine and animate editable masks on an image or video.",
     nodes: [{ key: "source", kind: "media", x: 0, y: 100 }, { key: "mask", kind: "mask", x: 250, y: 100 }, { key: "viewer", kind: "viewer", x: 500, y: 100 }],
     edges: [{ from: "source", to: "mask", input: "image" }, { from: "mask", to: "viewer", input: "image" }],
+  },
+  {
+    id: "smart-matte", name: "Smart Matte",
+    description: "Upload a video to Media, then select Smart Matte to generate an LTX matte or draw an offline mask.",
+    nodes: [{ key: "source", kind: "media", x: 0, y: 100 }, { key: "matte", kind: "smart-matte", x: 250, y: 100 }, { key: "viewer", kind: "viewer", x: 500, y: 100 }],
+    edges: [{ from: "source", to: "matte", input: "image" }, { from: "matte", to: "viewer", input: "image" }],
   },
   {
     id: "tracking", name: "Tracking", description: "Track background video, then attach an overlay image to its motion.",
