@@ -2024,19 +2024,29 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
               Prompt help supports up to {OLLAMA_PROMPT_CONTEXT_MAX_LENGTH.toLocaleString()} characters. Shorten this prompt first.
             </div>
           )}
-          <button
-            type="button"
-            className="ff-prompt-assistant-send nodrag"
-            disabled={runControl?.isRunning || !runControl?.openPromptChat || promptHelpTooLong}
-            onClick={() => runControl?.openPromptChat({
-              nodeId: id,
-              currentPrompt: promptHelpText,
-              imageSetup: assistantImageSetup,
-              connectedTargets: connectedAssistantTargets,
-            })}
-          >
-            Open in Ollama Chat
-          </button>
+          <div className="ff-prompt-assistant-actions">
+            <button
+              type="button"
+              className="ff-prompt-assistant-clear nodrag"
+              disabled={runControl?.isRunning || !promptHelpText}
+              onClick={() => setParam("text", "")}
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              className="ff-prompt-assistant-send nodrag"
+              disabled={runControl?.isRunning || !runControl?.openPromptChat || promptHelpTooLong}
+              onClick={() => runControl?.openPromptChat({
+                nodeId: id,
+                currentPrompt: promptHelpText,
+                imageSetup: assistantImageSetup,
+                connectedTargets: connectedAssistantTargets,
+              })}
+            >
+              Open in Ollama Chat
+            </button>
+          </div>
           <div className="ff-prompt-assistant-note">
             Ollama runs locally. Review its reply and apply it explicitly; generation is never started automatically.
           </div>

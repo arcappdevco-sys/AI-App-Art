@@ -485,6 +485,13 @@ export default function Page() {
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const [storyboard, setStoryboard] = useState<StoryboardData>(() => createEmptyStoryboard());
   const [projectCharacters, setProjectCharacters] = useState<StoryboardCharacter[]>([]);
+  const [storyboardClearKey, setStoryboardClearKey] = useState(0);
+
+  const clearStoryboard = () => {
+    setStoryboard(createEmptyStoryboard());
+    setProjectCharacters([]);
+    setStoryboardClearKey((k) => k + 1);
+  };
   const [projectMediaAssets, setProjectMediaAssets] = useState<ProjectMediaAsset[]>([]);
   const [projectSession, setProjectSession] = useState<ProjectFolderSession | null>(null);
   const [projectSessionReady, setProjectSessionReady] = useState(false);
@@ -2270,6 +2277,7 @@ export default function Page() {
             onApplyPrompt={applyOllamaPrompt}
             onApplyStoryboardShot={applyOllamaStoryboardShot}
             onEndPromptHelp={endPromptHelp}
+            onClearStoryboard={clearStoryboard}
             onApplyStoryboard={(generatedStoryboard) => {
             const shotCount = generatedStoryboard.scenes.reduce((count, scene) => count + scene.shots.length, 0);
             if (storyboard.scenes.length > 0
@@ -2714,6 +2722,7 @@ export default function Page() {
         videoModelOptions={storyboardVideoModelOptions}
         firstLastFrameModelOptions={storyboardFirstLastFrameModelOptions}
         hidden={activeView !== "storyboard"}
+        clearKey={storyboardClearKey}
         onAddCharacterReferenceToWorkflow={addCharacterReferenceToWorkflow}
         saveError={storageStatus === "Unable to save workflow"
           || storageStatus === "Unable to save project workflows" ? storageError : ""}

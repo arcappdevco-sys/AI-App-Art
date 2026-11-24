@@ -502,6 +502,7 @@ export default function StoryboardTab({
   hidden,
   saveError,
   autoSaveError,
+  clearKey,
 }: {
   storyboard: StoryboardData;
   characters: StoryboardCharacter[];
@@ -525,6 +526,7 @@ export default function StoryboardTab({
   hidden: boolean;
   saveError: string;
   autoSaveError: string;
+  clearKey?: number;
 }) {
   const [selectedSceneId, setSelectedSceneId] = useState("");
   const [expandedNotes, setExpandedNotes] = useState<Set<string>>(() => new Set());
@@ -565,6 +567,22 @@ export default function StoryboardTab({
       setTopviewGuardLoaded(true);
     }
   }, []);
+
+  // Reset local script state whenever the parent triggers a clear
+  useEffect(() => {
+    if (clearKey === undefined) return;
+    setScriptText("");
+    setScriptFileName("");
+    setScriptError("");
+    setSelectedSceneId("");
+    setCharacterAnalysisCandidates([]);
+    setCharacterAnalysisRun(false);
+    setCharacterAnalysisSourceScript("");
+    setCharacterAnalysisSaved(false);
+    setCharacterAnalysisError("");
+    setFrameBatchProgress("");
+    topviewStoryboardRequest.current = null;
+  }, [clearKey]);
   const [takeSaveErrors, setTakeSaveErrors] = useState<Record<string, string>>({});
   const [savingTakeCopyIds, setSavingTakeCopyIds] = useState<Set<string>>(() => new Set());
   const [takeCopyErrors, setTakeCopyErrors] = useState<Record<string, string>>({});

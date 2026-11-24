@@ -45,6 +45,7 @@ export default function OllamaChat({
   onApplyPrompt,
   onApplyStoryboardShot,
   onEndPromptHelp,
+  onClearStoryboard,
 }: {
   onApplyStoryboard: (storyboard: StoryboardScriptResult) => boolean;
   promptContext: OllamaPromptContext | null;
@@ -60,6 +61,7 @@ export default function OllamaChat({
     candidate: string,
   ) => OllamaApplyResult;
   onEndPromptHelp: () => void;
+  onClearStoryboard: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<string[]>([]);
@@ -329,6 +331,13 @@ export default function OllamaChat({
 
   return (
     <>
+      <button type="button" className="ff-toolbar-button"
+        onClick={() => {
+          if (!window.confirm("Clear the storyboard? This will remove all scenes, shots, characters, and the uploaded script. This cannot be undone.")) return;
+          onClearStoryboard();
+        }}>
+        Clear
+      </button>
       <button type="button" className="ff-toolbar-button" aria-expanded={open} aria-controls="ollama-chat"
         onClick={() => { if (!open) void refreshModels(); setOpen(!open); }}>
         {mode === "prompt" ? "Prompt Assistant" : mode === "workflow" ? "Workflow Help" : "Chat"}
