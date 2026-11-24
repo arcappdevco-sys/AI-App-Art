@@ -5,6 +5,7 @@ import {
   buildFlux3Request,
 } from "./flux3";
 import { storyboardImageDataUrl } from "./StoryboardImages";
+import { uploadFalImageReferences } from "./fal-image-upload";
 import {
   stripStoryboardContinuityBlocks,
   type StoryboardAspectRatio,
@@ -26,6 +27,34 @@ export const STORYBOARD_FRAME_MODELS = [
 ] as const;
 
 export type StoryboardFrameModelId = (typeof STORYBOARD_FRAME_MODELS)[number]["id"];
+
+export function storyboardFrameModelSupportsCharacterReferences(model: StoryboardFrameModelId) {
+  return model.startsWith("gemini-") || model.startsWith("fal-ai/nano-banana")
+    || model.startsWith("google/nano-banana");
+}
+
+export function buildStoryboardCharacterSheetPrompt(
+  character: { name: string; visualDescription: string },
+  styleBible?: StoryboardStyleBible,
+) {
+  const description = character.visualDescription.trim();
+  if (!character.name.trim() || !description) {
+    throw new Error("Add a character name and visual description before generating a reference sheet.");
+  }
+  const prompt = [
+    "Create a clean character-design reference sheet, not a storyboard frame.",
+    `Character name for identification only: ${character.name.trim()}.`,
+    `Canonical visual design: ${description}`,
+    styleBible?.visualStyle.trim()
+      ? `Use this project's rendering style while keeping the reference lighting neutral: ${styleBible.visualStyle.trim()}`
+      : "",
+    "Show the exact same character in three evenly spaced full-body views in a single image: front view, side view, and back view. Keep the character's proportions, colors, materials, clothing, markings, and mechanical details identical in all three views.",
+    "Use a simple neutral light-gray studio background, soft even lighting, clear silhouette, consistent scale, and no perspective distortion.",
+    "Do not add unmentioned design details, props, a setting, other characters, text, labels, captions, borders, or panel dividers.",
+  ].filter(Boolean).join(" ");
+  if (prompt.length > 20000) throw new Error("Character details are too long to use as an image prompt.");
+  return prompt;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -62,6 +91,7 @@ export function buildStoryboardFramePrompt(
   shot: StoryboardShot,
   aspectRatio: StoryboardAspectRatio,
   styleBible?: StoryboardStyleBible,
+  characterReferenceNames: string[] = [],
 ) {
   const actionPrompt = shot.prompt?.trim() || stripStoryboardContinuityBlocks(shot.description);
   const sharedContinuity = [
@@ -76,6 +106,9 @@ export function buildStoryboardFramePrompt(
     actionPrompt ? `Action and composition: ${actionPrompt}` : "",
     sharedContinuity.length
       ? `Global style bible (apply only details visible in this shot): ${sharedContinuity.join(" ")}`
+      : "",
+    characterReferenceNames.length
+      ? `Character identity references: ${characterReferenceNames.join(", ")}. Use each supplied reference only to preserve that character's visual identity; do not copy the reference sheet's pose, composition, background, or lighting.`
       : "",
     shot.shotType ? `Shot type: ${shot.shotType}.` : "",
     shot.cameraMove ? `Camera movement: ${shot.cameraMove}.` : "",
@@ -114,11 +147,16 @@ async function generateOpenAiImage(model: string, prompt: string, aspectRatio: S
   return normalizeImageDataUrl(result.image);
 }
 
-async function generateGeminiImage(model: string, prompt: string, aspectRatio: StoryboardAspectRatio) {
+async function generateGeminiImage(
+  model: string,
+  prompt: string,
+  aspectRatio: StoryboardAspectRatio,
+  referenceImages: string[],
+) {
   const result = await jsonPost("/api/gemini", {
     model,
     prompt,
-    images: [],
+    images: referenceImages,
     aspectRatio,
   });
   if (!isRecord(result) || typeof result.image !== "string" || !result.image.startsWith("data:image/")) {
@@ -127,11 +165,22 @@ async function generateGeminiImage(model: string, prompt: string, aspectRatio: S
   return normalizeImageDataUrl(result.image);
 }
 
-async function generateFalImage(model: string, prompt: string, aspectRatio: StoryboardAspectRatio) {
+async function generateFalImage(
+  model: string,
+  prompt: string,
+  aspectRatio: StoryboardAspectRatio,
+  referenceImages: string[],
+) {
   const { fal } = await import("@fal-ai/client");
   fal.config({ proxyUrl: "/api/fal/proxy" });
-  const result = await fal.subscribe(model, {
-    input: { prompt, num_images: 1, aspect_ratio: aspectRatio },
+  const uploadedReferences = await uploadFalImageReferences(referenceImages);
+  const result = await fal.subscribe(referenceImages.length ? `${model}/edit` : model, {
+    input: {
+      prompt,
+      num_images: 1,
+      aspect_ratio: aspectRatio,
+      ...(uploadedReferences.length ? { image_urls: uploadedReferences } : {}),
+    },
   });
   const url = extractImageUrl(result.data);
   if (!url) throw new Error("fal did not return an image URL.");
@@ -219,12 +268,20 @@ export async function generateStoryboardFrame(
   model: StoryboardFrameModelId,
   prompt: string,
   aspectRatio: StoryboardAspectRatio,
+  referenceImages: string[] = [],
 ) {
   if (!STORYBOARD_FRAME_MODELS.some((item) => item.id === model)) {
     throw new Error("Choose a supported storyboard image model.");
   }
+  if (referenceImages.length > 3) throw new Error("Choose no more than three character references per shot.");
+  if (referenceImages.length && !storyboardFrameModelSupportsCharacterReferences(model)) {
+    throw new Error("Character references in Storyboard require a Nano Banana image model.");
+  }
+  if (referenceImages.some((image) => !/^data:image\/(?:png|jpeg|webp);base64,/i.test(image))) {
+    throw new Error("A character reference image could not be prepared.");
+  }
   if (model.startsWith("gpt-image-")) return generateOpenAiImage(model, prompt, aspectRatio);
-  if (model.startsWith("gemini-")) return generateGeminiImage(model, prompt, aspectRatio);
+  if (model.startsWith("gemini-")) return generateGeminiImage(model, prompt, aspectRatio, referenceImages);
   if (model.startsWith("black-forest-labs/flux-3/")) return generateFlux3Image(prompt, aspectRatio);
-  return generateFalImage(model, prompt, aspectRatio);
+  return generateFalImage(model, prompt, aspectRatio, referenceImages);
 }

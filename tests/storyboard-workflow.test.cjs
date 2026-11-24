@@ -14,6 +14,7 @@ const {
   buildStoryboardVideoPrompt,
   collectStoryboardVideoCandidates,
   rebindStoryboardWorkflowReferences,
+  resolveWorkflowCharacterReferences,
   resolveStoryboardFrameReference,
   resolveWorkflowStoryboardFrames,
 } = require(path.join(__dirname, "..", "src", "lib", "storyboard-workflow.ts"));
@@ -91,6 +92,76 @@ test("manual image URLs override a stale storyboard reference", () => {
   }], workflows);
   assert.equal(runNodes[0].params.url, "https://example.test/guide.png");
   assert.equal("storyboardFrameRef" in runNodes[0].params, false);
+});
+
+test("resolves approved project character references for a workflow run without mutating saved nodes", async () => {
+  const nodes = [{
+    id: "character-image",
+    type: "input/image",
+    params: {
+      url: "",
+      projectCharacterRef: { kind: "project-character", characterId: "unit-07" },
+    },
+  }];
+  const characters = [{
+    id: "unit-07",
+    name: "UNIT-07",
+    visualDescription: "A yellow tracked robot.",
+    referenceImageMediaAssetId: "unit-reference",
+    referenceImageApproved: true,
+  }];
+  const runNodes = await resolveWorkflowCharacterReferences(
+    nodes,
+    characters,
+    async (character) => `data:image/png;base64,${character.referenceImageMediaAssetId}`,
+  );
+  assert.equal(runNodes[0].params.url, "data:image/png;base64,unit-reference");
+  assert.equal("projectCharacterRef" in runNodes[0].params, false);
+  assert.equal(nodes[0].params.url, "");
+  assert.equal("projectCharacterRef" in nodes[0].params, true);
+});
+
+test("rejects unavailable or unapproved project character references", async () => {
+  const node = {
+    id: "character-image",
+    type: "input/image",
+    params: {
+      url: "",
+      projectCharacterRef: { kind: "project-character", characterId: "unit-07" },
+    },
+  };
+  await assert.rejects(
+    resolveWorkflowCharacterReferences([node], [], async () => ""),
+    /project character is unavailable/,
+  );
+  await assert.rejects(
+    resolveWorkflowCharacterReferences([node], [{
+      id: "unit-07",
+      name: "UNIT-07",
+      visualDescription: "A yellow robot.",
+      referenceImageMediaAssetId: "unit-reference",
+      referenceImageApproved: false,
+    }], async () => ""),
+    /no longer has an approved character reference/,
+  );
+});
+
+test("does not resolve project character inputs outside the targeted workflow scope", async () => {
+  const node = {
+    id: "unused-character-image",
+    type: "input/image",
+    params: {
+      url: "",
+      projectCharacterRef: { kind: "project-character", characterId: "deleted" },
+    },
+  };
+  const resolved = await resolveWorkflowCharacterReferences(
+    [node],
+    [],
+    async () => assert.fail("An out-of-scope reference must not be loaded."),
+    new Set(["different-node"]),
+  );
+  assert.deepEqual(resolved, [node]);
 });
 
 test("rebinds self-references when an exported workflow is imported as a copy", () => {

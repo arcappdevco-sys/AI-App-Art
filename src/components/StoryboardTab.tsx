@@ -9,11 +9,23 @@ import {
   createStoryboardScene,
   createStoryboardShot,
   type StoryboardData,
+  type StoryboardCharacter,
+  type StoryboardCharacterDraft,
   type StoryboardGeneratedTake,
   type StoryboardScene,
   type StoryboardShot,
+  type StoryboardStyleBible,
 } from "@/lib/StoryboardData";
-import { STORYBOARD_FRAME_MODELS, buildStoryboardFramePrompt, generateStoryboardFrame, type StoryboardFrameModelId } from "@/lib/StoryboardFrameGeneration";
+import { normalizeStoryboardCharacterAnalysis } from "@/lib/storyboard-character-analysis";
+import {
+  STORYBOARD_FRAME_MODELS,
+  buildStoryboardCharacterSheetPrompt,
+  buildStoryboardFramePrompt,
+  generateStoryboardFrame,
+  storyboardFrameModelSupportsCharacterReferences,
+  type StoryboardFrameModelId,
+} from "@/lib/StoryboardFrameGeneration";
+import { loadApprovedCharacterReferenceImage } from "@/lib/project-character-reference";
 import { storyboardImageDataUrl } from "@/lib/StoryboardImages";
 import { inspectImageDataUrlMetadata } from "@/lib/project-media-browser";
 import {
@@ -34,6 +46,7 @@ import type { StoryboardVideoCandidate } from "@/lib/storyboard-workflow";
 import type { ProjectFolderSession } from "@/lib/project-folder-storage";
 import { readProjectMediaAssetFile } from "@/lib/project-folder-storage";
 import { loadProjectMediaFile } from "@/lib/project-media-storage";
+import type { MediaAssetMetadata } from "@/lib/project-media";
 
 type ShotLocation = { sceneId: string; shotId: string; sceneIndex: number; shotIndex: number };
 type DraggedShot = { sceneId: string; shotId: string };
@@ -183,6 +196,270 @@ function StoryboardTakeVideo({
   );
 }
 
+function CharacterReferencePreview({
+  assetId,
+  characterName,
+  projectSession,
+}: {
+  assetId?: string;
+  characterName: string;
+  projectSession: ProjectFolderSession | null;
+}) {
+  const [preview, setPreview] = useState<{ assetId: string; url?: string; error?: string } | null>(null);
+
+  useEffect(() => {
+    if (!assetId) return;
+    let active = true;
+    let objectUrl: string | null = null;
+    void (async () => {
+      let file: File;
+      if (projectSession) {
+        try {
+          file = await readProjectMediaAssetFile(projectSession.handle, projectSession.projectId, assetId);
+        } catch (projectError) {
+          try {
+            file = await loadProjectMediaFile(assetId);
+          } catch {
+            throw projectError;
+          }
+        }
+      } else {
+        file = await loadProjectMediaFile(assetId);
+      }
+      if (!file.type.startsWith("image/")) throw new Error("The saved character reference is not an image.");
+      if (!active) return;
+      objectUrl = URL.createObjectURL(file);
+      setPreview({ assetId, url: objectUrl });
+    })().catch((error: unknown) => {
+      if (active) setPreview({
+        assetId,
+        error: error instanceof Error ? error.message : "Could not load this character reference.",
+      });
+    });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [assetId, projectSession]);
+
+  const current = preview?.assetId === assetId ? preview : null;
+  if (!assetId) return null;
+  if (current?.url) {
+    // Blob URLs are local project media and cannot benefit from Next image optimization.
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img className="storyboard-character-reference-preview"
+      src={current.url} alt={`${characterName} character reference`} />;
+  }
+  if (current?.error) {
+    return <p className="storyboard-inline-error" role="alert">
+      Could not load the saved reference: {current.error}
+    </p>;
+  }
+  return <p className="storyboard-character-analysis-note" role="status">Loading character reference…</p>;
+}
+
+function CharacterReferenceEditor({
+  character,
+  styleBible,
+  frameModel,
+  projectSession,
+  referenceKey,
+  onSaveAsset,
+  onBusyChange,
+  onAddToWorkflow,
+  onUpdate,
+}: {
+  character: StoryboardCharacterDraft;
+  styleBible?: StoryboardStyleBible;
+  frameModel: StoryboardFrameModelId;
+  projectSession: ProjectFolderSession | null;
+  referenceKey: string;
+  onSaveAsset: (file: File, metadata: MediaAssetMetadata) => Promise<string>;
+  onBusyChange: (key: string, busy: boolean) => void;
+  onAddToWorkflow?: (characterId: string) => void;
+  onUpdate: (patch: Partial<StoryboardCharacterDraft>) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const model = STORYBOARD_FRAME_MODELS.find((item) => item.id === frameModel);
+  const referenceModel = STORYBOARD_FRAME_MODELS.find((item) => item.id === character.referenceImageModel);
+  const imageAssetId = character.referenceImageMediaAssetId;
+
+  const uploadReference = async (file?: File) => {
+    if (!file) return;
+    setBusy(true);
+    onBusyChange(referenceKey, true);
+    setError("");
+    try {
+      if (file.size <= 0 || file.size > 20 * 1024 * 1024) {
+        throw new Error("Choose an image file of 20 MB or smaller.");
+      }
+      const dataUrl = await storyboardImageDataUrl(file);
+      const response = await fetch(dataUrl);
+      if (!response.ok) throw new Error("Could not prepare the uploaded character reference.");
+      const blob = await response.blob();
+      const normalizedFile = new File([blob], file.name, { type: blob.type });
+      const metadata = await inspectImageDataUrlMetadata(dataUrl);
+      const assetId = await onSaveAsset(normalizedFile, metadata);
+      onUpdate({
+        referenceImageMediaAssetId: assetId,
+        referenceImageApproved: false,
+        referenceImageSource: "uploaded",
+        referenceImageModel: undefined,
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save this character reference.");
+    } finally {
+      setBusy(false);
+      onBusyChange(referenceKey, false);
+    }
+  };
+
+  const generateReference = async () => {
+    if (!character.name.trim() || !character.visualDescription.trim() || !model || busy) return;
+    if (!window.confirm(
+      `Generate a three-view character sheet for ${character.name.trim()} with ${model.label}? This image request may incur provider charges.`,
+    )) return;
+    setBusy(true);
+    onBusyChange(referenceKey, true);
+    setError("");
+    try {
+      const prompt = buildStoryboardCharacterSheetPrompt(character, styleBible);
+      const dataUrl = await generateStoryboardFrame(frameModel, prompt, "16:9");
+      const response = await fetch(dataUrl);
+      if (!response.ok) throw new Error("Could not prepare the generated character sheet.");
+      const blob = await response.blob();
+      const extension = blob.type === "image/webp" ? "webp" : blob.type === "image/jpeg" ? "jpg" : "png";
+      const safeName = character.name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 80) || "character";
+      const file = new File([blob], `${safeName}-reference.${extension}`, { type: blob.type });
+      const metadata = await inspectImageDataUrlMetadata(dataUrl);
+      const assetId = await onSaveAsset(file, metadata);
+      onUpdate({
+        referenceImageMediaAssetId: assetId,
+        referenceImageApproved: false,
+        referenceImageSource: "generated",
+        referenceImageModel: frameModel,
+      });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not generate this character sheet.");
+    } finally {
+      setBusy(false);
+      onBusyChange(referenceKey, false);
+    }
+  };
+
+  return (
+    <div className="storyboard-character-reference">
+      {imageAssetId && (
+        <>
+          <CharacterReferencePreview
+            assetId={imageAssetId}
+            characterName={character.name || "Character"}
+            projectSession={projectSession}
+          />
+          <p className="storyboard-character-reference-status" role="status">
+            {character.referenceImageApproved ? "Approved reference" : "Needs approval"}
+            {character.referenceImageSource === "generated"
+              ? ` · Generated with ${referenceModel?.label ?? "image model"}`
+              : ""}
+          </p>
+        </>
+      )}
+      <div className="storyboard-character-reference-actions">
+        <label className="storyboard-character-upload">
+          {imageAssetId ? "Replace image" : "Upload reference"}
+          <input type="file" accept="image/png,image/jpeg,image/webp"
+            aria-label={`Upload reference image for ${character.name || "character"}`}
+            disabled={busy || !character.name.trim()}
+            onChange={(event) => {
+              void uploadReference(event.target.files?.[0]);
+              event.target.value = "";
+            }} />
+        </label>
+        <button type="button" className="storyboard-secondary-action"
+          disabled={busy || !character.name.trim() || !character.visualDescription.trim()}
+          onClick={() => void generateReference()}>
+          {busy ? "Working…" : imageAssetId ? "Generate replacement" : "Generate character sheet"}
+        </button>
+        {imageAssetId && (
+          <>
+            {character.referenceImageApproved && onAddToWorkflow && (
+              <button type="button" className="storyboard-secondary-action"
+                disabled={busy}
+                onClick={() => onAddToWorkflow(referenceKey)}>
+                Add reference to Workflow
+              </button>
+            )}
+            <button type="button" className="storyboard-secondary-action"
+              disabled={busy}
+              onClick={() => onUpdate({ referenceImageApproved: !character.referenceImageApproved })}>
+              {character.referenceImageApproved ? "Revoke approval" : "Approve reference"}
+            </button>
+            <button type="button" className="storyboard-secondary-action"
+              disabled={busy}
+              onClick={() => onUpdate({
+                referenceImageMediaAssetId: undefined,
+                referenceImageApproved: false,
+                referenceImageSource: undefined,
+                referenceImageModel: undefined,
+              })}>
+              Remove reference
+            </button>
+          </>
+        )}
+      </div>
+      {error && <p className="storyboard-inline-error" role="alert">{error}</p>}
+      {character.visualDescription.trim() ? null : (
+        <p className="storyboard-character-analysis-note">Add visual traits before generating a sheet; you can still upload an existing reference.</p>
+      )}
+    </div>
+  );
+}
+
+function ShotCharacterReferencePicker({
+  shot,
+  characters,
+  frameModel,
+  disabled,
+  onChange,
+}: {
+  shot: StoryboardShot;
+  characters: StoryboardCharacter[];
+  frameModel: StoryboardFrameModelId;
+  disabled: boolean;
+  onChange: (characterIds: string[]) => void;
+}) {
+  const selectedIds = shot.characterIds ?? [];
+  const supportsReferences = storyboardFrameModelSupportsCharacterReferences(frameModel);
+  return (
+    <fieldset className="storyboard-shot-character-references">
+      <legend>Character references <small>Up to 3 approved images</small></legend>
+      {characters.length ? characters.map((character) => {
+        const selected = selectedIds.includes(character.id);
+        const approved = character.referenceImageApproved && Boolean(character.referenceImageMediaAssetId);
+        return (
+          <label key={character.id}>
+            <input type="checkbox" checked={selected}
+              disabled={disabled || (!approved && !selected) || (!selected && selectedIds.length >= 3)}
+              onChange={() => onChange(selected
+                ? selectedIds.filter((id) => id !== character.id)
+                : [...selectedIds, character.id])} />
+            <span>{character.name}{approved ? "" : " (approve a reference first)"}</span>
+          </label>
+        );
+      }) : (
+        <p>Save a project cast to assign character references to shots.</p>
+      )}
+      <small>Only selected references are sent with this shot. Choose a Nano Banana image model to use them.</small>
+      {selectedIds.length > 0 && !supportsReferences && (
+        <small className="storyboard-inline-error" role="status">
+          The selected image model cannot use character references.
+        </small>
+      )}
+    </fieldset>
+  );
+}
+
 function cloneShot(shot: StoryboardShot): StoryboardShot {
   return { ...shot, id: crypto.randomUUID() };
 }
@@ -206,7 +483,11 @@ function nextSceneNumber(scenes: StoryboardScene[]) {
 
 export default function StoryboardTab({
   storyboard,
+  characters,
   onChange,
+  onCharactersChange,
+  onSaveCharacterReference,
+  onAddCharacterReferenceToWorkflow,
   onSendFrame,
   onOpenWorkflow,
   onSaveTake,
@@ -220,7 +501,11 @@ export default function StoryboardTab({
   autoSaveError,
 }: {
   storyboard: StoryboardData;
+  characters: StoryboardCharacter[];
   onChange: (value: SetStateAction<StoryboardData>) => void;
+  onCharactersChange: (value: StoryboardCharacter[]) => void;
+  onSaveCharacterReference: (file: File, metadata: MediaAssetMetadata) => Promise<string>;
+  onAddCharacterReferenceToWorkflow: (characterId: string) => void;
   onSendFrame: (
     sceneId: string,
     shotId: string,
@@ -245,6 +530,17 @@ export default function StoryboardTab({
   const [scriptFileName, setScriptFileName] = useState("");
   const [scriptError, setScriptError] = useState("");
   const [scriptProvider, setScriptProvider] = useState<StoryboardScriptProvider>("gemini");
+  const [characterAnalysisModels, setCharacterAnalysisModels] = useState<string[]>([]);
+  const [characterAnalysisModel, setCharacterAnalysisModel] = useState("");
+  const [loadingCharacterAnalysisModels, setLoadingCharacterAnalysisModels] = useState(false);
+  const [characterAnalysisModelError, setCharacterAnalysisModelError] = useState("");
+  const [characterAnalysisError, setCharacterAnalysisError] = useState("");
+  const [characterAnalysisCandidates, setCharacterAnalysisCandidates] = useState<StoryboardCharacter[]>([]);
+  const [savingCharacterReferenceIds, setSavingCharacterReferenceIds] = useState<Set<string>>(() => new Set());
+  const [characterAnalysisRun, setCharacterAnalysisRun] = useState(false);
+  const [characterAnalysisSourceScript, setCharacterAnalysisSourceScript] = useState("");
+  const [analyzingCharacters, setAnalyzingCharacters] = useState(false);
+  const [characterAnalysisSaved, setCharacterAnalysisSaved] = useState(false);
   const topviewStoryboardRequest = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
   const [topviewReconciliationRequired, setTopviewReconciliationRequired] = useState(false);
   const [topviewGuardLoaded, setTopviewGuardLoaded] = useState(false);
@@ -296,6 +592,195 @@ export default function StoryboardTab({
     () => parseStructuredStoryboardScript(scriptText),
     [scriptText],
   );
+
+  const loadCharacterAnalysisModels = useCallback(async (signal?: AbortSignal) => {
+    setLoadingCharacterAnalysisModels(true);
+    setCharacterAnalysisModelError("");
+    try {
+      const response = await fetch("/api/ollama-chat", { signal, cache: "no-store" });
+      const result: unknown = await response.json();
+      if (!response.ok) {
+        const message = typeof result === "object" && result !== null
+          && "error" in result && typeof result.error === "string"
+          ? result.error : `Could not load local models (${response.status}).`;
+        throw new Error(message);
+      }
+      if (typeof result !== "object" || result === null || !("models" in result)
+        || !Array.isArray(result.models)
+        || result.models.some((model) => typeof model !== "string")) {
+        throw new Error("Ollama returned an invalid model list.");
+      }
+      const models = result.models as string[];
+      setCharacterAnalysisModels(models);
+      setCharacterAnalysisModel((current) => models.includes(current) ? current : models[0] ?? "");
+    } catch (error) {
+      if (signal?.aborted) return;
+      setCharacterAnalysisModelError(error instanceof Error
+        ? error.message
+        : "Could not load local Ollama models.");
+    } finally {
+      if (!signal?.aborted) setLoadingCharacterAnalysisModels(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (hidden) return;
+    const controller = new AbortController();
+    void loadCharacterAnalysisModels(controller.signal);
+    return () => controller.abort();
+  }, [hidden, loadCharacterAnalysisModels]);
+
+  const analyzeCharacters = async () => {
+    if (!scriptText.trim() || !characterAnalysisModel || analyzingCharacters
+      || savingCharacterReferenceIds.size > 0) return;
+    if (characterAnalysisCandidates.length
+      && !window.confirm("Replace the current unsaved character review with a new analysis?")) return;
+    setAnalyzingCharacters(true);
+    setCharacterAnalysisError("");
+    setCharacterAnalysisSaved(false);
+    try {
+      const response = await fetch("/api/storyboard/analyze-characters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ script: scriptText, model: characterAnalysisModel }),
+      });
+      const result: unknown = await response.json();
+      if (!response.ok) {
+        const message = typeof result === "object" && result !== null
+          && "error" in result && typeof result.error === "string"
+          ? result.error : `Character analysis failed (${response.status}).`;
+        throw new Error(message);
+      }
+      setCharacterAnalysisCandidates(normalizeStoryboardCharacterAnalysis(result, scriptText).characters
+        .map((character) => ({ ...character, id: crypto.randomUUID() })));
+      setCharacterAnalysisRun(true);
+      setCharacterAnalysisSourceScript(scriptText);
+    } catch (error) {
+      setCharacterAnalysisError(error instanceof Error
+        ? error.message
+        : "Could not analyze characters with local Ollama.");
+    } finally {
+      setAnalyzingCharacters(false);
+    }
+  };
+
+  const saveCharacterCast = () => {
+    if (characterAnalysisRun && characterAnalysisSourceScript !== scriptText) {
+      setCharacterAnalysisError("The script changed after this character list was created. Analyze the updated script before saving.");
+      return;
+    }
+    const names = characterAnalysisCandidates.map((candidate) => candidate.name.trim());
+    if (!names.length && characters.length
+      && !window.confirm("Save an empty cast and remove all currently saved project characters?")) return;
+    if (names.some((name) => !name)) {
+      setCharacterAnalysisError("Every character needs a name before the cast can be saved.");
+      return;
+    }
+    if (new Set(names.map((name) => name.toLocaleLowerCase())).size !== names.length) {
+      setCharacterAnalysisError("Character names must be unique. Merge or rename duplicate entries before saving.");
+      return;
+    }
+    onCharactersChange(characterAnalysisCandidates.map((candidate): StoryboardCharacter => {
+      const existing = characters.find((character) => character.id === candidate.id)
+        ?? characters.find((character) =>
+          character.name.toLocaleLowerCase() === candidate.name.trim().toLocaleLowerCase());
+      const sameDescription = existing?.visualDescription === candidate.visualDescription.trim();
+      const candidateHasReferenceEdit = Object.hasOwn(candidate, "referenceImageMediaAssetId");
+      const reference = candidateHasReferenceEdit
+        ? {
+          referenceImageMediaAssetId: candidate.referenceImageMediaAssetId,
+          referenceImageApproved: candidate.referenceImageApproved,
+          referenceImageSource: candidate.referenceImageSource,
+          referenceImageModel: candidate.referenceImageModel,
+        }
+        : sameDescription && existing?.referenceImageMediaAssetId
+          ? {
+            referenceImageMediaAssetId: existing.referenceImageMediaAssetId,
+            referenceImageApproved: existing.referenceImageApproved,
+            referenceImageSource: existing.referenceImageSource,
+            referenceImageModel: existing.referenceImageModel,
+          }
+          : {};
+      return {
+        ...candidate,
+        ...reference,
+        name: candidate.name.trim(),
+        aliases: candidate.aliases.map((alias) => alias.trim()).filter(Boolean),
+        visualDescription: candidate.visualDescription.trim(),
+        id: existing?.id ?? candidate.id,
+      };
+    }));
+    setCharacterAnalysisError("");
+    setCharacterAnalysisSaved(true);
+  };
+
+  const updateCharacterCandidate = (index: number, patch: Partial<StoryboardCharacterDraft>) => {
+    setCharacterAnalysisCandidates((current) => current.map((candidate, candidateIndex) => {
+      if (candidateIndex !== index) return candidate;
+      const descriptionChanged = patch.visualDescription !== undefined
+        && patch.visualDescription !== candidate.visualDescription;
+      return {
+        ...candidate,
+        ...patch,
+        ...(descriptionChanged ? { referenceImageApproved: false } : {}),
+      };
+    }));
+    setCharacterAnalysisRun(true);
+    setCharacterAnalysisSaved(false);
+    setCharacterAnalysisError("");
+  };
+
+  const updateCharacterCandidateById = (id: string, patch: Partial<StoryboardCharacterDraft>) => {
+    setCharacterAnalysisCandidates((current) => current.map((candidate) => {
+      if (candidate.id !== id) return candidate;
+      const descriptionChanged = patch.visualDescription !== undefined
+        && patch.visualDescription !== candidate.visualDescription;
+      return {
+        ...candidate,
+        ...patch,
+        ...(descriptionChanged ? { referenceImageApproved: false } : {}),
+      };
+    }));
+    setCharacterAnalysisSaved(false);
+    setCharacterAnalysisError("");
+  };
+
+  const setCharacterReferenceBusy = (id: string, busy: boolean) => {
+    setSavingCharacterReferenceIds((current) => {
+      const next = new Set(current);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const editSavedCharacterCast = () => {
+    setCharacterAnalysisCandidates(characters.map((character) => ({ ...character })));
+    setCharacterAnalysisRun(true);
+    setCharacterAnalysisSourceScript(scriptText);
+    setCharacterAnalysisSaved(false);
+    setCharacterAnalysisError("");
+  };
+
+  const addCharacterCandidate = () => {
+    setCharacterAnalysisCandidates((current) => {
+      const source = current.length || characterAnalysisRun
+        ? current
+        : characters.map((character) => ({ ...character }));
+      return [...source, {
+        id: crypto.randomUUID(),
+        name: "",
+        aliases: [],
+        visualDescription: "",
+        evidence: [],
+        appearances: [],
+      }];
+    });
+    setCharacterAnalysisRun(true);
+    if (!characterAnalysisRun) setCharacterAnalysisSourceScript(scriptText);
+    setCharacterAnalysisSaved(false);
+    setCharacterAnalysisError("");
+  };
 
   const handleScriptFile = async (file?: File) => {
     if (!file) return;
@@ -455,8 +940,32 @@ export default function StoryboardTab({
     setGeneratingShotIds((current) => new Set(current).add(shot.id));
     setFrameErrors((current) => ({ ...current, [shot.id]: "" }));
     try {
-      const prompt = buildStoryboardFramePrompt(scene, shot, storyboard.aspectRatio, storyboard.styleBible);
-      const frame = await generateStoryboardFrame(frameModel, prompt, storyboard.aspectRatio);
+      const selectedCharacters = (shot.characterIds ?? []).flatMap((characterId) => {
+        const character = characters.find((candidate) => candidate.id === characterId);
+        return character ? [character] : [];
+      });
+      if (selectedCharacters.some((character) =>
+        !character.referenceImageApproved || !character.referenceImageMediaAssetId,
+      )) {
+        throw new Error("A selected character reference is no longer approved. Review the shot's character references.");
+      }
+      if (selectedCharacters.length > 3) {
+        throw new Error("Select no more than three character references for a shot.");
+      }
+      if (selectedCharacters.length && !storyboardFrameModelSupportsCharacterReferences(frameModel)) {
+        throw new Error("Character references in Storyboard require a Nano Banana image model.");
+      }
+      const referenceImages = await Promise.all(selectedCharacters.map((character) =>
+        loadApprovedCharacterReferenceImage(character, projectSession),
+      ));
+      const prompt = buildStoryboardFramePrompt(
+        scene,
+        shot,
+        storyboard.aspectRatio,
+        storyboard.styleBible,
+        selectedCharacters.map((character) => character.name),
+      );
+      const frame = await generateStoryboardFrame(frameModel, prompt, storyboard.aspectRatio, referenceImages);
       const frameMetadata = await inspectImageDataUrlMetadata(frame);
       onChange((current) => ({
         ...current,
@@ -896,6 +1405,163 @@ export default function StoryboardTab({
             </button>
           </div>
         </div>
+        <section className="storyboard-character-analysis" aria-labelledby="storyboard-character-analysis-heading">
+          <div className="storyboard-character-analysis-heading">
+            <div>
+              <h3 id="storyboard-character-analysis-heading">Analyze and review characters</h3>
+              <p>Identify script-supported characters, then manage one shared reference for each character in this project.</p>
+            </div>
+            <div className="storyboard-character-analysis-controls">
+              <label>
+                <span>Local Ollama model</span>
+                <select aria-label="Local character analysis model"
+                  value={characterAnalysisModel}
+                  disabled={loadingCharacterAnalysisModels || characterAnalysisModels.length === 0}
+                  onChange={(event) => setCharacterAnalysisModel(event.target.value)}>
+                  {characterAnalysisModels.length === 0 && <option value="">No local models available</option>}
+                  {characterAnalysisModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>
+              <button type="button" className="storyboard-secondary-action"
+                disabled={loadingCharacterAnalysisModels}
+                onClick={() => void loadCharacterAnalysisModels()}>
+                {loadingCharacterAnalysisModels ? "Loading…" : "Refresh models"}
+              </button>
+              <button type="button" className="storyboard-primary-action"
+                disabled={!scriptText.trim() || !characterAnalysisModel || analyzingCharacters
+                  || savingCharacterReferenceIds.size > 0}
+                onClick={() => void analyzeCharacters()}>
+                {analyzingCharacters ? "Analyzing locally…" : "Analyze characters locally"}
+              </button>
+            </div>
+          </div>
+          <p className="storyboard-character-analysis-note">
+            Script analysis uses Ollama on this computer. Uploading a reference stays local; generating a sheet uses the selected storyboard image model and may cost money.
+          </p>
+          {characterAnalysisRun && characterAnalysisSourceScript !== scriptText && (
+            <p className="storyboard-inline-error" role="alert">
+              The script changed. Your current review is preserved, but analyze the updated script before saving it.
+            </p>
+          )}
+          {characterAnalysisModelError && (
+            <p className="storyboard-inline-error" role="alert">{characterAnalysisModelError}</p>
+          )}
+          {!characterAnalysisRun && Boolean(characters.length) && (
+            <div className="storyboard-character-saved-list">
+              <h4>Project characters</h4>
+              {characters.map((character) => (
+                <article className="storyboard-character-card" key={character.id}>
+                  <h5>{character.name}{character.aliases.length ? ` · ${character.aliases.join(", ")}` : ""}</h5>
+                  <p>{character.visualDescription || "No visual traits described in the script."}</p>
+                  <span>{character.appearances.map((appearance) =>
+                    appearance.shotNumber === null
+                      ? appearance.sceneHeading
+                      : `Shot ${String(appearance.shotNumber).padStart(2, "0")}`,
+                  ).filter(Boolean).join(" · ") || "No appearance references"}</span>
+                  <CharacterReferenceEditor
+                    character={character}
+                    styleBible={storyboard.styleBible}
+                    frameModel={frameModel}
+                    projectSession={projectSession}
+                    referenceKey={character.id}
+                    onSaveAsset={onSaveCharacterReference}
+                    onBusyChange={setCharacterReferenceBusy}
+                    onAddToWorkflow={onAddCharacterReferenceToWorkflow}
+                    onUpdate={(patch) => onCharactersChange(characters.map((current) =>
+                      current.id === character.id ? { ...current, ...patch } : current))}
+                  />
+                </article>
+              ))}
+              <button type="button" className="storyboard-secondary-action"
+                onClick={editSavedCharacterCast}>Edit saved cast</button>
+            </div>
+          )}
+          {characterAnalysisRun && (
+            <div className="storyboard-character-review">
+              <div className="storyboard-character-review-heading">
+                <h4>Review candidates</h4>
+                <button type="button" className="storyboard-secondary-action"
+                  onClick={addCharacterCandidate}>Add character manually</button>
+              </div>
+              {characterAnalysisCandidates.length === 0 ? (
+                <p className="storyboard-character-analysis-note">
+                  No supported characters were found. You can add a character manually.
+                </p>
+              ) : characterAnalysisCandidates.map((candidate, index) => (
+                <article className="storyboard-character-card" key={`${index}-${candidate.name}`}>
+                  <div className="storyboard-character-card-actions">
+                    <strong>Character {index + 1}</strong>
+                    <button type="button" className="storyboard-secondary-action"
+                      aria-label={`Remove ${candidate.name || `character ${index + 1}`}`}
+                      onClick={() => {
+                        setCharacterAnalysisCandidates((current) => current.filter((_, itemIndex) => itemIndex !== index));
+                        setCharacterAnalysisSaved(false);
+                      }}>Remove</button>
+                  </div>
+                  <label>
+                    <span>Name</span>
+                    <input aria-label={`Character ${index + 1} name`} value={candidate.name}
+                      onChange={(event) => updateCharacterCandidate(index, { name: event.target.value })} />
+                  </label>
+                  <label>
+                    <span>Aliases (one per line)</span>
+                    <textarea aria-label={`Character ${index + 1} aliases`}
+                      value={candidate.aliases.join("\n")}
+                      onChange={(event) => updateCharacterCandidate(index, {
+                        aliases: event.target.value.split(/\r?\n/).map((alias) => alias.trim()).filter(Boolean),
+                      })} />
+                  </label>
+                  <label>
+                    <span>Visual traits explicitly stated in the script</span>
+                    <textarea aria-label={`Character ${index + 1} visual description`}
+                      value={candidate.visualDescription}
+                      onChange={(event) => updateCharacterCandidate(index, { visualDescription: event.target.value })} />
+                  </label>
+                  {candidate.evidence.length > 0 && (
+                    <div className="storyboard-character-evidence">
+                      <strong>Script evidence</strong>
+                      {candidate.evidence.map((excerpt, evidenceIndex) => (
+                        <blockquote key={`${evidenceIndex}-${excerpt}`}>{excerpt}</blockquote>
+                      ))}
+                    </div>
+                  )}
+                  {candidate.appearances.length > 0 && (
+                    <div className="storyboard-character-evidence">
+                      <strong>Suggested appearances</strong>
+                      {candidate.appearances.map((appearance, appearanceIndex) => (
+                        <p key={`${appearanceIndex}-${appearance.evidence}`}>
+                          <span>{appearance.shotNumber === null
+                            ? appearance.sceneHeading
+                            : `Shot ${String(appearance.shotNumber).padStart(2, "0")}`}</span>
+                          {" — "}{appearance.evidence}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <CharacterReferenceEditor
+                    character={candidate}
+                    styleBible={storyboard.styleBible}
+                    frameModel={frameModel}
+                    projectSession={projectSession}
+                    referenceKey={candidate.id}
+                    onSaveAsset={onSaveCharacterReference}
+                    onBusyChange={setCharacterReferenceBusy}
+                    onUpdate={(patch) => updateCharacterCandidateById(candidate.id, patch)}
+                  />
+                </article>
+              ))}
+              <button type="button" className="storyboard-primary-action"
+                disabled={characterAnalysisSourceScript !== scriptText || savingCharacterReferenceIds.size > 0}
+                onClick={saveCharacterCast}>Save cast to project</button>
+            </div>
+          )}
+          {characterAnalysisError && <p className="storyboard-inline-error" role="alert">{characterAnalysisError}</p>}
+          {characterAnalysisSaved && <p className="storyboard-character-analysis-saved" role="status">Reviewed cast saved to the project.</p>}
+          {!characterAnalysisRun && (
+            <button type="button" className="storyboard-secondary-action storyboard-character-add"
+              onClick={addCharacterCandidate}>Add character manually</button>
+          )}
+        </section>
         <p className="storyboard-script-disclosure">
           Your script is sent to {selectedScriptProvider?.label} using {selectedScriptProvider?.apiKeyName} only when you choose Build with selected API. API usage may be billed. Shot type, camera movement, and duration are filled for every shot; missing details default to Wide, Static, and 6 seconds. {selectedScriptProvider?.id.startsWith("topview-") ? "A retry after an uncertain error reuses the same request key; check Topview Usage before starting another request." : ""} Generated shots have no frame images.
         </p>
@@ -948,7 +1614,7 @@ export default function StoryboardTab({
           {frameBatchProgress && <span className="storyboard-image-progress" role="status">{frameBatchProgress}</span>}
         </div>
         <p className="storyboard-image-disclosure">
-          Generation sends scene and shot details to the selected provider. Gemini image models use GEMINI_API_KEY and are billed through the Gemini API; this is separate from free image generation in the Gemini app. Other provider usage may also be billed. Generated images are stored with this project; they are resized to fit the storyboard’s local image limit.
+          Generation sends scene and shot details to the selected provider. Selected approved character references are sent only for that shot, up to three; use a Nano Banana image model to apply them. Gemini image models use GEMINI_API_KEY and are billed through the Gemini API, separately from free image generation in the Gemini app. Other provider usage may also be billed. Generated images are stored with this project and resized to fit the storyboard’s local image limit.
         </p>
       </section>
 
@@ -1292,6 +1958,15 @@ export default function StoryboardTab({
                             If blank, generation uses the Description. Editing the Prompt never changes the Description.
                           </small>
                         </label>
+                        {(characters.length > 0 || Boolean(shot.characterIds?.length)) && <ShotCharacterReferencePicker
+                          shot={shot}
+                          characters={characters}
+                          frameModel={frameModel}
+                          disabled={generatingShotIds.has(shot.id)}
+                          onChange={(characterIds) => updateShot(scene.id, shot.id, {
+                            characterIds: characterIds.length ? characterIds : undefined,
+                          })}
+                        />}
                         <div className="storyboard-shot-fields">
                           <label className="storyboard-field">
                             <span>Shot type</span>

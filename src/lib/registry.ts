@@ -10,6 +10,7 @@ import { MINIMAX_DEFAULTS, MINIMAX_NODE_TYPE } from "./minimax";
 import { FLUX3_DEFAULTS, FLUX3_NODE_TYPE, normalizeFlux3Params } from "./flux3";
 import { FLUX3_VIDEO_DEFAULTS, FLUX3_VIDEO_NODE_TYPE } from "./flux3-video";
 import { executeWorkflowAtlas } from "./workflow-atlas";
+import { uploadFalImageReferences } from "./fal-image-upload";
 import {
   extractVfxFrame,
   VFX_EXTRACT_FRAME_NODE_TYPE,
@@ -291,7 +292,9 @@ const nanoBanana: NodeDef = {
   ],
   execute: async ({ inputs, params, log, signal }) => {
     if (!inputs.prompt) throw new Error("Connect a prompt");
-    const refs = [inputs.image1, inputs.image2, inputs.image3].filter(Boolean);
+    const refs = [inputs.image1, inputs.image2, inputs.image3].filter(
+      (value): value is string => typeof value === "string" && Boolean(value.trim()),
+    );
     const base = NANO_MODELS[params.model] ?? NANO_MODELS["Nano Banana"];
     const edit = refs.length > 0;
 
@@ -299,7 +302,10 @@ const nanoBanana: NodeDef = {
       prompt: inputs.prompt,
       num_images: Math.max(1, Number(params.num_images) || 1),
     };
-    if (edit) body.image_urls = refs;
+    if (edit) {
+      log("Uploading character or image references");
+      body.image_urls = await uploadFalImageReferences(refs);
+    }
     if (params.aspect_ratio && (edit || params.aspect_ratio !== "auto")) body.aspect_ratio = params.aspect_ratio;
 
     const d = await callFal(edit ? `${base}/edit` : base, body, log, signal);

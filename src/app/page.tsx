@@ -64,6 +64,7 @@ import { hasValidWorkflowEdgeReferences, stripInvalidWorkflowConnections } from 
 import {
   createEmptyStoryboard,
   normalizeStoryboard,
+  type StoryboardCharacter,
   type StoryboardData,
   type StoryboardGeneratedTake,
 } from "@/lib/StoryboardData";
@@ -71,9 +72,11 @@ import {
   buildStoryboardVideoPrompt,
   collectStoryboardVideoCandidates,
   rebindStoryboardWorkflowReferences,
+  resolveWorkflowCharacterReferences,
   resolveWorkflowStoryboardFrames,
   type StoryboardVideoCandidate,
 } from "@/lib/storyboard-workflow";
+import { loadApprovedCharacterReferenceImage } from "@/lib/project-character-reference";
 import {
   createUnknownMediaAssetMetadata,
   workflowOutputMediaId,
@@ -170,6 +173,7 @@ type WorkflowLibrary = {
   version: 1;
   activeWorkflowId: string;
   workflows: SavedWorkflow[];
+  characters: StoryboardCharacter[];
   activeView: ProjectWorkspaceView;
 };
 
@@ -347,6 +351,28 @@ function normalizeWorkflowLibrary(value: unknown): {
   if (new Set(workflows.map((workflow) => workflow.id)).size !== workflows.length) {
     throw new Error("Saved workflow library contains duplicate workflow IDs.");
   }
+  if (value.characters !== undefined && !Array.isArray(value.characters)) {
+    throw new Error("Saved character library is invalid.");
+  }
+  const seenCharacterIds = new Set<string>();
+  const characterValues = [
+    ...(Array.isArray(value.characters) ? value.characters : []),
+    ...workflows.flatMap((workflow) => workflow.storyboard.characters ?? []),
+  ].filter((character) => {
+    if (!isRecord(character) || typeof character.id !== "string" || !character.id.trim()) return true;
+    if (seenCharacterIds.has(character.id)) return false;
+    seenCharacterIds.add(character.id);
+    return true;
+  });
+  const characters = normalizeStoryboard({
+    version: 1,
+    characters: characterValues,
+    scenes: [],
+  }).characters ?? [];
+  const workflowsWithoutEmbeddedCharacters = workflows.map((workflow) => ({
+    ...workflow,
+    storyboard: { ...workflow.storyboard, characters: [] },
+  }));
   const activeWorkflowId = workflows.some((workflow) => workflow.id === value.activeWorkflowId)
     ? value.activeWorkflowId as string
     : workflows[0].id;
@@ -354,7 +380,8 @@ function normalizeWorkflowLibrary(value: unknown): {
     library: {
       version: 1,
       activeWorkflowId,
-      workflows,
+      workflows: workflowsWithoutEmbeddedCharacters,
+      characters,
       activeView: isProjectWorkspaceView(value.activeView) ? value.activeView : "workflow",
     },
     removedConnections,
@@ -367,6 +394,7 @@ function createDefaultWorkflowLibrary(): WorkflowLibrary {
     version: 1,
     activeWorkflowId: id,
     activeView: "workflow",
+    characters: [],
     workflows: [{
       id,
       name: DEFAULT_WORKFLOW_NAME,
@@ -401,12 +429,19 @@ function readBrowserWorkflowLibrary(): {
   const sanitized = stripInvalidWorkflowConnections(JSON.parse(legacy));
   const normalized = normalizeWorkflow(sanitized.workflow);
   const id = crypto.randomUUID();
+  const characters = normalized.storyboard.characters ?? [];
   return {
     library: {
       version: 1,
       activeWorkflowId: id,
       activeView: "workflow",
-      workflows: [{ id, ...normalized, updatedAt: Date.now() }],
+      characters,
+      workflows: [{
+        id,
+        ...normalized,
+        storyboard: { ...normalized.storyboard, characters: [] },
+        updatedAt: Date.now(),
+      }],
     },
     restored: true,
     legacyKey: true,
@@ -449,6 +484,7 @@ export default function Page() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [groups, setGroups] = useState<CanvasGroup[]>([]);
   const [storyboard, setStoryboard] = useState<StoryboardData>(() => createEmptyStoryboard());
+  const [projectCharacters, setProjectCharacters] = useState<StoryboardCharacter[]>([]);
   const [projectMediaAssets, setProjectMediaAssets] = useState<ProjectMediaAsset[]>([]);
   const [projectSession, setProjectSession] = useState<ProjectFolderSession | null>(null);
   const [projectSessionReady, setProjectSessionReady] = useState(false);
@@ -496,6 +532,7 @@ export default function Page() {
   const runInProgress = useRef(false);
   const lastSavedPayload = useRef("");
   const workflowsRef = useRef<SavedWorkflow[]>([]);
+  const projectCharactersRef = useRef<StoryboardCharacter[]>([]);
   const activeWorkflowIdRef = useRef("");
   const ollamaPromptContextRef = useRef<OllamaPromptContext | null>(null);
   const projectSessionRef = useRef<ProjectFolderSession | null>(null);
@@ -529,6 +566,46 @@ export default function Page() {
   const refreshProjectMediaAssets = useCallback(async () => {
     setProjectMediaAssets(await listProjectMediaAssets());
   }, []);
+  useEffect(() => {
+    projectCharactersRef.current = projectCharacters;
+  }, [projectCharacters]);
+  const saveCharacterReferenceAsset = useCallback(async (
+    file: File,
+    metadata: ProjectMediaAsset["metadata"],
+  ) => {
+    if (!file.type.startsWith("image/") || file.size <= 0 || file.size > 20 * 1024 * 1024) {
+      throw new Error("Character reference images must be non-empty image files of 20 MB or less.");
+    }
+    const sessionAtStart = projectSessionRef.current;
+    const id = `character-reference:${crypto.randomUUID()}`;
+    const asset: ProjectMediaAsset = {
+      id,
+      name: file.name,
+      mediaKind: "image",
+      mimeType: file.type,
+      source: { kind: "storage", storageKey: id },
+      metadata,
+    };
+    if (sessionAtStart) {
+      const { manifest } = await readOrCreateProjectManifest(sessionAtStart.handle);
+      if (manifest.id !== sessionAtStart.projectId) {
+        throw new Error("The project folder changed before this character reference could be saved.");
+      }
+      if (projectSessionRef.current?.sessionKey !== sessionAtStart.sessionKey) {
+        throw new Error("The active project changed before this character reference could be saved. Try again.");
+      }
+      if (!manifest.assets.some((entry) => entry.id === id)) {
+        await addMediaToProjectFolder(sessionAtStart.handle, manifest, asset, file);
+        setProjectSessionEpoch((current) => current + 1);
+      }
+    }
+    const registered = await registerProjectMediaAsset(asset, file);
+    if ((projectSessionRef.current?.sessionKey ?? null) !== (sessionAtStart?.sessionKey ?? null)) {
+      throw new Error("The active project changed while this character reference was being saved. Try again.");
+    }
+    await refreshProjectMediaAssets();
+    return registered.id;
+  }, [refreshProjectMediaAssets]);
   const registerEditorSaveHandler = useCallback((handler: (() => Promise<void>) | null) => {
     editorSaveHandler.current = handler;
     setRegisteredSaveHandlers((current) => current.editor === (handler !== null)
@@ -865,8 +942,10 @@ export default function Page() {
           const current = library.workflows.find((workflow) => workflow.id === library.activeWorkflowId);
           if (!current) throw new Error("The active workflow could not be restored.");
           workflowsRef.current = library.workflows;
+          projectCharactersRef.current = library.characters;
           activeWorkflowIdRef.current = library.activeWorkflowId;
           setWorkflows(library.workflows);
+          setProjectCharacters(library.characters);
           setActiveWorkflowId(library.activeWorkflowId);
           setWorkflowName(current.name);
           setNodes(current.nodes);
@@ -941,7 +1020,7 @@ export default function Page() {
       nodes: savedNodes,
       edges: savedEdges,
       groups,
-      storyboard,
+      storyboard: { ...storyboard, characters: [] },
       updatedAt: Date.now(),
     };
     const nextWorkflows = workflowsRef.current.some((workflow) => workflow.id === activeId)
@@ -951,6 +1030,7 @@ export default function Page() {
       version: 1,
       activeWorkflowId: activeId,
       workflows: nextWorkflows,
+      characters: projectCharacters,
       activeView,
     };
     if (projectSession) {
@@ -979,7 +1059,7 @@ export default function Page() {
       setStorageStatus("Unable to save workflow");
       return false;
     }
-  }, [activeView, edges, groups, nodes, projectSession, setEdges, storyboard, workflowName, workflowSessionKey]);
+  }, [activeView, edges, groups, nodes, projectCharacters, projectSession, setEdges, storyboard, workflowName, workflowSessionKey]);
 
   const saveProjectNow = useCallback(async () => {
     if (!projectSession) throw new Error("Open a project folder before saving the project.");
@@ -1447,6 +1527,18 @@ export default function Page() {
     const shouldUseLowSettings = lowSettings && !targetIds;
     let graph: Graph;
     try {
+      const referenceScopeIds = targetIds ? new Set<string>() : undefined;
+      if (referenceScopeIds) {
+        const pending = [...(targetIds ?? [])];
+        while (pending.length) {
+          const currentId = pending.pop();
+          if (!currentId || referenceScopeIds.has(currentId)) continue;
+          referenceScopeIds.add(currentId);
+          for (const edge of edges) {
+            if (edge.target === currentId) pending.push(edge.source);
+          }
+        }
+      }
       const sourceWorkflows = workflowsRef.current.map((workflow) => workflow.id === activeWorkflowIdRef.current
         ? { ...workflow, storyboard }
         : workflow);
@@ -1454,13 +1546,19 @@ export default function Page() {
         nodes: resolveWorkflowStoryboardFrames(nodes.map((n) => {
           const data = n.data as { type: string; params: Record<string, unknown> };
           return { id: n.id, type: data.type, params: data.params };
-        }), sourceWorkflows),
+        }), sourceWorkflows, referenceScopeIds),
         edges: edges.map((e) => ({
           source: e.source, sourceHandle: e.sourceHandle!, target: e.target, targetHandle: e.targetHandle!,
         })),
       };
+      graph.nodes = await resolveWorkflowCharacterReferences(
+        graph.nodes,
+        projectCharactersRef.current,
+        (character) => loadApprovedCharacterReferenceImage(character, projectSessionRef.current),
+        referenceScopeIds,
+      );
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Could not resolve a storyboard frame.");
+      alert(error instanceof Error ? error.message : "Could not resolve a storyboard or character reference.");
       return;
     }
     const issues = validateWorkflow(graph, targetIds);
@@ -1535,6 +1633,36 @@ export default function Page() {
   };
   const run = () => { void executeGraph(undefined, runMode === "low"); };
   const runNode = (nodeId: string) => { void executeGraph([nodeId]); };
+  const addCharacterReferenceToWorkflow = (characterId: string) => {
+    const character = projectCharactersRef.current.find((candidate) => candidate.id === characterId);
+    if (!character?.referenceImageApproved || !character.referenceImageMediaAssetId) {
+      setStorageError("Choose a character with an approved reference before adding it to Workflow.");
+      setStorageStatus("Unable to add character reference");
+      return;
+    }
+    const nodeId = `input/image-${crypto.randomUUID()}`;
+    const node: Node = {
+      id: nodeId,
+      type: "workflow",
+      position: { x: 100 + nodes.length * 30, y: 100 + nodes.length * 30 },
+      data: {
+        type: "input/image",
+        params: {
+          url: "",
+          projectCharacterRef: { kind: "project-character", characterId },
+        },
+        status: "idle",
+        outputs: {},
+        log: "",
+        title: `Character reference · ${character.name}`,
+        paramLabels: { url: "Approved reference image" },
+      },
+    };
+    setNodes((current) => [...current, node]);
+    setActiveView("workflow");
+    setStorageError("");
+    setStorageStatus(`Added ${character.name}'s reference to Workflow; connect it to a reference-image input.`);
+  };
   const addStoryboardFrameToWorkflow = (
     sceneId: string,
     shotId: string,
@@ -1686,6 +1814,7 @@ export default function Page() {
       version: 1,
       activeWorkflowId: nextActiveId,
       workflows: nextWorkflows,
+      characters: projectCharactersRef.current,
       activeView,
     };
     if (projectSession) {
@@ -1967,11 +2096,22 @@ export default function Page() {
       const raw: unknown = JSON.parse(await file.text());
       const imported = normalizeWorkflow(raw);
       if (!saveWorkflowLocally()) return;
+      const importedCharacters = imported.storyboard.characters ?? [];
+      const nextProjectCharacters = [...projectCharactersRef.current];
+      for (const candidate of importedCharacters) {
+        const existing = nextProjectCharacters.find((character) =>
+          character.id === candidate.id
+          || character.name.toLocaleLowerCase() === candidate.name.toLocaleLowerCase());
+        if (!existing) nextProjectCharacters.push(candidate);
+      }
+      projectCharactersRef.current = nextProjectCharacters;
+      setProjectCharacters(nextProjectCharacters);
       const workflowId = crypto.randomUUID();
       const sourceWorkflowId = isRecord(raw) && typeof raw.id === "string" ? raw.id : "";
       const workflow: SavedWorkflow = {
         id: workflowId,
         ...imported,
+        storyboard: { ...imported.storyboard, characters: [] },
         nodes: sourceWorkflowId
           ? rebindStoryboardWorkflowReferences(imported.nodes.map((node) => {
             const data = node.data as { type: string; params: Record<string, unknown> };
@@ -2551,7 +2691,10 @@ export default function Page() {
         onProjectSessionChange={updateProjectSession}
         onRegisterSaveHandler={registerCompositorSaveHandler}
       />
-      <StoryboardTab storyboard={storyboard} onChange={setStoryboard} onSendFrame={addStoryboardFrameToWorkflow}
+      <StoryboardTab storyboard={storyboard} characters={projectCharacters}
+        onChange={setStoryboard} onCharactersChange={setProjectCharacters}
+        onSaveCharacterReference={saveCharacterReferenceAsset}
+        onSendFrame={addStoryboardFrameToWorkflow}
         onSaveTake={saveStoryboardGeneratedTake}
         onSaveTakeCopy={saveExistingStoryboardTakeCopy}
         onOpenWorkflow={(workflowId) => {
@@ -2571,6 +2714,7 @@ export default function Page() {
         videoModelOptions={storyboardVideoModelOptions}
         firstLastFrameModelOptions={storyboardFirstLastFrameModelOptions}
         hidden={activeView !== "storyboard"}
+        onAddCharacterReferenceToWorkflow={addCharacterReferenceToWorkflow}
         saveError={storageStatus === "Unable to save workflow"
           || storageStatus === "Unable to save project workflows" ? storageError : ""}
         autoSaveError={storageStatus === "Unable to save generated video locally" ? storageError : ""}

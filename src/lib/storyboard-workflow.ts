@@ -1,5 +1,6 @@
 import {
   stripStoryboardContinuityBlocks,
+  type StoryboardCharacter,
   type StoryboardData,
   type StoryboardScene,
   type StoryboardShot,
@@ -215,9 +216,11 @@ export function resolveWorkflowStoryboardFrames<T extends {
 }>(
   nodes: readonly T[],
   workflows: readonly { id: string; storyboard: StoryboardData }[],
+  scopeIds?: ReadonlySet<string>,
 ): T[] {
   return nodes.map((node) => {
-    if (node.type !== "input/image" || !Object.hasOwn(node.params, "storyboardFrameRef")) return node;
+    if ((scopeIds && !scopeIds.has(node.id))
+      || node.type !== "input/image" || !Object.hasOwn(node.params, "storyboardFrameRef")) return node;
     const params = { ...node.params };
     const reference = params.storyboardFrameRef;
     delete params.storyboardFrameRef;
@@ -225,6 +228,37 @@ export function resolveWorkflowStoryboardFrames<T extends {
     params.url = resolveStoryboardFrameReference(reference, workflows);
     return { ...node, params };
   });
+}
+
+export async function resolveWorkflowCharacterReferences<T extends {
+  id: string;
+  type: string;
+  params: Record<string, unknown>;
+}>(
+  nodes: readonly T[],
+  characters: readonly StoryboardCharacter[],
+  loadImage: (character: StoryboardCharacter) => Promise<string>,
+  scopeIds?: ReadonlySet<string>,
+): Promise<T[]> {
+  return Promise.all(nodes.map(async (node) => {
+    if ((scopeIds && !scopeIds.has(node.id))
+      || node.type !== "input/image" || !Object.hasOwn(node.params, "projectCharacterRef")) return node;
+    const params = { ...node.params };
+    const reference = params.projectCharacterRef;
+    delete params.projectCharacterRef;
+    if (String(params.url ?? "").trim()) return { ...node, params };
+    if (!isRecord(reference) || reference.kind !== "project-character"
+      || typeof reference.characterId !== "string") {
+      throw new Error("Project character reference is invalid.");
+    }
+    const character = characters.find((candidate) => candidate.id === reference.characterId);
+    if (!character) throw new Error("The referenced project character is unavailable.");
+    if (!character.referenceImageApproved || !character.referenceImageMediaAssetId) {
+      throw new Error(`${character.name} no longer has an approved character reference.`);
+    }
+    params.url = await loadImage(character);
+    return { ...node, params };
+  }));
 }
 
 export function rebindStoryboardWorkflowReferences<T extends {

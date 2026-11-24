@@ -12,8 +12,10 @@ require.extensions[".ts"] = (module, filename) => {
 };
 const {
   STORYBOARD_FRAME_MODELS,
+  buildStoryboardCharacterSheetPrompt,
   buildStoryboardFramePrompt,
   generateStoryboardFrame,
+  storyboardFrameModelSupportsCharacterReferences,
 } = require(path.join(__dirname, "..", "src", "lib", "StoryboardFrameGeneration.ts"));
 
 test("frame model selector lists connected image providers and model variants", () => {
@@ -76,9 +78,52 @@ test("frame generation applies the global style bible once and trims legacy repe
   assert.doesNotMatch(prompt, /Character continuity:/);
 });
 
+test("frame prompts name selected character references and restrict their use to identity", () => {
+  const prompt = buildStoryboardFramePrompt(
+    { title: "Greenhouse" },
+    { title: "The sprout", description: "UNIT-07 holds a new sprout.", shotType: "Medium", cameraMove: "Static" },
+    "16:9",
+    undefined,
+    ["UNIT-07"],
+  );
+  assert.match(prompt, /Character identity references: UNIT-07/);
+  assert.match(prompt, /do not copy the reference sheet's pose, composition, background, or lighting/);
+});
+
+test("character-sheet prompts preserve canon traits and request matching turnaround views", () => {
+  const prompt = buildStoryboardCharacterSheetPrompt({
+    name: "UNIT-07",
+    visualDescription: "A yellow robot with tank treads, a single lens, and two pincer claws.",
+  }, { visualStyle: "Painterly 3D sci-fi.", recurringCharacter: "", recurringLocation: "" });
+  assert.match(prompt, /tank treads, a single lens, and two pincer claws/);
+  assert.match(prompt, /front view, side view, and back view/);
+  assert.match(prompt, /identical in all three views/);
+  assert.match(prompt, /Painterly 3D sci-fi/);
+  assert.match(prompt, /text, labels, captions, borders, or panel dividers/);
+  assert.throws(() => buildStoryboardCharacterSheetPrompt({
+    name: "UNIT-07",
+    visualDescription: "",
+  }), /visual description/);
+});
+
 test("unsupported image models fail before making a provider request", async () => {
   await assert.rejects(
     generateStoryboardFrame("unsupported-model", "A frame", "16:9"),
     /supported storyboard image model/,
+  );
+});
+
+test("character references are limited to supported image models and three images", async () => {
+  const image = "data:image/png;base64,ZmFrZQ==";
+  assert.equal(storyboardFrameModelSupportsCharacterReferences("gemini-3.1-flash-image"), true);
+  assert.equal(storyboardFrameModelSupportsCharacterReferences("fal-ai/nano-banana-2"), true);
+  assert.equal(storyboardFrameModelSupportsCharacterReferences("gpt-image-2.6-sunburst"), false);
+  await assert.rejects(
+    generateStoryboardFrame("gpt-image-2.6-sunburst", "A frame", "16:9", [image]),
+    /require a Nano Banana image model/,
+  );
+  await assert.rejects(
+    generateStoryboardFrame("gemini-3.1-flash-image", "A frame", "16:9", [image, image, image, image]),
+    /no more than three/,
   );
 });

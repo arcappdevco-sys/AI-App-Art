@@ -1,4 +1,8 @@
 import { normalizeMediaAssetMetadata, type MediaAssetMetadata } from "./project-media";
+import type {
+  StoryboardCharacterAppearance,
+  StoryboardCharacterCandidate,
+} from "./storyboard-character-analysis";
 
 export const STORYBOARD_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "21:9"] as const;
 export const STORYBOARD_SHOT_TYPES = [
@@ -52,6 +56,7 @@ export type StoryboardShot = {
   title: string;
   description: string;
   prompt: string;
+  characterIds?: string[];
   shotType: StoryboardShotType;
   cameraMove: StoryboardCameraMove;
   durationSeconds: number | null;
@@ -74,11 +79,22 @@ export type StoryboardStyleBible = {
   recurringLocation: string;
 };
 
+export type StoryboardCharacter = StoryboardCharacterCandidate & {
+  id: string;
+  referenceImageMediaAssetId?: string;
+  referenceImageApproved?: boolean;
+  referenceImageSource?: "uploaded" | "generated";
+  referenceImageModel?: string;
+};
+
+export type StoryboardCharacterDraft = Omit<StoryboardCharacter, "id">;
+
 export type StoryboardData = {
   version: 1;
   title: string;
   aspectRatio: StoryboardAspectRatio;
   styleBible?: StoryboardStyleBible;
+  characters?: StoryboardCharacter[];
   scenes: StoryboardScene[];
 };
 
@@ -106,6 +122,7 @@ export function createEmptyStoryboard(): StoryboardData {
     title: "Untitled storyboard",
     aspectRatio: "16:9",
     styleBible: { visualStyle: "", recurringCharacter: "", recurringLocation: "" },
+    characters: [],
     scenes: [],
   };
 }
@@ -177,6 +194,10 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     ? value.frame
     : null;
   const frameMetadata = frame ? normalizeMediaAssetMetadata(value.frameMetadata) : undefined;
+  const characterIds = Array.isArray(value.characterIds)
+    ? [...new Set(value.characterIds.flatMap((id) =>
+      typeof id === "string" && id.trim() ? [id.trim()] : []))].slice(0, 3)
+    : [];
   const generatedTakes = Array.isArray(value.generatedTakes)
     ? value.generatedTakes.flatMap((take) => {
       if (!isRecord(take)
@@ -218,6 +239,7 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     title: typeof value.title === "string" ? value.title : "",
     description: typeof value.description === "string" ? value.description : "",
     prompt: typeof value.prompt === "string" ? value.prompt : "",
+    ...(characterIds.length ? { characterIds } : {}),
     shotType: typeof value.shotType === "string" && STORYBOARD_SHOT_TYPES.includes(value.shotType as (typeof STORYBOARD_SHOT_TYPES)[number])
       ? value.shotType as StoryboardShotType
       : EMPTY_SHOT_TYPE,
@@ -229,6 +251,63 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     frame,
     ...(generatedTakes.length ? { generatedTakes } : {}),
     ...(frameMetadata ? { frameMetadata } : {}),
+  };
+}
+
+function normalizeCharacter(value: unknown, usedIds: Set<string>): StoryboardCharacter | null {
+  if (!isRecord(value) || typeof value.name !== "string" || !value.name.trim()
+    || typeof value.visualDescription !== "string") return null;
+  const aliases = Array.isArray(value.aliases)
+    ? value.aliases.flatMap((alias) =>
+      typeof alias === "string" && alias.trim() && alias.length <= 120 ? [alias.trim()] : [])
+      .slice(0, 20)
+    : [];
+  const evidence = Array.isArray(value.evidence)
+    ? value.evidence.flatMap((excerpt) =>
+      typeof excerpt === "string" && excerpt.trim() && excerpt.length <= 1000 ? [excerpt.trim()] : [])
+      .slice(0, 12)
+    : [];
+  const appearances: StoryboardCharacterAppearance[] = Array.isArray(value.appearances)
+    ? value.appearances.flatMap((appearance) => {
+      if (!isRecord(appearance) || typeof appearance.evidence !== "string"
+        || !appearance.evidence.trim() || appearance.evidence.length > 1000
+        || typeof appearance.sceneHeading !== "string") return [];
+      const shotNumber = appearance.shotNumber === null
+        ? null
+        : typeof appearance.shotNumber === "number" && Number.isInteger(appearance.shotNumber)
+          && appearance.shotNumber >= 1 && appearance.shotNumber <= 120
+          ? appearance.shotNumber
+          : null;
+      return [{
+        shotNumber,
+        sceneHeading: appearance.sceneHeading.slice(0, 300),
+        evidence: appearance.evidence.trim(),
+      }];
+    }).slice(0, 120)
+    : [];
+  const referenceImageMediaAssetId = typeof value.referenceImageMediaAssetId === "string"
+    && value.referenceImageMediaAssetId.trim()
+    ? value.referenceImageMediaAssetId.trim()
+    : "";
+  const referenceImageSource = value.referenceImageSource === "uploaded" || value.referenceImageSource === "generated"
+    ? value.referenceImageSource
+    : undefined;
+  const referenceImageModel = typeof value.referenceImageModel === "string" && value.referenceImageModel.trim()
+    ? value.referenceImageModel.trim().slice(0, 200)
+    : undefined;
+  return {
+    id: addUniqueId(value.id, usedIds),
+    name: value.name.trim().slice(0, 120),
+    aliases,
+    visualDescription: value.visualDescription.trim().slice(0, 3000),
+    evidence,
+    appearances,
+    ...(referenceImageMediaAssetId ? {
+      referenceImageMediaAssetId,
+      referenceImageApproved: value.referenceImageApproved === true,
+      ...(referenceImageSource ? { referenceImageSource } : {}),
+      ...(referenceImageModel ? { referenceImageModel } : {}),
+    } : {}),
   };
 }
 
@@ -262,6 +341,12 @@ export function normalizeStoryboard(value: unknown): StoryboardData {
     && typeof savedStyleBible[key] === "string"
     ? savedStyleBible[key] as string
     : extractedStyleBible[key];
+  const characters = Array.isArray(value.characters)
+    ? value.characters.flatMap((character) => {
+      const normalized = normalizeCharacter(character, usedIds);
+      return normalized ? [normalized] : [];
+    }).slice(0, 60)
+    : [];
   return {
     version: 1,
     title: typeof value.title === "string" && value.title.trim() ? value.title : "Untitled storyboard",
@@ -274,6 +359,7 @@ export function normalizeStoryboard(value: unknown): StoryboardData {
       recurringCharacter: normalizeStyleBibleValue("recurringCharacter"),
       recurringLocation: normalizeStyleBibleValue("recurringLocation"),
     },
+    characters,
     scenes,
   };
 }

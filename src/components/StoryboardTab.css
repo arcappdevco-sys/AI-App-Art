@@ -307,6 +307,246 @@
   line-height: 1.45;
 }
 
+.storyboard-character-analysis {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.storyboard-character-analysis-heading,
+.storyboard-character-review-heading,
+.storyboard-character-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.storyboard-character-analysis-heading h3,
+.storyboard-character-review-heading h4,
+.storyboard-character-saved-list h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.storyboard-character-analysis-heading p,
+.storyboard-character-analysis-note {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.storyboard-character-analysis-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.storyboard-character-analysis-controls label,
+.storyboard-character-card label {
+  display: grid;
+  min-width: 180px;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.storyboard-character-analysis-controls select,
+.storyboard-character-card input,
+.storyboard-character-card textarea {
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.storyboard-character-card textarea {
+  min-height: 54px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.storyboard-character-analysis button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--button-bg);
+  border-radius: 6px;
+  background: var(--button-bg);
+  color: var(--button-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.storyboard-character-analysis button:hover:not(:disabled) {
+  border-color: var(--button-hover);
+  background: var(--button-hover);
+}
+
+.storyboard-character-analysis button.storyboard-secondary-action {
+  border-color: var(--line-control);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+}
+
+.storyboard-character-analysis button.storyboard-secondary-action:hover:not(:disabled) {
+  border-color: var(--line-hover);
+  background: var(--control-bg);
+  color: var(--text);
+}
+
+.storyboard-character-analysis button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.storyboard-character-analysis-note {
+  margin: 0;
+}
+
+.storyboard-character-saved-list,
+.storyboard-character-review {
+  display: grid;
+  gap: 8px;
+}
+
+.storyboard-character-review-heading {
+  justify-content: flex-start;
+}
+
+.storyboard-character-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-deep);
+}
+
+.storyboard-character-card-actions strong,
+.storyboard-character-card h5 {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.storyboard-character-card h5 {
+  margin: 0;
+}
+
+.storyboard-character-card p,
+.storyboard-character-card > span {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.storyboard-character-evidence {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.storyboard-character-evidence blockquote {
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--line-control);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.storyboard-character-evidence p span {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.storyboard-character-reference {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.storyboard-character-reference-preview {
+  display: block;
+  width: min(100%, 440px);
+  max-height: 260px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #e7e7e7;
+}
+
+.storyboard-character-reference-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.storyboard-character-reference-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.storyboard-character-upload {
+  position: relative;
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.storyboard-character-upload:hover {
+  border-color: var(--line-hover);
+  color: var(--text);
+}
+
+.storyboard-character-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.storyboard-character-analysis-saved {
+  margin: 0;
+  color: var(--success, #74c69d);
+  font-size: 10px;
+}
+
+.storyboard-character-add {
+  justify-self: start;
+}
+
+.storyboard-character-upload:focus-within,
+.storyboard-character-reference-actions button:focus-visible,
+.storyboard-character-card input:focus-visible,
+.storyboard-character-card textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .storyboard-image-panel {
   display: grid;
   gap: 8px;
@@ -1007,6 +1247,46 @@
   gap: 0 9px;
 }
 
+.storyboard-shot-character-references {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.storyboard-shot-character-references legend {
+  padding: 0 4px;
+  color: var(--text-secondary);
+  font-weight: 650;
+}
+
+.storyboard-shot-character-references legend small,
+.storyboard-shot-character-references > small,
+.storyboard-shot-character-references p {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 450;
+}
+
+.storyboard-shot-character-references label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.storyboard-shot-character-references input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.storyboard-shot-character-references p {
+  margin: 0;
+}
+
 .storyboard-duration-field {
   grid-column: 1 / -1;
 }
@@ -1085,6 +1365,16 @@
 
   .storyboard-script-heading-row {
     align-items: flex-start;
+  }
+
+  .storyboard-character-analysis-heading,
+  .storyboard-character-analysis-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .storyboard-character-analysis-controls label {
+    min-width: 0;
   }
 
   .storyboard-script-footer {

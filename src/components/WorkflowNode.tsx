@@ -336,6 +336,7 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
     if (d.type === "input/image" && key === "url") {
       const params = { ...d.params, [key]: value };
       delete params.storyboardFrameRef;
+      delete params.projectCharacterRef;
       updateNodeData(id, { params });
       return;
     }
@@ -1439,6 +1440,11 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
       {d.type === "input/image" && d.params.storyboardFrameRef && (
         <div className="ff-node-hint">
           This storyboard frame resolves when the workflow runs. Connect it to an image input; Google Gemini Image supports inline reference frames.
+        </div>
+      )}
+      {d.type === "input/image" && d.params.projectCharacterRef && (
+        <div className="ff-node-hint">
+          This approved project character reference resolves when the workflow runs. Connect it to a model&apos;s reference-image input.
         </div>
       )}
       {d.type === "input/image" && (

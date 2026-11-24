@@ -584,6 +584,34 @@ test("defaults older project workspaces to the workflow view", async () => {
   assert.equal(state.activeView, "workflow");
 });
 
+test("preserves the project-wide character library in workspace documents", async () => {
+  const handle = createMemoryDirectoryHandle();
+  const { manifest } = await readOrCreateProjectManifest(handle);
+  const characters = [{
+    id: "mara",
+    name: "MARA",
+    referenceImageMediaAssetId: "character-reference:mara",
+    referenceImageApproved: true,
+  }];
+  handle.files.set(PROJECT_WORKSPACE_DOCUMENT_FILE_NAME, JSON.stringify({
+    format: "fal-flow-workspace",
+    schemaVersion: 1,
+    projectId: manifest.id,
+    updatedAt: new Date().toISOString(),
+    state: {
+      version: 1,
+      activeWorkflowId: "workflow-1",
+      workflows: [{ id: "workflow-1" }],
+      characters,
+      activeView: "storyboard",
+    },
+  }));
+
+  const state = await loadProjectWorkspaceState(handle, manifest.id);
+  assert.deepEqual(state.characters, characters);
+  assert.equal(state.activeView, "storyboard");
+});
+
 test("rejects invalid or mismatched project workflow documents without replacing them", async () => {
   const handle = createMemoryDirectoryHandle();
   const { manifest } = await readOrCreateProjectManifest(handle);

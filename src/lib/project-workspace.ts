@@ -8,6 +8,7 @@ export type ProjectWorkspaceState = {
   version: 1;
   activeWorkflowId: string;
   workflows: unknown[];
+  characters?: unknown[];
   activeView: ProjectWorkspaceView;
 };
 
@@ -39,6 +40,9 @@ function normalizeState(value: unknown): ProjectWorkspaceState {
   if (value.activeView !== undefined && !isProjectWorkspaceView(value.activeView)) {
     throw new Error("The project workspace document contains an invalid active view.");
   }
+  if (value.characters !== undefined && !Array.isArray(value.characters)) {
+    throw new Error("The project workspace document contains an invalid character library.");
+  }
   const workflowIds = value.workflows.map((workflow) => {
     if (!isRecord(workflow) || !isText(workflow.id)) {
       throw new Error("The project workspace document contains an invalid workflow.");
@@ -55,6 +59,7 @@ function normalizeState(value: unknown): ProjectWorkspaceState {
     version: 1,
     activeWorkflowId: value.activeWorkflowId,
     workflows: value.workflows,
+    ...(Array.isArray(value.characters) ? { characters: value.characters } : {}),
     activeView: isProjectWorkspaceView(value.activeView) ? value.activeView : "workflow",
   };
 }
