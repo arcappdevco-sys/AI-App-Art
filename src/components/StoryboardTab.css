@@ -23,7 +23,8 @@
 }
 
 .storyboard-title-label,
-.storyboard-ratio-label {
+.storyboard-ratio-label,
+.storyboard-script-provider {
   display: grid;
   min-width: 0;
   gap: 4px;
@@ -38,6 +39,7 @@
 
 .storyboard-title-label input,
 .storyboard-ratio-label select,
+.storyboard-script-provider select,
 .storyboard-scene-title,
 .storyboard-field input,
 .storyboard-field textarea,
@@ -62,8 +64,19 @@
   font-size: 12px;
 }
 
+.storyboard-script-provider {
+  min-width: 190px;
+}
+
+.storyboard-script-provider select {
+  min-height: 34px;
+  padding: 0 25px 0 9px;
+  font-size: 12px;
+}
+
 .storyboard-toolbar-actions {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
   margin-left: auto;
 }
@@ -115,6 +128,43 @@
   color: var(--button-text);
 }
 
+.storyboard-style-bible {
+  display: grid;
+  gap: 8px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.storyboard-style-bible summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.storyboard-style-bible p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.storyboard-style-bible > label {
+  display: grid;
+  gap: 4px;
+}
+
+.storyboard-style-bible textarea {
+  min-height: 48px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: var(--surface-deep);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
 .storyboard-script-panel {
   display: grid;
   gap: 8px;
@@ -129,6 +179,17 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.storyboard-script-footer {
+  flex-wrap: wrap;
+}
+
+.storyboard-script-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .storyboard-script-heading-row h2 {
@@ -215,6 +276,18 @@
   background: var(--button-hover);
 }
 
+.storyboard-script-footer .storyboard-secondary-action {
+  border-color: var(--line-control);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+}
+
+.storyboard-script-footer .storyboard-secondary-action:hover:not(:disabled) {
+  border-color: var(--line-hover);
+  background: var(--control-bg);
+  color: var(--text);
+}
+
 .storyboard-script-footer button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -225,6 +298,13 @@
 .storyboard-script-footer button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.storyboard-script-local-import-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .storyboard-image-panel {
@@ -911,6 +991,10 @@
   line-height: 1.45;
 }
 
+.storyboard-field .storyboard-prompt-help {
+  line-height: 1.35;
+}
+
 .storyboard-field input::placeholder,
 .storyboard-field textarea::placeholder {
   color: var(--muted);
@@ -979,6 +1063,15 @@
   }
 
   .storyboard-toolbar-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .storyboard-script-provider {
+    flex: 1 1 190px;
+  }
+
+  .storyboard-script-provider select {
     width: 100%;
   }
 

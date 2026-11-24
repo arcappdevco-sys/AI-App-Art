@@ -1,11 +1,17 @@
-import type { StoryboardData, StoryboardScene, StoryboardShot } from "./StoryboardData";
+import {
+  stripStoryboardContinuityBlocks,
+  type StoryboardData,
+  type StoryboardScene,
+  type StoryboardShot,
+  type StoryboardStyleBible,
+} from "./StoryboardData";
 import type { NodeDef } from "./types";
 
 type StoryboardPromptScene = Pick<StoryboardScene, "title">;
 type StoryboardPromptShot = Pick<
   StoryboardShot,
   "title" | "description" | "shotType" | "cameraMove" | "durationSeconds"
->;
+> & Partial<Pick<StoryboardShot, "prompt">>;
 
 function formatStoryboardPromptShot(
   scene: StoryboardPromptScene,
@@ -16,7 +22,9 @@ function formatStoryboardPromptShot(
     `Scene: ${scene.title.trim() || "Untitled scene"}`,
     `Shot: ${shot.title.trim() || "Untitled shot"}`,
   ];
-  if (shot.description.trim()) lines.push(`Description: ${shot.description.trim()}`);
+  const prompt = shot.prompt?.trim();
+  if (prompt) lines.push(`Prompt: ${prompt}`);
+  else if (shot.description.trim()) lines.push(`Description: ${stripStoryboardContinuityBlocks(shot.description)}`);
   if (shot.shotType) lines.push(`Shot type: ${shot.shotType}`);
   if (shot.cameraMove) lines.push(`Camera movement: ${shot.cameraMove}`);
   if (shot.durationSeconds !== null) lines.push(`${label} storyboard duration: ${shot.durationSeconds} seconds`);
@@ -27,18 +35,26 @@ export function buildStoryboardVideoPrompt(
   firstScene: StoryboardPromptScene,
   firstShot: StoryboardPromptShot,
   lastFrame?: { scene: StoryboardPromptScene; shot: StoryboardPromptShot },
+  styleBible?: StoryboardStyleBible,
 ): string {
-  if (!lastFrame) {
-    return [
+  const bible = [
+    styleBible?.visualStyle ? `Visual style: ${styleBible.visualStyle}` : "",
+    styleBible?.recurringCharacter ? `Recurring character: ${styleBible.recurringCharacter}` : "",
+    styleBible?.recurringLocation ? `Recurring location: ${styleBible.recurringLocation}` : "",
+  ].filter(Boolean);
+  const prompt = lastFrame
+    ? [
+      "Create one continuous video from the provided first frame to the provided last frame. Preserve visual continuity and move naturally from the opening composition to the ending composition.",
+      `First frame:\n${formatStoryboardPromptShot(firstScene, firstShot, "First shot")}`,
+      `Last frame:\n${formatStoryboardPromptShot(lastFrame.scene, lastFrame.shot, "Last shot")}`,
+    ]
+    : [
       "Animate the provided storyboard frame into a video shot.",
       formatStoryboardPromptShot(firstScene, firstShot, "Shot"),
-    ].join("\n\n");
-  }
-  return [
-    "Create one continuous video from the provided first frame to the provided last frame. Preserve visual continuity and move naturally from the opening composition to the ending composition.",
-    `First frame:\n${formatStoryboardPromptShot(firstScene, firstShot, "First shot")}`,
-    `Last frame:\n${formatStoryboardPromptShot(lastFrame.scene, lastFrame.shot, "Last shot")}`,
-  ].join("\n\n");
+    ];
+  if (bible.length) prompt.splice(1, 0,
+    `Global style bible (preserve continuity using only details relevant to these frames): ${bible.join(" ")}`);
+  return prompt.join("\n\n");
 }
 
 export type StoryboardFrameReference = {

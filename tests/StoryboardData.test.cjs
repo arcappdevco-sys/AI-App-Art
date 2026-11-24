@@ -25,6 +25,7 @@ test("valid storyboard content survives normalization and JSON round trips", () 
     version: 1,
     title: "Opening",
     aspectRatio: "21:9",
+    styleBible: { visualStyle: "", recurringCharacter: "", recurringLocation: "" },
     scenes: [{
       id: "scene",
       title: "The station",
@@ -33,6 +34,7 @@ test("valid storyboard content survives normalization and JSON round trips", () 
         id: "shot",
         title: "Arrival",
         description: "A train enters the station.",
+        prompt: "A cinematic wide view of the train arriving.",
         shotType: "Wide",
         cameraMove: "Tracking",
         durationSeconds: 4.5,
@@ -78,8 +80,27 @@ test("legacy storyboard frames receive unknown metadata and known metadata survi
     color: { space: null, ocioConfig: null, sceneLinear: null },
     alphaMode: "unknown",
   });
+  assert.equal(shots[0].prompt, "");
+  assert.equal(shots[1].prompt, "");
   assert.equal(shots[1].frameMetadata.color.space, "ACEScg");
   assert.deepEqual(shots[1].frameMetadata.frameRate, { numerator: 24000, denominator: 1001 });
+});
+
+test("legacy repeated continuity blocks are extracted into a single global style bible", () => {
+  const storyboard = normalizeStoryboard({
+    version: 1,
+    title: "Continuity",
+    scenes: [{ id: "scene", shots: [
+      { id: "shot-1", description: "A robot finds a seed.\n\nVisual style: Painterly sci-fi.\nCharacter continuity: UNIT-07." },
+      { id: "shot-2", description: "A robot protects the seed.\n\nVisual style: Painterly sci-fi.\nCharacter continuity: UNIT-07.\nLocation continuity: Glass greenhouse." },
+    ] }],
+  });
+  assert.equal(storyboard.scenes[0].shots[0].description.includes("Visual style:"), true);
+  assert.deepEqual(storyboard.styleBible, {
+    visualStyle: "Painterly sci-fi.",
+    recurringCharacter: "UNIT-07.",
+    recurringLocation: "Glass greenhouse.",
+  });
 });
 
 test("malformed fields are ignored and all scene and shot IDs are unique", () => {

@@ -16,7 +16,14 @@ import {
 import { STORYBOARD_FRAME_MODELS, buildStoryboardFramePrompt, generateStoryboardFrame, type StoryboardFrameModelId } from "@/lib/StoryboardFrameGeneration";
 import { storyboardImageDataUrl } from "@/lib/StoryboardImages";
 import { inspectImageDataUrlMetadata } from "@/lib/project-media-browser";
-import { normalizeGeneratedStoryboard } from "@/lib/StoryboardScript";
+import {
+  normalizeGeneratedStoryboard,
+  parseStructuredStoryboardScript,
+} from "@/lib/StoryboardScript";
+import {
+  STORYBOARD_SCRIPT_PROVIDERS,
+  type StoryboardScriptProvider,
+} from "@/lib/storyboard-script-generation";
 import type {
   FirstLastFrameModelOption,
   ImageToVideoModelOption,
@@ -41,11 +48,13 @@ type StoryboardPanGesture = {
 
 const STORYBOARD_MIN_ZOOM = 0.25;
 const STORYBOARD_MAX_ZOOM = 3;
+const TOPVIEW_STORYBOARD_PENDING_KEY = "fal-flow-topview-storyboard-unresolved";
 
 function shotHasContent(shot: StoryboardShot) {
   return Boolean(
     shot.title.trim()
     || shot.description.trim()
+    || shot.prompt.trim()
     || shot.shotType
     || shot.cameraMove
     || shot.durationSeconds !== null
@@ -235,11 +244,28 @@ export default function StoryboardTab({
   const [scriptText, setScriptText] = useState("");
   const [scriptFileName, setScriptFileName] = useState("");
   const [scriptError, setScriptError] = useState("");
+  const [scriptProvider, setScriptProvider] = useState<StoryboardScriptProvider>("gemini");
+  const topviewStoryboardRequest = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
+  const [topviewReconciliationRequired, setTopviewReconciliationRequired] = useState(false);
+  const [topviewGuardLoaded, setTopviewGuardLoaded] = useState(false);
+  const [topviewStorageAvailable, setTopviewStorageAvailable] = useState(true);
   const [generatingStoryboard, setGeneratingStoryboard] = useState(false);
   const [frameModel, setFrameModel] = useState<StoryboardFrameModelId>(STORYBOARD_FRAME_MODELS[0].id);
   const [generatingShotIds, setGeneratingShotIds] = useState<Set<string>>(() => new Set());
   const [frameErrors, setFrameErrors] = useState<Record<string, string>>({});
   const [savingTakeKeys, setSavingTakeKeys] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    try {
+      setTopviewReconciliationRequired(
+        window.localStorage.getItem(TOPVIEW_STORYBOARD_PENDING_KEY) === "pending",
+      );
+    } catch {
+      setTopviewStorageAvailable(false);
+    } finally {
+      setTopviewGuardLoaded(true);
+    }
+  }, []);
   const [takeSaveErrors, setTakeSaveErrors] = useState<Record<string, string>>({});
   const [savingTakeCopyIds, setSavingTakeCopyIds] = useState<Set<string>>(() => new Set());
   const [takeCopyErrors, setTakeCopyErrors] = useState<Record<string, string>>({});
@@ -265,6 +291,11 @@ export default function StoryboardTab({
     }];
   }), [locations, storyboard.scenes]);
   const ratio = storyboard.aspectRatio.replace(":", " / ");
+  const selectedScriptProvider = STORYBOARD_SCRIPT_PROVIDERS.find((provider) => provider.id === scriptProvider);
+  const structuredShotList = useMemo(
+    () => parseStructuredStoryboardScript(scriptText),
+    [scriptText],
+  );
 
   const handleScriptFile = async (file?: File) => {
     if (!file) return;
@@ -292,17 +323,76 @@ export default function StoryboardTab({
     }
   };
 
+  const clearTopviewPendingMarker = () => {
+    try {
+      window.localStorage.removeItem(TOPVIEW_STORYBOARD_PENDING_KEY);
+      setTopviewStorageAvailable(true);
+      setTopviewReconciliationRequired(false);
+      return true;
+    } catch {
+      setTopviewStorageAvailable(false);
+      setTopviewReconciliationRequired(true);
+      return false;
+    }
+  };
+
+  const acknowledgeTopviewReconciliation = () => {
+    if (clearTopviewPendingMarker()) {
+      topviewStoryboardRequest.current = null;
+      setScriptError("");
+    } else {
+      setScriptError("Could not clear the Topview safety marker. Use another provider until browser storage is available.");
+    }
+  };
+
+  const importStructuredShotList = () => {
+    if (!structuredShotList) return;
+    if (storyboard.scenes.length > 0
+      && !window.confirm("Replace all current scenes and shots with the locally imported shot list?")) return;
+    onChange((current) => ({
+      ...current,
+      scenes: structuredShotList.scenes,
+      styleBible: structuredShotList.styleBible,
+    }));
+    setSelectedSceneId(structuredShotList.scenes[0]?.id ?? "");
+    setScriptError("");
+  };
+
   const buildStoryboardFromScript = async () => {
     if (!scriptText.trim() || generatingStoryboard) return;
     if (storyboard.scenes.length > 0
       && !window.confirm("Replace all current scenes and shots with the generated storyboard?")) return;
+    const isTopview = scriptProvider === "topview-gpt" || scriptProvider === "topview-claude";
+    if (isTopview && (!topviewGuardLoaded || !topviewStorageAvailable || topviewReconciliationRequired)) {
+      setScriptError(topviewReconciliationRequired
+        ? "Topview has an unresolved request. Check Topview Usage before authorizing another request."
+        : "Topview generation is unavailable until browser storage can track pending requests safely.");
+      return;
+    }
+    const fingerprint = `${scriptProvider}\u0000${scriptText}`;
+    if (isTopview && (!topviewStoryboardRequest.current
+      || topviewStoryboardRequest.current.fingerprint !== fingerprint)) {
+      topviewStoryboardRequest.current = { fingerprint, idempotencyKey: crypto.randomUUID() };
+    }
+    let topviewOutcomeUncertain = false;
     setGeneratingStoryboard(true);
     setScriptError("");
     try {
+      const headers = new Headers({ "Content-Type": "application/json" });
+      if (isTopview && topviewStoryboardRequest.current) {
+        headers.set("Idempotency-Key", topviewStoryboardRequest.current.idempotencyKey);
+        try {
+          window.localStorage.setItem(TOPVIEW_STORYBOARD_PENDING_KEY, "pending");
+        } catch {
+          setTopviewStorageAvailable(false);
+          throw new Error("Topview generation was not submitted because browser storage could not track its billable request safely.");
+        }
+        topviewOutcomeUncertain = true;
+      }
       const response = await fetch("/api/storyboard/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script: scriptText }),
+        headers,
+        body: JSON.stringify({ script: scriptText, provider: scriptProvider }),
       });
       const result: unknown = await response.json();
       if (!response.ok) {
@@ -310,13 +400,52 @@ export default function StoryboardTab({
           && "error" in result && typeof result.error === "string"
           ? result.error
           : `Storyboard generation failed (${response.status}).`;
-        throw new Error(message);
+        const requestId = typeof result === "object" && result !== null
+          && "requestId" in result && typeof result.requestId === "string"
+          ? result.requestId
+          : response.headers.get("X-Platform-Request-Id");
+        const uncertain = isTopview && (
+          response.status === 409
+          || response.status >= 500
+          || /reconcil/i.test(message)
+        );
+        if (isTopview && !uncertain) {
+          topviewOutcomeUncertain = false;
+          topviewStoryboardRequest.current = null;
+          if (!clearTopviewPendingMarker()) {
+            throw new Error("The provider rejected the request, but the Topview safety marker could not be cleared.");
+          }
+        } else if (uncertain) {
+          setTopviewReconciliationRequired(true);
+        }
+        const requestDetail = requestId ? ` Topview request ID: ${requestId}.` : "";
+        const hasUsageGuidance = /check topview usage|reconcil/i.test(message);
+        const billingGuidance = uncertain && !hasUsageGuidance
+          ? " Check Topview Usage before retrying; the request may have been billed."
+          : "";
+        throw new Error(`${message}${requestDetail}${billingGuidance}`);
       }
       const generated = normalizeGeneratedStoryboard(result);
-      onChange((current) => ({ ...current, scenes: generated.scenes }));
+      if (isTopview) {
+        topviewOutcomeUncertain = false;
+        topviewStoryboardRequest.current = null;
+        if (!clearTopviewPendingMarker()) {
+          setScriptError("Storyboard generated, but browser storage could not clear the Topview safety marker. Check Topview Usage before generating again.");
+        }
+      }
+      onChange((current) => ({
+        ...current,
+        scenes: generated.scenes,
+        styleBible: generated.styleBible,
+      }));
       setSelectedSceneId(generated.scenes[0]?.id ?? "");
     } catch (error) {
-      setScriptError(error instanceof Error ? error.message : "Could not generate the storyboard.");
+      const message = error instanceof Error ? error.message : "Could not generate the storyboard.";
+      if (isTopview && topviewOutcomeUncertain) setTopviewReconciliationRequired(true);
+      const hasUsageGuidance = /check topview usage|reconcil/i.test(message);
+      setScriptError(isTopview && topviewOutcomeUncertain && !hasUsageGuidance
+        ? `${message} Check Topview Usage before retrying; the request may have been billed.`
+        : message);
     } finally {
       setGeneratingStoryboard(false);
     }
@@ -326,7 +455,7 @@ export default function StoryboardTab({
     setGeneratingShotIds((current) => new Set(current).add(shot.id));
     setFrameErrors((current) => ({ ...current, [shot.id]: "" }));
     try {
-      const prompt = buildStoryboardFramePrompt(scene, shot, storyboard.aspectRatio);
+      const prompt = buildStoryboardFramePrompt(scene, shot, storyboard.aspectRatio, storyboard.styleBible);
       const frame = await generateStoryboardFrame(frameModel, prompt, storyboard.aspectRatio);
       const frameMetadata = await inspectImageDataUrlMetadata(frame);
       onChange((current) => ({
@@ -355,7 +484,9 @@ export default function StoryboardTab({
 
   const generateMissingFrames = async () => {
     const missingShots = storyboard.scenes.flatMap((scene) => scene.shots
-      .filter((shot) => !shot.frame && Boolean(shot.title.trim() || shot.description.trim()))
+      .filter((shot) => !shot.frame && Boolean(
+        shot.title.trim() || shot.description.trim() || shot.prompt.trim(),
+      ))
       .map((shot) => ({ scene, shot })));
     if (!missingShots.length || generatingMissingFrames) return;
     const model = STORYBOARD_FRAME_MODELS.find((item) => item.id === frameModel);
@@ -652,6 +783,22 @@ export default function StoryboardTab({
     event.currentTarget.classList.remove("is-panning");
   };
 
+  const updateStyleBible = (
+    key: "visualStyle" | "recurringCharacter" | "recurringLocation",
+    value: string,
+  ) => {
+    onChange((current) => ({
+      ...current,
+      styleBible: {
+        visualStyle: "",
+        recurringCharacter: "",
+        recurringLocation: "",
+        ...current.styleBible,
+        [key]: value,
+      },
+    }));
+  };
+
   return (
     <main className="storyboard-workspace" hidden={hidden} aria-label="Storyboard workspace"
       onKeyDownCapture={isolateWorkflowKeys}>
@@ -672,16 +819,45 @@ export default function StoryboardTab({
           </select>
         </label>
         <div className="storyboard-toolbar-actions">
+          <label className="storyboard-script-provider">
+            <span>Script API</span>
+            <select aria-label="Storyboard script API" value={scriptProvider} disabled={generatingStoryboard}
+              onChange={(event) => setScriptProvider(event.target.value as StoryboardScriptProvider)}>
+              {STORYBOARD_SCRIPT_PROVIDERS.map((provider) => (
+                <option key={provider.id} value={provider.id}>{provider.label}</option>
+              ))}
+            </select>
+          </label>
           <button type="button" onClick={addScene}>Add scene</button>
           <button type="button" className="storyboard-primary-action" onClick={addShot}>Add shot</button>
         </div>
       </header>
 
+      <details className="storyboard-style-bible">
+        <summary>Global style bible</summary>
+        <p>Keep shared visual style and continuity notes here instead of repeating them in every shot Description.</p>
+        <label>
+          <span>Visual style</span>
+          <textarea value={storyboard.styleBible?.visualStyle ?? ""}
+            onChange={(event) => updateStyleBible("visualStyle", event.target.value)} />
+        </label>
+        <label>
+          <span>Recurring character</span>
+          <textarea value={storyboard.styleBible?.recurringCharacter ?? ""}
+            onChange={(event) => updateStyleBible("recurringCharacter", event.target.value)} />
+        </label>
+        <label>
+          <span>Recurring location</span>
+          <textarea value={storyboard.styleBible?.recurringLocation ?? ""}
+            onChange={(event) => updateStyleBible("recurringLocation", event.target.value)} />
+        </label>
+      </details>
+
       <section className="storyboard-script-panel" aria-labelledby="storyboard-script-heading">
         <div className="storyboard-script-heading-row">
           <div>
             <h2 id="storyboard-script-heading">Build from a script</h2>
-            <p>Upload or paste a script, then explicitly send it to OpenAI to create scenes and shots.</p>
+            <p>Import numbered shot lists locally, or use the selected text API to turn a screenplay into scenes and shots.</p>
           </div>
           <label className="storyboard-script-upload">
             Upload script
@@ -703,15 +879,44 @@ export default function StoryboardTab({
           }} />
         <div className="storyboard-script-footer">
           <span>{scriptFileName ? `${scriptFileName} · ` : ""}{scriptText.length.toLocaleString()} / {STORYBOARD_SCRIPT_MAX_CHARACTERS.toLocaleString()} characters</span>
-          <button type="button" className="storyboard-primary-action"
-            disabled={!scriptText.trim() || generatingStoryboard}
-            onClick={() => void buildStoryboardFromScript()}>
-            {generatingStoryboard ? "Building storyboard…" : "Build storyboard"}
-          </button>
+          <div className="storyboard-script-actions">
+            {structuredShotList && (
+              <button type="button" className="storyboard-secondary-action"
+                disabled={generatingStoryboard}
+                onClick={importStructuredShotList}>
+                Import shot list locally (no API)
+              </button>
+            )}
+            <button type="button" className="storyboard-primary-action"
+              disabled={!scriptText.trim() || generatingStoryboard
+                || (selectedScriptProvider?.id.startsWith("topview-") === true
+                  && (!topviewGuardLoaded || !topviewStorageAvailable || topviewReconciliationRequired))}
+              onClick={() => void buildStoryboardFromScript()}>
+              {generatingStoryboard ? "Building storyboard…" : "Build with selected API"}
+            </button>
+          </div>
         </div>
         <p className="storyboard-script-disclosure">
-          Your script is sent to OpenAI only when you choose Build storyboard. Your configured OpenAI API key is used; API usage may be billed. Generated shots have no frame images.
+          Your script is sent to {selectedScriptProvider?.label} using {selectedScriptProvider?.apiKeyName} only when you choose Build with selected API. API usage may be billed. Shot type, camera movement, and duration are filled for every shot; missing details default to Wide, Static, and 6 seconds. {selectedScriptProvider?.id.startsWith("topview-") ? "A retry after an uncertain error reuses the same request key; check Topview Usage before starting another request." : ""} Generated shots have no frame images.
         </p>
+        {structuredShotList && (
+          <p className="storyboard-script-local-import-note">
+            Detected {structuredShotList.scenes.reduce((count, scene) => count + scene.shots.length, 0)} numbered shots. Local import does not send the script to a provider; frame generation remains a separate step.
+          </p>
+        )}
+        {topviewReconciliationRequired && (
+          <div className="storyboard-inline-error" role="alert">
+            <p>Topview reports an unresolved request. Check Topview Usage before allowing another Topview request; it may already have been billed.</p>
+            <button type="button" onClick={acknowledgeTopviewReconciliation}>
+              I checked Topview Usage — allow another request
+            </button>
+          </div>
+        )}
+        {!topviewStorageAvailable && (
+          <p className="storyboard-inline-error" role="alert">
+            Topview generation is blocked because this browser could not safely track pending billable requests.
+          </p>
+        )}
         {scriptError && <p className="storyboard-inline-error" role="alert">{scriptError}</p>}
       </section>
 
@@ -736,14 +941,14 @@ export default function StoryboardTab({
           <button type="button" className="storyboard-primary-action"
             disabled={generatingMissingFrames || generatingShotIds.size > 0
               || !storyboard.scenes.some((scene) => scene.shots.some((shot) =>
-                !shot.frame && Boolean(shot.title.trim() || shot.description.trim())))}
+                !shot.frame && Boolean(shot.title.trim() || shot.description.trim() || shot.prompt.trim())))}
             onClick={() => void generateMissingFrames()}>
             {generatingMissingFrames ? "Generating frames…" : "Generate missing frames"}
           </button>
           {frameBatchProgress && <span className="storyboard-image-progress" role="status">{frameBatchProgress}</span>}
         </div>
         <p className="storyboard-image-disclosure">
-          Generation sends scene and shot details to the selected provider. API usage may be billed. Generated images are stored with this project; they are resized to fit the storyboard’s local image limit.
+          Generation sends scene and shot details to the selected provider. Gemini image models use GEMINI_API_KEY and are billed through the Gemini API; this is separate from free image generation in the Gemini app. Other provider usage may also be billed. Generated images are stored with this project; they are resized to fit the storyboard’s local image limit.
         </p>
       </section>
 
@@ -988,7 +1193,7 @@ export default function StoryboardTab({
                         </div>
                         <button type="button" className="storyboard-generate-frame"
                           disabled={generatingShotIds.size > 0 || generatingMissingFrames
-                            || !(shot.title.trim() || shot.description.trim())}
+                            || !(shot.title.trim() || shot.description.trim() || shot.prompt.trim())}
                           onClick={() => void generateFrameForShot(scene, shot).catch(() => undefined)}>
                           {generatingShotIds.has(shot.id) ? "Generating frame…" : shot.frame ? "Regenerate frame" : "Generate frame"}
                         </button>
@@ -1076,6 +1281,16 @@ export default function StoryboardTab({
                           <textarea value={shot.description} aria-label={`Shot ${number} description`}
                             placeholder="Describe what happens in this shot…" rows={4}
                             onChange={(event) => updateShot(scene.id, shot.id, { description: event.target.value })} />
+                        </label>
+                        <label className="storyboard-field">
+                          <span>Prompt <small>For image and video generation</small></span>
+                          <textarea value={shot.prompt} aria-label={`Shot ${number} prompt`}
+                            placeholder="Write a visual prompt based on the description…"
+                            rows={4}
+                            onChange={(event) => updateShot(scene.id, shot.id, { prompt: event.target.value })} />
+                          <small className="storyboard-prompt-help">
+                            If blank, generation uses the Description. Editing the Prompt never changes the Description.
+                          </small>
                         </label>
                         <div className="storyboard-shot-fields">
                           <label className="storyboard-field">

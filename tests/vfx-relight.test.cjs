@@ -125,7 +125,7 @@ test("Google Gemini image-edit choices receive the extracted frame and prompt", 
     });
     assert.equal(submittedUrl, "/api/gemini");
     assert.deepEqual(submittedBody, {
-      model: "gemini-3.1-flash-image-preview",
+      model: "gemini-3.1-flash-image",
       prompt: "Add a warm key light from camera-left.",
       images: ["data:image/png;base64,Zm9v"],
       aspectRatio: "auto",

@@ -191,3 +191,33 @@ export function promptAssistantTargetContext(targets: PromptAssistantConnectedTa
     ].filter(Boolean).join("\n"),
   };
 }
+
+export function validatePromptAssistantCandidate(
+  source: string,
+  request: string,
+  candidate: string,
+  targets: PromptAssistantConnectedTarget[],
+): string | null {
+  const prompt = candidate.trim();
+  if (!prompt) return "Ollama returned an empty prompt.";
+
+  const context = promptAssistantTargetContext(targets);
+  const promptLimit = /[^\u0000-\u007f]/.test(prompt)
+    ? context?.nonEnglishMaxLength
+    : context?.maxLength;
+  if (promptLimit !== null && promptLimit !== undefined && prompt.length > promptLimit) {
+    return `The proposed prompt exceeds the connected model limit of ${promptLimit} characters.`;
+  }
+
+  const tags = (text: string) => Array.from(
+    text.matchAll(/@[a-zA-Z][a-zA-Z0-9_]*|<<<[a-zA-Z][a-zA-Z0-9_]*>>>/g),
+    (match) => match[0],
+  );
+  const originalTags = tags(`${source}\n${request}`);
+  const proposedTags = tags(prompt);
+  if (proposedTags.some((tag) => !originalTags.includes(tag))
+    || originalTags.some((tag) => !proposedTags.includes(tag))) {
+    return "The proposed prompt changed or invented a reference tag.";
+  }
+  return null;
+}

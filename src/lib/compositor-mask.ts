@@ -1,4 +1,10 @@
-import { transformTrackingPoint, warpTrackingCanvas, type TrackingMatrix, type TrackingPoint } from "./compositor-tracking";
+import {
+  scaleTrackingMatrix,
+  transformTrackingPoint,
+  warpTrackingCanvas,
+  type TrackingMatrix,
+  type TrackingPoint,
+} from "./compositor-tracking";
 
 export type MaskShapeKind = "rectangle" | "ellipse" | "polygon" | "freehand" | "bezier";
 export type MaskCombineMode = "add" | "subtract" | "intersect";
@@ -195,6 +201,29 @@ export function maskGeometryAt(layer: MaskLayer, time: number): MaskGeometry {
   return span > 0 ? interpolateGeometry(before.geometry, after.geometry, (time - before.time) / span) : after.geometry;
 }
 
+export function scaleMaskGeometry(geometry: MaskGeometry, scaleX: number, scaleY: number): MaskGeometry {
+  if ("x" in geometry) {
+    return {
+      ...geometry,
+      x: geometry.x * scaleX,
+      y: geometry.y * scaleY,
+      width: geometry.width * scaleX,
+      height: geometry.height * scaleY,
+    };
+  }
+  return {
+    ...geometry,
+    points: geometry.points.map((point) => ({
+      x: point.x * scaleX,
+      y: point.y * scaleY,
+      inX: point.inX * scaleX,
+      inY: point.inY * scaleY,
+      outX: point.outX * scaleX,
+      outY: point.outY * scaleY,
+    })),
+  };
+}
+
 function upsertKeyframe(layer: MaskLayer, time: number, geometry: MaskGeometry): MaskKeyframe[] {
   const frames = layer.keyframes.filter((frame) => Math.abs(frame.time - time) > 0.001);
   frames.push({ time, geometry });
@@ -295,16 +324,21 @@ export function applyCompositorMask(
   const activeLayers = layers.map((layer) => ({ layer, geometry: maskGeometryAt(layer, time) }))
     .filter(({ geometry }) => hasMaskArea(geometry));
   if (!activeLayers.length) return source;
+  const scaleX = source.width / MASK_WIDTH;
+  const scaleY = source.height / MASK_HEIGHT;
   const combined = createCanvas(source.width, source.height);
   const combinedContext = canvasContext(combined);
-  const matrix: TrackingMatrix = Array.isArray(motion) ? motion : [1, 0, motion.x, 0, 1, motion.y, 0, 0, 1];
+  const sourceMatrix: TrackingMatrix = Array.isArray(motion) ? motion : [1, 0, motion.x, 0, 1, motion.y, 0, 0, 1];
+  const matrix = scaleTrackingMatrix(sourceMatrix, scaleX, scaleY);
   const perspective = Math.abs(matrix[6]) > 1e-10 || Math.abs(matrix[7]) > 1e-10;
-  activeLayers.forEach(({ layer, geometry }, index) => {
+  activeLayers.forEach(({ layer, geometry: sourceGeometry }, index) => {
+    const geometry = scaleMaskGeometry(sourceGeometry, scaleX, scaleY);
     const shape = createCanvas(source.width, source.height);
     const shapeContext = canvasContext(shape);
     shapeContext.save();
     if (!perspective) shapeContext.transform(matrix[0], matrix[3], matrix[1], matrix[4], matrix[2], matrix[5]);
-    shapeContext.filter = layer.feather > 0 ? `blur(${layer.feather}px)` : "none";
+    const feather = layer.feather * Math.sqrt(scaleX * scaleY);
+    shapeContext.filter = feather > 0 ? `blur(${feather}px)` : "none";
     shapeContext.fillStyle = "#fff";
     shapeContext.beginPath();
     traceGeometry(shapeContext, geometry);

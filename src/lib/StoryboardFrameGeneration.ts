@@ -5,13 +5,19 @@ import {
   buildFlux3Request,
 } from "./flux3";
 import { storyboardImageDataUrl } from "./StoryboardImages";
-import type { StoryboardAspectRatio, StoryboardScene, StoryboardShot } from "./StoryboardData";
+import {
+  stripStoryboardContinuityBlocks,
+  type StoryboardAspectRatio,
+  type StoryboardScene,
+  type StoryboardShot,
+  type StoryboardStyleBible,
+} from "./StoryboardData";
 
 export const STORYBOARD_FRAME_MODELS = [
   { id: "gpt-image-2.6-sunburst", label: "GPT Image 2.6 · Sunburst", provider: "OpenAI" },
   { id: "gpt-image-2.6-flare", label: "GPT Image 2.6 · Flare", provider: "OpenAI" },
-  { id: "gemini-2.5-flash-image", label: "Nano Banana · Gemini", provider: "Google Gemini" },
-  { id: "gemini-3.1-flash-image-preview", label: "Nano Banana 2 · Gemini", provider: "Google Gemini" },
+  { id: "gemini-2.5-flash-image", label: "Nano Banana · Gemini API", provider: "Google Gemini" },
+  { id: "gemini-3.1-flash-image", label: "Nano Banana 2 · Gemini API", provider: "Google Gemini" },
   { id: "fal-ai/nano-banana", label: "Nano Banana · fal", provider: "fal" },
   { id: "fal-ai/nano-banana-pro", label: "Nano Banana Pro · fal", provider: "fal" },
   { id: "fal-ai/nano-banana-2", label: "Nano Banana 2 · fal", provider: "fal" },
@@ -55,12 +61,22 @@ export function buildStoryboardFramePrompt(
   scene: StoryboardScene,
   shot: StoryboardShot,
   aspectRatio: StoryboardAspectRatio,
+  styleBible?: StoryboardStyleBible,
 ) {
+  const actionPrompt = shot.prompt?.trim() || stripStoryboardContinuityBlocks(shot.description);
+  const sharedContinuity = [
+    styleBible?.visualStyle ? `Visual style: ${styleBible.visualStyle}` : "",
+    styleBible?.recurringCharacter ? `Recurring character: ${styleBible.recurringCharacter}` : "",
+    styleBible?.recurringLocation ? `Recurring location: ${styleBible.recurringLocation}` : "",
+  ].filter(Boolean);
   const details = [
     `Create one polished storyboard frame for ${aspectRatio} video.`,
     `Scene: ${scene.title.trim() || "Untitled scene"}.`,
     shot.title.trim() ? `Shot: ${shot.title.trim()}.` : "",
-    shot.description.trim() ? `Action and composition: ${shot.description.trim()}` : "",
+    actionPrompt ? `Action and composition: ${actionPrompt}` : "",
+    sharedContinuity.length
+      ? `Global style bible (apply only details visible in this shot): ${sharedContinuity.join(" ")}`
+      : "",
     shot.shotType ? `Shot type: ${shot.shotType}.` : "",
     shot.cameraMove ? `Camera movement: ${shot.cameraMove}.` : "",
     "Cinematic, coherent with the described action, a single frame, no captions, lettering, panel borders, or storyboard labels.",

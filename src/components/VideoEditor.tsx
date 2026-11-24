@@ -18,6 +18,20 @@ import { inspectMediaAssetMetadata } from "@/lib/project-media-browser";
 import { registerProjectMediaAsset, loadProjectMediaFile } from "@/lib/project-media-storage";
 import { applyMatteClip, getKeyColorChroma, refineMatte, RGB_LUMA_WEIGHTS } from "@/lib/chroma-key";
 import {
+  isStillVideoMotion,
+  MAX_STILL_IMAGE_BYTES,
+  MAX_STILL_VIDEO_SECONDS,
+  STILL_VIDEO_MOTIONS,
+  type StillVideoMotion,
+} from "@/lib/still-video";
+import {
+  getVideoExportDimensions,
+  isVideoExportResolution,
+  VIDEO_EXPORT_RESOLUTIONS,
+  type VideoExportOrientation,
+  type VideoExportResolution,
+} from "@/lib/video-export-settings";
+import {
   deleteEditorMedia,
   loadEditorMedia,
   loadVideoEditorState,
@@ -425,9 +439,14 @@ export default function VideoEditor({
   const [compositeBackgroundImageName, setCompositeBackgroundImageName] = useState("");
   const [isExporting, setIsExporting] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<"mov" | "mp4" | "png" | null>(null);
+  const [exportResolution, setExportResolution] = useState<VideoExportResolution>("720p");
+  const [exportOrientation, setExportOrientation] = useState<VideoExportOrientation>("landscape");
   const [exportStage, setExportStage] = useState("");
   const [loadingAssetId, setLoadingAssetId] = useState("");
   const [loadingAudioAssetId, setLoadingAudioAssetId] = useState("");
+  const [creatingStillAssetId, setCreatingStillAssetId] = useState("");
+  const [stillClipDurations, setStillClipDurations] = useState<Record<string, number>>({});
+  const [stillClipMotions, setStillClipMotions] = useState<Record<string, StillVideoMotion>>({});
   const [removingFootageId, setRemovingFootageId] = useState("");
   const [isRestoringHistory, setIsRestoringHistory] = useState(false);
   const [error, setError] = useState("");
@@ -1718,14 +1737,66 @@ export default function VideoEditor({
       playbackWanted.current = false;
       setIsPlaying(false);
       setError(waveformError);
+      return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not add this video.");
+      return false;
     } finally {
       if (preparedUrl) URL.revokeObjectURL(preparedUrl);
       if (normalizedUrl) URL.revokeObjectURL(normalizedUrl);
       setLoadingAssetId("");
       probe.removeAttribute("src");
       probe.load();
+    }
+  };
+
+  const addStillClip = async (asset: VideoAsset) => {
+    if (!asset.file || !asset.file.type.startsWith("image/")) {
+      setError(`"${asset.name}" is not available as a local image.`);
+      return;
+    }
+    if (asset.file.size > MAX_STILL_IMAGE_BYTES) {
+      setError(`Still images must be no larger than ${MAX_STILL_IMAGE_BYTES / 1024 / 1024} MB.`);
+      return;
+    }
+    const duration = stillClipDurations[asset.id] ?? 5;
+    const motion = stillClipMotions[asset.id] ?? "zoom-in";
+    if (!Number.isInteger(duration) || duration < 1 || duration > MAX_STILL_VIDEO_SECONDS) {
+      setError(`Still clip duration must be between 1 and ${MAX_STILL_VIDEO_SECONDS} seconds.`);
+      return;
+    }
+    setCreatingStillAssetId(asset.id);
+    setError("");
+    try {
+      const formData = new FormData();
+      formData.append("image", asset.file, asset.name);
+      formData.append("duration", String(duration));
+      formData.append("motion", motion);
+      formData.append("resolution", exportResolution);
+      formData.append("orientation", exportOrientation);
+      const response = await fetch("/api/video/still", { method: "POST", body: formData });
+      if (!response.ok) {
+        let message = `Could not create a still clip (${response.status}).`;
+        try {
+          const payload: unknown = await response.json();
+          if (typeof payload === "object" && payload !== null
+            && "error" in payload && typeof payload.error === "string") message = payload.error;
+        } catch {
+          // Keep the status-based message if the server response isn't JSON.
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      if (!blob.size) throw new Error("The server returned an empty still clip.");
+      const baseName = asset.name.replace(/\.[^.]+$/, "") || "still";
+      const clipFile = new File([blob], `${baseName}-${duration}s.mp4`, { type: "video/mp4" });
+      const [clipAsset] = await addUploads(clipFile);
+      if (!clipAsset) throw new Error("The generated still clip could not be added to Footage.");
+      if (!await addAsset(clipAsset)) throw new Error(`Could not add "${clipAsset.name}" to the timeline.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : `Could not create a video clip from "${asset.name}".`);
+    } finally {
+      setCreatingStillAssetId("");
     }
   };
 
@@ -2122,12 +2193,12 @@ export default function VideoEditor({
   };
 
   const addUploads = useCallback(async (files: FileList | File | File[] | null, includeImages = false) => {
-    if (!files) return false;
+    if (!files) return [];
     const selectedFiles = files instanceof File ? [files] : Array.from(files);
     const accepted = selectedFiles.filter((file) => file.type.startsWith("video/")
       || file.type.startsWith("audio/")
       || (includeImages && file.type.startsWith("image/")));
-    if (accepted.length !== selectedFiles.length) setError("Only video and audio files can be added to Footage.");
+    if (accepted.length !== selectedFiles.length) setError("Choose video, audio, or image files.");
     const nextAssets: VideoAsset[] = [];
     let registeredMedia = false;
     try {
@@ -2187,7 +2258,7 @@ export default function VideoEditor({
       }
       if (nextAssets.length > 0 && projectSession) onProjectSessionChange?.(projectSession);
       setPersistenceError("");
-      return accepted.length === selectedFiles.length && accepted.length > 0;
+      return accepted.length === selectedFiles.length ? nextAssets : [];
     } catch (caught) {
       if (nextAssets.length > 0) {
         recordHistory();
@@ -2207,7 +2278,7 @@ export default function VideoEditor({
     }
   }, [onProjectMediaChange, onProjectSessionChange, projectSession, recordHistory]);
 
-  const chooseUploads = useCallback(async () => {
+  const chooseUploads = async () => {
     if (!projectSession) {
       uploadInputRef.current?.click();
       return;
@@ -2217,13 +2288,13 @@ export default function VideoEditor({
       if (files === null) {
         uploadInputRef.current?.click();
       } else if (files.length > 0) {
-        if (await addUploads(files)) setError("");
+        if ((await addUploads(files, true)).length) setError("");
       }
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;
       setError(caught instanceof Error ? caught.message : "Could not add media to the project.");
     }
-  }, [addUploads, projectSession]);
+  };
 
   const removeUploadedAsset = async (asset: VideoAsset) => {
     if (removingFootageId || isRestoringHistory) return;
@@ -2254,7 +2325,7 @@ export default function VideoEditor({
   }, []);
 
   useEffect(() => registerEditorUploadBridge(async (file) => {
-    if (!await addUploads(file, true)) throw new Error("The editor accepts image and video files only.");
+    if (!(await addUploads(file, true)).length) throw new Error("The editor accepts image and video files only.");
   }, focusUploads), [addUploads, focusUploads]);
 
   const getClipOffset = (id: string) => {
@@ -2576,6 +2647,8 @@ export default function VideoEditor({
     try {
       const formData = new FormData();
       formData.append("format", format);
+      formData.append("resolution", exportResolution);
+      formData.append("orientation", exportOrientation);
       formData.append("timeline", JSON.stringify(clips.map(({ trimStart, trimEnd }) => ({
         start: trimStart,
         end: trimEnd,
@@ -2657,6 +2730,7 @@ export default function VideoEditor({
 
   const previewFlexibleHeight = Math.max(0, previewAvailableHeight - PREVIEW_FLEX_HEIGHT);
   const currentPreviewHeight = PREVIEW_MIN_HEIGHT + previewRatio * previewFlexibleHeight;
+  const outputDimensions = getVideoExportDimensions(exportResolution, exportOrientation);
   const previewMinValue = Math.round(PREVIEW_MIN_HEIGHT / previewAvailableHeight * 100);
   const previewMaxValue = Math.round(
     (previewAvailableHeight - TIMELINE_MIN_HEIGHT) / previewAvailableHeight * 100,
@@ -2696,18 +2770,18 @@ export default function VideoEditor({
               disabled={Boolean(removingFootageId) || isRestoringHistory}
               title={projectSession
                 ? "Choose files from this project folder and copy them into Media/Originals."
-                : "Add video or audio files from this device."}
+                : "Add video, audio, or still images from this device."}
             >
               Add files
             </button>
             <input
               ref={uploadInputRef}
               type="file"
-              accept="video/*,audio/*"
+              accept="video/*,audio/*,image/*"
               multiple
               hidden
               onChange={(event) => {
-                void addUploads(event.target.files).catch((caught: unknown) => {
+                void addUploads(event.target.files, true).catch((caught: unknown) => {
                   setError(caught instanceof Error ? caught.message : "Could not save uploaded media.");
                 });
                 event.target.value = "";
@@ -2717,10 +2791,57 @@ export default function VideoEditor({
           {uploadedAssets.map((asset) => (
             <div className="ff-editor-asset-row" key={asset.id}>
               {asset.file?.type.startsWith("image/") ? (
-                <div className="ff-editor-asset ff-editor-image-asset" title="Images are available in Footage; the timeline accepts video and audio clips.">
-                  <img className="ff-editor-upload-thumbnail" src={asset.src} alt="" />
-                  <span>{asset.name}</span>
-                  <strong aria-hidden="true">IMG</strong>
+                <div className="ff-editor-still-asset">
+                  <div className="ff-editor-asset ff-editor-image-asset">
+                    <img className="ff-editor-upload-thumbnail" src={asset.src} alt="" />
+                    <span>{asset.name}</span>
+                    <strong aria-hidden="true">IMG</strong>
+                  </div>
+                  <div className="ff-editor-still-controls">
+                    <label>Duration (seconds)
+                      <input
+                        type="number"
+                        min="1"
+                        max={MAX_STILL_VIDEO_SECONDS}
+                        step="1"
+                        value={stillClipDurations[asset.id] ?? 5}
+                        disabled={isExporting || Boolean(creatingStillAssetId) || isRestoringHistory}
+                        onChange={(event) => setStillClipDurations((current) => ({
+                          ...current, [asset.id]: Number(event.target.value),
+                        }))}
+                      />
+                    </label>
+                    <label>Motion
+                      <select
+                        value={stillClipMotions[asset.id] ?? "zoom-in"}
+                        disabled={isExporting || Boolean(creatingStillAssetId) || isRestoringHistory}
+                        onChange={(event) => {
+                          const motion = event.target.value;
+                          if (isStillVideoMotion(motion)) {
+                            setStillClipMotions((current) => ({ ...current, [asset.id]: motion }));
+                          }
+                        }}
+                      >
+                        {STILL_VIDEO_MOTIONS.map((motion) => (
+                          <option key={motion} value={motion}>{{
+                            none: "Still",
+                            "zoom-in": "Slow zoom in",
+                            "zoom-out": "Slow zoom out",
+                            "pan-left": "Pan left",
+                            "pan-right": "Pan right",
+                          }[motion]}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void addStillClip(asset)}
+                      disabled={isExporting || Boolean(creatingStillAssetId) || Boolean(loadingAssetId)
+                        || Boolean(removingFootageId) || isRestoringHistory}
+                    >
+                      {creatingStillAssetId === asset.id ? "Creating clip…" : "Add still to timeline"}
+                    </button>
+                  </div>
                 </div>
               ) : asset.file?.type.startsWith("audio/") ? (
                 <button
@@ -2750,14 +2871,14 @@ export default function VideoEditor({
                 aria-label={`Delete ${asset.name} from Footage`}
                 title="Delete from Footage"
                 disabled={isExporting || Boolean(loadingAssetId) || Boolean(loadingAudioAssetId)
-                  || Boolean(removingFootageId) || isRestoringHistory}
+                    || Boolean(creatingStillAssetId) || Boolean(removingFootageId) || isRestoringHistory}
                 onClick={() => void removeUploadedAsset(asset)}
               >
                 ×
               </button>
             </div>
           ))}
-          {uploadedAssets.length === 0 && <p className="ff-editor-empty">Upload video or audio files from this device.</p>}
+          {uploadedAssets.length === 0 && <p className="ff-editor-empty">Upload video, audio, or still-image files from this device.</p>}
         </section>
 
         <p className="ff-editor-sidebar-note">
@@ -3089,6 +3210,42 @@ export default function VideoEditor({
               </div>
             </div>
             <div className="ff-editor-export-actions">
+              <div className="ff-editor-export-settings">
+                <label>
+                  <span>Resolution</span>
+                  <select
+                    aria-label="Export resolution"
+                    value={exportResolution}
+                    disabled={isExporting}
+                    onChange={(event) => {
+                      const resolution = event.target.value;
+                      if (isVideoExportResolution(resolution)) setExportResolution(resolution);
+                    }}
+                  >
+                    {VIDEO_EXPORT_RESOLUTIONS.map((preset) => (
+                      <option key={preset.value} value={preset.value}>{preset.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Orientation</span>
+                  <select
+                    aria-label="Export orientation"
+                    value={exportOrientation}
+                    disabled={isExporting}
+                    onChange={(event) => {
+                      const orientation = event.target.value;
+                      if (orientation === "landscape" || orientation === "portrait") {
+                        setExportOrientation(orientation);
+                      }
+                    }}
+                  >
+                    <option value="landscape">Landscape (16:9)</option>
+                    <option value="portrait">Portrait (9:16)</option>
+                  </select>
+                </label>
+                <output aria-label="Output dimensions">{outputDimensions.width} × {outputDimensions.height}</output>
+              </div>
               <button type="button" className="ff-run" onClick={() => void exportVideo("mov")} disabled={clips.length === 0 || isExporting}>
                 {isExporting && exportingFormat === "mov" ? "Rendering MOV…" : "Export MOV"}
               </button>
@@ -3112,7 +3269,7 @@ export default function VideoEditor({
             </div>
           </div>
           <p className="ff-editor-instructions">
-            Video clips with embedded audio show a source waveform automatically, aligned to the visible trim. Add audio from Footage to place a separate track at the playhead. Set its start, source in/out points, and volume; overlapping audio clips are mixed. Audio plays in sync with video and is included in exports. Choose the Transition tool and click between clips to add a cross dissolve; select its marker to change the duration or remove it. Transitions overlap adjacent clips, shorten the sequence, and crossfade their source audio. Undo and redo with Ctrl/Cmd+Z and Ctrl/Cmd+Y; history holds up to 50 actions and clears on reload. Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Choose the Razor tool and click a clip to split it. Use Ripple delete to remove the selected clip and close the gap. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Exports are H.264 MOV or MP4 at 1280 × 720 with AAC audio.
+            Video clips with embedded audio show a source waveform automatically, aligned to the visible trim. Add audio from Footage to place a separate track at the playhead. Set its start, source in/out points, and volume; overlapping audio clips are mixed. Audio plays in sync with video and is included in exports. Choose the Transition tool and click between clips to add a cross dissolve; select its marker to change the duration or remove it. Transitions overlap adjacent clips, shorten the sequence, and crossfade their source audio. Undo and redo with Ctrl/Cmd+Z and Ctrl/Cmd+Y; history holds up to 50 actions and clears on reload. Create sequences with + New. Add videos with + to the active sequence; rename or switch sequences here. Choose the Razor tool and click a clip to split it. Use Ripple delete to remove the selected clip and close the gap. Drag a clip&apos;s edge to trim its start or end, or use the In and Out fields for exact times. Drag clips to reorder; right-click or select a clip and press Delete to remove it. Choose output resolution and orientation above; mismatched source aspect ratios are fit with bars rather than cropped. MOV and MP4 are H.264 with AAC audio. Still clips use those settings when created.
           </p>
           {selectedClip && (
             <section className="ff-editor-keyer-controls" aria-labelledby="ff-editor-keyer-heading">

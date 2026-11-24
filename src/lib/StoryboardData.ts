@@ -2,6 +2,7 @@ import { normalizeMediaAssetMetadata, type MediaAssetMetadata } from "./project-
 
 export const STORYBOARD_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "21:9"] as const;
 export const STORYBOARD_SHOT_TYPES = [
+  "Title card",
   "Extreme wide",
   "Wide",
   "Medium",
@@ -50,6 +51,7 @@ export type StoryboardShot = {
   id: string;
   title: string;
   description: string;
+  prompt: string;
   shotType: StoryboardShotType;
   cameraMove: StoryboardCameraMove;
   durationSeconds: number | null;
@@ -66,10 +68,17 @@ export type StoryboardScene = {
   shots: StoryboardShot[];
 };
 
+export type StoryboardStyleBible = {
+  visualStyle: string;
+  recurringCharacter: string;
+  recurringLocation: string;
+};
+
 export type StoryboardData = {
   version: 1;
   title: string;
   aspectRatio: StoryboardAspectRatio;
+  styleBible?: StoryboardStyleBible;
   scenes: StoryboardScene[];
 };
 
@@ -92,7 +101,13 @@ function addUniqueId(candidate: unknown, usedIds: Set<string>) {
 }
 
 export function createEmptyStoryboard(): StoryboardData {
-  return { version: 1, title: "Untitled storyboard", aspectRatio: "16:9", scenes: [] };
+  return {
+    version: 1,
+    title: "Untitled storyboard",
+    aspectRatio: "16:9",
+    styleBible: { visualStyle: "", recurringCharacter: "", recurringLocation: "" },
+    scenes: [],
+  };
 }
 
 export function createStoryboardShot(): StoryboardShot {
@@ -100,6 +115,7 @@ export function createStoryboardShot(): StoryboardShot {
     id: createId(),
     title: "",
     description: "",
+    prompt: "",
     shotType: EMPTY_SHOT_TYPE,
     cameraMove: EMPTY_CAMERA_MOVE,
     durationSeconds: null,
@@ -110,6 +126,42 @@ export function createStoryboardShot(): StoryboardShot {
 
 export function createStoryboardScene(sceneNumber: number): StoryboardScene {
   return { id: createId(), title: `Scene ${sceneNumber}`, collapsed: false, shots: [] };
+}
+
+export function extractStoryboardStyleBible(scenes: readonly StoryboardScene[]): StoryboardStyleBible {
+  const values: Record<keyof StoryboardStyleBible, string[]> = {
+    visualStyle: [],
+    recurringCharacter: [],
+    recurringLocation: [],
+  };
+  const marker = /^\s*\*{0,2}(Visual style|Character continuity|Recurring character|Location continuity|Recurring location)\*{0,2}\s*:\s*/gim;
+  for (const shot of scenes.flatMap((scene) => scene.shots)) {
+    const matches = Array.from(shot.description.matchAll(marker));
+    for (let index = 0; index < matches.length; index += 1) {
+      const match = matches[index];
+      const markerName = match[1].toLowerCase();
+      const key: keyof StoryboardStyleBible = markerName === "visual style"
+        ? "visualStyle"
+        : markerName.includes("character") ? "recurringCharacter" : "recurringLocation";
+      const start = (match.index ?? 0) + match[0].length;
+      const end = matches[index + 1]?.index ?? shot.description.length;
+      const value = shot.description.slice(start, end).replace(/\s*\*{1,2}\s*$/, "").trim();
+      if (value && !values[key].some((existing) => existing.toLowerCase() === value.toLowerCase())) {
+        values[key].push(value.slice(0, 8000));
+      }
+    }
+  }
+  return {
+    visualStyle: values.visualStyle.join("\n"),
+    recurringCharacter: values.recurringCharacter.join("\n"),
+    recurringLocation: values.recurringLocation.join("\n"),
+  };
+}
+
+export function stripStoryboardContinuityBlocks(description: string) {
+  const marker = /^\s*\*{0,2}(?:Visual style|Character continuity|Recurring character|Location continuity|Recurring location)\*{0,2}\s*:/im;
+  const markerIndex = description.search(marker);
+  return (markerIndex < 0 ? description : description.slice(0, markerIndex)).trim();
 }
 
 function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | null {
@@ -165,6 +217,7 @@ function normalizeShot(value: unknown, usedIds: Set<string>): StoryboardShot | n
     id,
     title: typeof value.title === "string" ? value.title : "",
     description: typeof value.description === "string" ? value.description : "",
+    prompt: typeof value.prompt === "string" ? value.prompt : "",
     shotType: typeof value.shotType === "string" && STORYBOARD_SHOT_TYPES.includes(value.shotType as (typeof STORYBOARD_SHOT_TYPES)[number])
       ? value.shotType as StoryboardShotType
       : EMPTY_SHOT_TYPE,
@@ -203,6 +256,12 @@ export function normalizeStoryboard(value: unknown): StoryboardData {
       });
     }
   }
+  const extractedStyleBible = extractStoryboardStyleBible(scenes);
+  const savedStyleBible = isRecord(value.styleBible) ? value.styleBible : {};
+  const normalizeStyleBibleValue = (key: keyof StoryboardStyleBible) => isRecord(value.styleBible)
+    && typeof savedStyleBible[key] === "string"
+    ? savedStyleBible[key] as string
+    : extractedStyleBible[key];
   return {
     version: 1,
     title: typeof value.title === "string" && value.title.trim() ? value.title : "Untitled storyboard",
@@ -210,6 +269,11 @@ export function normalizeStoryboard(value: unknown): StoryboardData {
       && STORYBOARD_ASPECT_RATIOS.includes(value.aspectRatio as StoryboardAspectRatio)
       ? value.aspectRatio as StoryboardAspectRatio
       : "16:9",
+    styleBible: {
+      visualStyle: normalizeStyleBibleValue("visualStyle"),
+      recurringCharacter: normalizeStyleBibleValue("recurringCharacter"),
+      recurringLocation: normalizeStyleBibleValue("recurringLocation"),
+    },
     scenes,
   };
 }

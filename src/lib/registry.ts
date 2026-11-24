@@ -5,7 +5,6 @@ import { SEEDANCE_MODELS, buildSeedanceRequest } from "./seedance";
 import { VEO_MODELS, buildVeoRequest } from "./veo";
 import { OMNI_DEFAULTS, OMNI_MODELS, OMNI_TASKS, buildOmniRequest } from "./omni";
 import { KLING_DEFAULTS, KLING_MODELS, KLING_TASKS, buildKlingRequest } from "./kling";
-import { PROMPT_ASSISTANT_MODELS, PROMPT_ASSISTANT_TARGETS } from "./prompt-assistant";
 import { WAN_DEFAULTS, WAN_NODE_TYPE } from "./wan";
 import { MINIMAX_DEFAULTS, MINIMAX_NODE_TYPE } from "./minimax";
 import { FLUX3_DEFAULTS, FLUX3_NODE_TYPE, normalizeFlux3Params } from "./flux3";
@@ -165,24 +164,12 @@ const prompt: NodeDef = {
   outputs: { text: "text" },
   params: [
     { key: "text", label: "Prompt", kind: "textarea", default: "" },
-    { key: "assistant_enabled", label: "Enable Prompt Assistant", kind: "toggle", default: false },
     {
-      key: "model",
-      label: "Prompt LLM",
-      kind: "select",
-      options: Object.values(PROMPT_ASSISTANT_MODELS),
-      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_MODELS).map(([label, value]) => [value, label])),
-      default: PROMPT_ASSISTANT_MODELS["GPT-6 Luna"],
-      visibleWhen: { param: "assistant_enabled", value: true },
-    },
-    {
-      key: "target",
-      label: "Target media model",
-      kind: "select",
-      options: Object.keys(PROMPT_ASSISTANT_TARGETS),
-      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_TARGETS).map(([key, target]) => [key, target.label])),
-      default: "kling-v4-text",
-      visibleWhen: { param: "assistant_enabled", value: true },
+      key: "assistant_enabled",
+      label: "Enable Ollama prompt help",
+      kind: "toggle",
+      default: false,
+      helperText: "Adds optional frame-context inputs. Ollama receives their labels, not the image files.",
     },
     { key: "conversation", label: "Conversation", kind: "text", default: [] },
     { key: "refined_prompt", label: "Refined prompt", kind: "text", default: "" },
@@ -223,7 +210,7 @@ const videoInput: NodeDef = {
 
 const promptAssistant: NodeDef = {
   type: "assistant/prompt",
-  label: "Prompt Assistant",
+  label: "Legacy prompt helper",
   category: "Assistant",
   inputs: {
     brief: "text",
@@ -233,28 +220,12 @@ const promptAssistant: NodeDef = {
   },
   outputs: { text: "text" },
   params: [
-    {
-      key: "model",
-      label: "Prompt LLM",
-      kind: "select",
-      options: Object.values(PROMPT_ASSISTANT_MODELS),
-      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_MODELS).map(([label, value]) => [value, label])),
-      default: PROMPT_ASSISTANT_MODELS["GPT-6 Luna"],
-    },
-    {
-      key: "target",
-      label: "Target media model",
-      kind: "select",
-      options: Object.keys(PROMPT_ASSISTANT_TARGETS),
-      optionLabels: Object.fromEntries(Object.entries(PROMPT_ASSISTANT_TARGETS).map(([key, target]) => [key, target.label])),
-      default: "kling-v4-text",
-    },
     { key: "conversation", label: "Conversation", kind: "text", default: [] },
     { key: "refined_prompt", label: "Refined prompt", kind: "text", default: "" },
   ],
   execute: async ({ params }) => {
     const text = String(params.refined_prompt ?? "").trim();
-    if (!text) throw new Error("Send a message to the Prompt Assistant before running the workflow.");
+    if (!text) throw new Error("This legacy node has no saved prompt. Use a Prompt node with Ollama Chat instead.");
     return { text };
   },
 };
@@ -304,7 +275,7 @@ const NANO_MODELS: Record<string, string> = {
 
 const GEMINI_MODELS: Record<string, string> = {
   "Nano Banana": "gemini-2.5-flash-image",
-  "Nano Banana 2": "gemini-3.1-flash-image-preview",
+  "Nano Banana 2": "gemini-3.1-flash-image",
 };
 
 const nanoBanana: NodeDef = {
@@ -500,7 +471,7 @@ const vfxVideoRefine: NodeDef = {
 };
 
 const geminiImage: NodeDef = {
-  type: "google/gemini-image", label: "Nano Banana · Free tier", category: "Google",
+  type: "google/gemini-image", label: "Nano Banana · Gemini API", category: "Google",
   autoPrompt: true,
   inputs: { prompt: "text", image1: "image", image2: "image", image3: "image" },
   outputs: { image: "image" },

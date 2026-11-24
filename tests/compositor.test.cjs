@@ -12,10 +12,10 @@ require.extensions[".ts"] = (module, filename) => {
 const { trackPatch, interpolateTrack, reachesCompositorNode, zoomViewerAt, compositorImageFit, compositorMediaSource, compositorBypassInput, compositorRange, nextCompositorTime, COMPOSITOR_INPUTS } = require(path.join(__dirname, "..", "src", "lib", "compositor.ts"));
 const { applyColorCorrection, curveTable, getCurve } = require(path.join(__dirname, "..", "src", "lib", "compositor-color.ts"));
 const { COMPOSITOR_NODE_OPTIONS, COMPOSITOR_TEMPLATES, appendCompositorTemplate, createCompositorNode, createCompositorTemplate } = require(path.join(__dirname, "..", "src", "lib", "compositor-templates.ts"));
-const { applyCompositorMask, combineMaskAlpha, convertMaskGeometry, createMaskGeometry, createMaskLayer, getMaskLayers, maskGeometryAt, maskGeometryPath, removeMaskKeyframe, setMaskKeyframe, updateMaskGeometry, validateMaskProjection } = require(path.join(__dirname, "..", "src", "lib", "compositor-mask.ts"));
+const { applyCompositorMask, combineMaskAlpha, convertMaskGeometry, createMaskGeometry, createMaskLayer, getMaskLayers, maskGeometryAt, maskGeometryPath, removeMaskKeyframe, scaleMaskGeometry, setMaskKeyframe, updateMaskGeometry, validateMaskProjection } = require(path.join(__dirname, "..", "src", "lib", "compositor-mask.ts"));
 const { applyCompositorKeyer } = require(path.join(__dirname, "..", "src", "lib", "compositor-keyer.ts"));
 const { CompositorHistory, compositorHistoryShortcut } = require(path.join(__dirname, "..", "src", "lib", "compositor-history.ts"));
-const { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, invertTrackingMatrix, multiplyTrackingMatrices, planarTrackingMatrix, similarityTrackingMatrix, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingPixels } = require(path.join(__dirname, "..", "src", "lib", "compositor-tracking.ts"));
+const { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, invertTrackingMatrix, multiplyTrackingMatrices, planarTrackingMatrix, scaleTrackingMatrix, similarityTrackingMatrix, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingPixels } = require(path.join(__dirname, "..", "src", "lib", "compositor-tracking.ts"));
 const { applySmartMattePixels, smartMatteCost, smartMatteSourceHash, submitSmartMatte, validateSmartMatteSource } = require(path.join(__dirname, "..", "src", "lib", "smart-matte.ts"));
 
 test("Smart Matte applies grayscale alpha without replacing source transparency", () => {
@@ -80,6 +80,28 @@ test("compositor media fit preserves source aspect ratio and centers letterboxed
   assert.deepEqual(compositorImageFit(1000, 1000, 640, 360), { x: 140, y: 0, width: 360, height: 360 });
   assert.deepEqual(compositorImageFit(1080, 1920, 640, 360), { x: 218.75, y: 0, width: 202.5, height: 360 });
   assert.throws(() => compositorImageFit(0, 1080, 640, 360), /positive finite/);
+});
+
+test("compositor export scales masks and tracked motion into the selected output frame", () => {
+  const mask = {
+    kind: "bezier",
+    points: [{ x: 10, y: 20, inX: -2, inY: 3, outX: 4, outY: -5 }],
+  };
+  assert.deepEqual(scaleMaskGeometry(mask, 3, 4), {
+    kind: "bezier",
+    points: [{ x: 30, y: 80, inX: -6, inY: 12, outX: 12, outY: -20 }],
+  });
+
+  const matrix = [1.1, 0.1, 8, -0.2, 0.9, 5, 0.0001, -0.0002, 1];
+  const scaleX = 3, scaleY = 4, point = { x: 100, y: 50 };
+  const mapped = transformTrackingPoint(matrix, point);
+  const scaledMapped = transformTrackingPoint(scaleTrackingMatrix(matrix, scaleX, scaleY), {
+    x: point.x * scaleX,
+    y: point.y * scaleY,
+  });
+  assert.ok(Math.abs(scaledMapped.x - mapped.x * scaleX) < 1e-8);
+  assert.ok(Math.abs(scaledMapped.y - mapped.y * scaleY) < 1e-8);
+  assert.throws(() => scaleTrackingMatrix(matrix, 0, 1), /positive finite/);
 });
 
 test("two-point tracking maps both points with rotation and scale", () => {

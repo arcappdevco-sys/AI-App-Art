@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { findAtlasUploadUrl } from "@/lib/atlas-upload";
+import { wanDataUrlToFile } from "@/lib/wan-api";
 
 const ATLAS_API = "https://api.atlascloud.ai/api/v1/model";
 const MODELS = new Set([
@@ -6,6 +8,11 @@ const MODELS = new Set([
   "bytedance/seedance-2.5/image-to-video",
 ]);
 const MAX_IMAGE_LENGTH = 42 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 30 * 1024 * 1024;
+const IMAGE_TYPES = new Set([
+  "image/jpeg", "image/png", "image/webp", "image/bmp", "image/tiff",
+  "image/gif", "image/heic", "image/heif",
+]);
 const resolutions = new Set([
   "480p", "720p", "720p-sr", "720p-esr", "1080p", "1080p-sr", "1080p-esr",
   "1080p-esr-60fps", "1440p-sr", "1440p-esr", "4k-esr",
@@ -25,6 +32,61 @@ async function readAtlasResponse(response: Response) {
   } catch {
     throw new Error("Atlas Cloud returned an invalid response.");
   }
+}
+
+class AtlasImageError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+async function resolveAtlasImage(value: unknown, name: string, apiKey: string, signal: AbortSignal) {
+  if (typeof value !== "string" || !value) {
+    throw new AtlasImageError(`A valid ${name} image URL or data URI is required.`, 400);
+  }
+  if (/^https?:\/\/\S+$/i.test(value)) return value;
+
+  let file: File;
+  try {
+    file = wanDataUrlToFile(value, name, "image/png");
+  } catch {
+    throw new AtlasImageError(`${name} must be an image URL or valid image data URI.`, 400);
+  }
+  if (!IMAGE_TYPES.has(file.type.toLowerCase())) {
+    throw new AtlasImageError(`${name} must be a supported image type.`, 400);
+  }
+  if (file.size < 1 || file.size > MAX_IMAGE_BYTES) {
+    throw new AtlasImageError(`${name} image must be 30 MB or smaller.`, 400);
+  }
+
+  const form = new FormData();
+  form.append("file", file, file.name);
+  let response: Response;
+  try {
+    response = await fetch(`${ATLAS_API}/uploadMedia`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal,
+    });
+  } catch {
+    throw new AtlasImageError(`Could not upload the ${name} image to Atlas Cloud.`, 502);
+  }
+
+  let result: Record<string, unknown>;
+  try {
+    result = await response.json() as Record<string, unknown>;
+  } catch {
+    throw new AtlasImageError("Atlas Cloud returned an invalid image upload response.", 502);
+  }
+  if (!response.ok) {
+    throw new AtlasImageError(atlasError(result, `Atlas Cloud image upload failed (${response.status}).`), response.status);
+  }
+  const url = findAtlasUploadUrl(result, 0, true);
+  if (!url) {
+    throw new AtlasImageError("Atlas Cloud did not return a URL for the uploaded image.", 502);
+  }
+  return url;
 }
 
 export async function POST(request: Request) {
@@ -78,6 +140,21 @@ export async function POST(request: Request) {
         : "Choose a supported aspect ratio for Seedance 2.5 Text-to-Video.",
     }, { status: 400 });
   }
+  let firstFrameUrl: string | undefined;
+  let lastFrameUrl: string | undefined;
+  if (isImageToVideo) {
+    try {
+      firstFrameUrl = await resolveAtlasImage(body.image, "first-frame", apiKey, request.signal);
+      if (body.last_image !== undefined) {
+        lastFrameUrl = await resolveAtlasImage(body.last_image, "last-frame", apiKey, request.signal);
+      }
+    } catch (error) {
+      const status = error instanceof AtlasImageError ? error.status : 502;
+      return NextResponse.json({
+        error: error instanceof Error ? error.message : "Could not upload the storyboard frame to Atlas Cloud.",
+      }, { status });
+    }
+  }
   const atlasBody: Record<string, unknown> = {
     model: body.model,
     prompt: body.prompt,
@@ -91,8 +168,8 @@ export async function POST(request: Request) {
     draft: body.draft,
   };
   if (isImageToVideo) {
-    atlasBody.image = body.image;
-    if (body.last_image !== undefined) atlasBody.last_image = body.last_image;
+    atlasBody.image = firstFrameUrl;
+    if (lastFrameUrl !== undefined) atlasBody.last_image = lastFrameUrl;
   }
 
   let response: Response;

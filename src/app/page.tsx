@@ -94,6 +94,22 @@ import OllamaChat from "@/components/OllamaChat";
 import { createCanvasGroup, groupBoundsForNodes, normalizeCanvasGroups, type CanvasGroup } from "@/lib/canvas-groups";
 import { autoLayoutWorkflow } from "@/lib/workflow-layout";
 import { zoomCanvasAtPoint } from "@/lib/canvas-zoom";
+import {
+  type OllamaApplyResult,
+  type OllamaPromptApplyResult,
+  type OllamaPromptContext,
+  type OllamaPromptContextInput,
+} from "@/lib/ollama-chat";
+import {
+  createOllamaStoryboardContext,
+  OLLAMA_STORYBOARD_PROMPT_MAX_LENGTH,
+  type OllamaStoryboardContext,
+} from "@/lib/ollama-storyboard-context";
+import { createOllamaWorkflowContext } from "@/lib/ollama-workflow-context";
+import {
+  findPromptAssistantTargets,
+  validatePromptAssistantCandidate,
+} from "@/lib/prompt-assistant-profiles";
 
 const nodeTypes = { workflow: WorkflowNode };
 const storyboardVideoModelOptions = getImageToVideoModelOptions(registry);
@@ -462,6 +478,7 @@ export default function Page() {
   const [workflowName, setWorkflowName] = useState(DEFAULT_WORKFLOW_NAME);
   const [workflows, setWorkflows] = useState<SavedWorkflow[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState("");
+  const [ollamaPromptContext, setOllamaPromptContext] = useState<OllamaPromptContext | null>(null);
   const [storageReady, setStorageReady] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Loading saved workflow…");
   const [storageError, setStorageError] = useState("");
@@ -480,6 +497,7 @@ export default function Page() {
   const lastSavedPayload = useRef("");
   const workflowsRef = useRef<SavedWorkflow[]>([]);
   const activeWorkflowIdRef = useRef("");
+  const ollamaPromptContextRef = useRef<OllamaPromptContext | null>(null);
   const projectSessionRef = useRef<ProjectFolderSession | null>(null);
   const registeredMediaUrls = useRef(new Map<string, string>());
   const generatedVideoSaves = useRef(new Map<string, Promise<{
@@ -488,6 +506,21 @@ export default function Page() {
     projectName: string;
   }>>());
   const workflowSessionKey = projectSession?.sessionKey ?? "local";
+  const ollamaStoryboardContext = useMemo(() => activeView === "storyboard" && activeWorkflowId
+    ? createOllamaStoryboardContext(
+      storyboard,
+      activeWorkflowId,
+      `${workflowSessionKey}:${activeWorkflowId}`,
+    )
+    : null, [activeView, activeWorkflowId, storyboard, workflowSessionKey]);
+  const ollamaWorkflowContext = useMemo(() => activeView === "workflow" && activeWorkflowId
+    ? createOllamaWorkflowContext(
+      nodes,
+      edges,
+      activeWorkflowId,
+      `${workflowSessionKey}:${activeWorkflowId}`,
+    )
+    : null, [activeView, activeWorkflowId, edges, nodes, workflowSessionKey]);
   const loadedWorkflowSessionKey = useRef<string | null>(null);
   const workflowSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const editorSaveHandler = useRef<(() => Promise<void>) | null>(null);
@@ -1276,6 +1309,110 @@ export default function Page() {
   const patch = (id: string, data: object) =>
     setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...data } } : n)));
 
+  const openPromptChat = (input: OllamaPromptContextInput) => {
+    const workflowId = activeWorkflowIdRef.current;
+    if (!workflowId) return;
+    const context: OllamaPromptContext = {
+      ...input,
+      id: crypto.randomUUID(),
+      workflowId,
+      lastUserRequest: "",
+    };
+    ollamaPromptContextRef.current = context;
+    setOllamaPromptContext(context);
+  };
+
+  const endPromptHelp = () => {
+    ollamaPromptContextRef.current = null;
+    setOllamaPromptContext(null);
+  };
+
+  const applyOllamaPrompt = (
+    context: OllamaPromptContext,
+    candidate: string,
+    request: string,
+  ): OllamaPromptApplyResult => {
+    if (ollamaPromptContextRef.current?.id !== context.id) {
+      return { ok: false, error: "This prompt-help session has ended. Reopen it from the Prompt node." };
+    }
+    if (activeWorkflowIdRef.current !== context.workflowId) {
+      return { ok: false, error: "The active workflow changed. Reopen prompt help from the original Prompt node." };
+    }
+    const node = groupFlowRef.current?.getNode(context.nodeId);
+    const data = node?.data as { type?: string; params?: Record<string, unknown> } | undefined;
+    if (!data || data.type !== "input/prompt") {
+      return { ok: false, error: "The original Prompt node no longer exists." };
+    }
+    const currentPrompt = typeof data.params?.text === "string" ? data.params.text : "";
+    if (currentPrompt !== context.currentPrompt) {
+      return { ok: false, error: "The Prompt node changed while Ollama was helping. Reopen prompt help to use its latest text." };
+    }
+    const connectedTargets = findPromptAssistantTargets(context.nodeId, nodes, edges);
+    if (JSON.stringify(connectedTargets) !== JSON.stringify(context.connectedTargets)) {
+      return { ok: false, error: "The connected model settings changed while Ollama was helping. Reopen prompt help." };
+    }
+    const validationError = validatePromptAssistantCandidate(
+      context.currentPrompt,
+      request,
+      candidate,
+      context.connectedTargets,
+    );
+    if (validationError) return { ok: false, error: validationError };
+
+    const prompt = candidate.trim();
+    patch(context.nodeId, {
+      params: { ...data.params, text: prompt, refined_prompt: "" },
+      outputs: {},
+      status: "idle",
+      log: "",
+    });
+    const nextContext = { ...context, currentPrompt: prompt, lastUserRequest: request };
+    ollamaPromptContextRef.current = nextContext;
+    setOllamaPromptContext(nextContext);
+    return { ok: true };
+  };
+
+  const applyOllamaStoryboardShot = (
+    context: Pick<OllamaStoryboardContext, "workflowId" | "scopeId">,
+    shotId: string,
+    expectedNumber: number,
+    expectedDescription: string,
+    expectedPrompt: string,
+    candidate: string,
+  ): OllamaApplyResult => {
+    if (activeView !== "storyboard" || !ollamaStoryboardContext
+      || ollamaStoryboardContext.workflowId !== context.workflowId
+      || ollamaStoryboardContext.scopeId !== context.scopeId
+      || activeWorkflowIdRef.current !== context.workflowId) {
+      return { ok: false, error: "The active storyboard changed. Reopen storyboard chat before applying a suggestion." };
+    }
+    const prompt = candidate.trim();
+    if (!prompt) return { ok: false, error: "The suggested shot Prompt is empty." };
+    if (prompt.length > OLLAMA_STORYBOARD_PROMPT_MAX_LENGTH) {
+      return { ok: false, error: `Shot Prompts must be ${OLLAMA_STORYBOARD_PROMPT_MAX_LENGTH.toLocaleString()} characters or fewer.` };
+    }
+    const currentShots = storyboard.scenes.flatMap((scene) => scene.shots);
+    const shotIndex = currentShots.findIndex((item) => item.id === shotId);
+    if (shotIndex < 0) return { ok: false, error: "That shot no longer exists in the storyboard." };
+    if (shotIndex + 1 !== expectedNumber) {
+      return { ok: false, error: "That shot was reordered while Ollama was helping. Ask again using its current shot number." };
+    }
+    const shot = currentShots[shotIndex];
+    if (shot.description !== expectedDescription || shot.prompt !== expectedPrompt) {
+      return { ok: false, error: "The shot's Description or Prompt changed while Ollama was helping. Ask again to use the latest text." };
+    }
+    setStoryboard((current) => ({
+      ...current,
+      scenes: current.scenes.map((scene) => ({
+        ...scene,
+        shots: scene.shots.map((item) => item.id === shotId
+          ? { ...item, prompt }
+          : item),
+      })),
+    }));
+    return { ok: true };
+  };
+
   const pendingIntegration = nodes.some((n) => {
     const type = (n.data as { type?: string }).type;
     return type ? registry[type]?.integration === "pending" : false;
@@ -1444,6 +1581,7 @@ export default function Page() {
       scene,
       shot,
       lastScene && lastShot ? { scene: lastScene, shot: lastShot } : undefined,
+      storyboard.styleBible,
     );
     const storyboardDurations = [shot.durationSeconds, lastShot?.durationSeconds]
       .filter((duration): duration is number => typeof duration === "number");
@@ -1985,7 +2123,28 @@ export default function Page() {
             )}
         </div>
         <div className="ff-toolbar-actions">
-          <OllamaChat />
+          <OllamaChat
+            promptContext={ollamaPromptContext}
+            storyboardContext={ollamaStoryboardContext}
+            workflowContext={ollamaWorkflowContext}
+            onApplyPrompt={applyOllamaPrompt}
+            onApplyStoryboardShot={applyOllamaStoryboardShot}
+            onEndPromptHelp={endPromptHelp}
+            onApplyStoryboard={(generatedStoryboard) => {
+            const shotCount = generatedStoryboard.scenes.reduce((count, scene) => count + scene.shots.length, 0);
+            if (storyboard.scenes.length > 0
+              && !window.confirm(`Replace all current scenes and shots with the ${shotCount}-shot Ollama storyboard?`)) {
+              return false;
+            }
+            setStoryboard((current) => ({
+              ...current,
+              scenes: generatedStoryboard.scenes,
+              styleBible: generatedStoryboard.styleBible,
+            }));
+            setActiveView("storyboard");
+            return true;
+            }}
+          />
           <WorkspaceHelp activeView={activeView} />
           {process.env.NODE_ENV === "development" && (
             <button type="button" className="ff-toolbar-button" onClick={() => router.push("/setup")}>
@@ -2240,7 +2399,7 @@ export default function Page() {
                   <button className="ff-utility-node" key={type} onClick={() => addNode(type)}>
                     <span>
                       {registry[type].label}
-                      {type === "input/prompt" && <small>Optional Prompt Assistant</small>}
+                      {type === "input/prompt" && <small>Optional local Ollama prompt help</small>}
                     </span>
                     <span aria-hidden="true">+</span>
                   </button>
@@ -2258,7 +2417,13 @@ export default function Page() {
       </aside>
 
       <main className="ff-canvas" ref={groupCanvasRef} onWheelCapture={zoomWorkflowOnNodeWheel}>
-        <WorkflowRunContext.Provider value={{ runNode, isRunning, lowSettingsNodeIds, openEditor: () => setActiveView("editor") }}>
+        <WorkflowRunContext.Provider value={{
+          runNode,
+          isRunning,
+          lowSettingsNodeIds,
+          openEditor: () => setActiveView("editor"),
+          openPromptChat,
+        }}>
         <ReactFlow
           nodes={nodes} edges={edges} nodeTypes={nodeTypes}
           onInit={(instance) => { groupFlowRef.current = instance; }}
@@ -2317,7 +2482,7 @@ export default function Page() {
           }}
           onConnect={onConnect} isValidConnection={isValidConnection}
           colorMode={uiTheme === "light" ? "light" : "dark"} fitView
-          minZoom={0.001} zoomOnScroll deleteKeyCode={["Backspace", "Delete"]}
+          minZoom={0.5} zoomOnScroll deleteKeyCode={["Backspace", "Delete"]}
         >
           <Background gap={28} size={1} />
           <CanvasGroups key={activeWorkflowId} groups={groups} setGroups={setGroups} canvasRef={groupCanvasRef} active={activeView === "workflow"} />

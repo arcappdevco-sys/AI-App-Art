@@ -30,6 +30,24 @@
   margin-top: 4px;
   color: var(--muted);
 }
+.ff-ollama-prompt-context {
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.ff-ollama-prompt-context span { color: var(--muted); }
+.ff-ollama-prompt-context p {
+  max-height: 72px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ff-ollama-prompt-context button {
+  justify-self: start;
+}
 .ff-ollama-chat button, .ff-ollama-chat select, .ff-ollama-chat textarea {
   font: inherit;
   color: var(--text);
@@ -53,6 +71,12 @@
 .ff-ollama-user { background: var(--surface-selected); }
 .ff-ollama-message strong { font-size: 12px; color: var(--accent); }
 .ff-ollama-message p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ff-ollama-chat button.ff-ollama-apply {
+  margin-top: 8px;
+  border-color: var(--button-bg);
+  background: var(--button-bg);
+  color: var(--button-text);
+}
 .ff-ollama-empty { color: var(--muted); font-size: 13px; }
 .ff-ollama-error { margin: 0 14px 8px; color: #e87979; font-size: 13px; }
 .ff-ollama-form { padding: 10px 14px 14px; border-top: 1px solid var(--line); }

@@ -2,7 +2,7 @@
 
 import {
   useCallback, useEffect, useEffectEvent, useRef, useState,
-  type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent,
+  type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
   ReactFlow, Background, Controls, Handle, Position, addEdge, useEdgesState, useNodesState,
@@ -18,7 +18,7 @@ import MaskEditor from "@/components/MaskEditor";
 import TrackerEditor from "@/components/TrackerEditor";
 import { applyCompositorKeyer } from "@/lib/compositor-keyer";
 import { CompositorHistory, compositorHistoryShortcut } from "@/lib/compositor-history";
-import { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, planarTrackingMatrix, similarityTrackingMatrix, trackerAnchors, trackerMode, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingCanvas, type TrackingData, type TrackingMatrix, type TrackingPoint, type TrackingResult, type TrackingSample } from "@/lib/compositor-tracking";
+import { IDENTITY_TRACKING_MATRIX, detectPlanarFeatures, planarTrackingMatrix, scaleTrackingMatrix, similarityTrackingMatrix, trackerAnchors, trackerMode, trackingAt, trackPlanarFeatures, transformTrackingPoint, validateTrackingProjection, validateTrackingSurface, warpTrackingCanvas, type TrackingData, type TrackingMatrix, type TrackingPoint, type TrackingResult, type TrackingSample } from "@/lib/compositor-tracking";
 import { createUnknownMediaAssetMetadata, normalizeMediaAssetMetadata, normalizeMediaAssetMetadataMap, type MediaAssetMetadata, type ProjectMediaAsset } from "@/lib/project-media";
 import {
   addMediaToProjectFolder,
@@ -33,6 +33,13 @@ import type { ProjectCompositorState } from "@/lib/project-compositor";
 import { zoomCanvasAtPoint } from "@/lib/canvas-zoom";
 import SmartMatteControls from "@/components/SmartMatteControls";
 import { applySmartMatte, collectSmartMatte, smartMatteSourceHash, submitSmartMatte, uploadSmartMatteSource, validateSmartMatteSource } from "@/lib/smart-matte";
+import {
+  getVideoExportDimensions,
+  isVideoExportResolution,
+  VIDEO_EXPORT_RESOLUTIONS,
+  type VideoExportOrientation,
+  type VideoExportResolution,
+} from "@/lib/video-export-settings";
 
 type CompNode = CompositorNode;
 type Project = {
@@ -65,6 +72,9 @@ const VIEWER_MIN_HEIGHT = 250;
 const GRAPH_MIN_HEIGHT = 200;
 const VIEWER_DIVIDER_HEIGHT = 12;
 const COMPOSITOR_SPLIT_MIN_HEIGHT = VIEWER_MIN_HEIGHT + GRAPH_MIN_HEIGHT;
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_DIVIDER_WIDTH = 12;
+const WORKSPACE_MIN_WIDTH = 320;
 const labels = COMPOSITOR_LABELS;
 
 type ViewerResizeDrag = {
@@ -73,6 +83,7 @@ type ViewerResizeDrag = {
   startHeight: number;
   availableHeight: number;
 };
+type SidebarResizeDrag = { pointerId: number; startClientX: number; startWidth: number };
 
 function getViewerFlexRatio(height: number, availableHeight: number) {
   const flexibleHeight = Math.max(1, availableHeight - COMPOSITOR_SPLIT_MIN_HEIGHT);
@@ -135,9 +146,9 @@ async function saveProject(project: Project) {
   } finally { db.close(); }
 }
 
-function canvas() {
+function canvas(width = WIDTH, height = HEIGHT) {
   const value = document.createElement("canvas");
-  value.width = WIDTH; value.height = HEIGHT;
+  value.width = width; value.height = height;
   return value;
 }
 function context(value: HTMLCanvasElement) {
@@ -234,8 +245,10 @@ async function createMedia(file: File): Promise<Media> {
 
 async function renderGraph(
   nodes: CompNode[], edges: Edge[], media: Record<string, Media>, tracks: Record<string, TrackingData>,
-  target: string, time: number,
+  target: string, time: number, width = WIDTH, height = HEIGHT,
 ): Promise<HTMLCanvasElement> {
+  const scaleX = width / WIDTH;
+  const scaleY = height / HEIGHT;
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const path = new Set<string>();
   const render = async (id: string): Promise<HTMLCanvasElement> => {
@@ -254,19 +267,19 @@ async function renderGraph(
         if (bypass) return await input(bypass);
         throw new Error(`${node.data.label} is disabled. Enable it to render.`);
       }
-      const result = canvas(), ctx = context(result), params = node.data.params;
+      const result = canvas(width, height), ctx = context(result), params = node.data.params;
       if (node.data.kind === "media") {
         const source = compositorMediaSource(params);
         if (source === "transparent") return result;
         if (source === "solid") {
           ctx.fillStyle = typeof params.solidColor === "string" && /^#[0-9a-f]{6}$/i.test(params.solidColor) ? params.solidColor : "#ffffff";
-          ctx.fillRect(0, 0, WIDTH, HEIGHT);
+          ctx.fillRect(0, 0, width, height);
           return result;
         }
         const item = media[id];
         if (!item) throw new Error(`${node.data.label}: choose a media file.`);
         if (item.element instanceof HTMLVideoElement) await seek(item.element, time);
-        const fit = compositorImageFit(item.metadata.width ?? 0, item.metadata.height ?? 0, WIDTH, HEIGHT);
+        const fit = compositorImageFit(item.metadata.width ?? 0, item.metadata.height ?? 0, width, height);
         ctx.drawImage(item.element, fit.x, fit.y, fit.width, fit.height);
       } else if (node.data.kind === "tracker") {
         throw new Error("Tracker outputs motion only. Connect it to a Transform or Mask motion input.");
@@ -297,23 +310,24 @@ async function renderGraph(
         const source = await input("image");
         const motionEdge = edges.find((edge) => edge.target === id && edge.targetHandle === "motion");
         const tracker = motionEdge ? byId.get(motionEdge.source) : undefined;
-        const motion: TrackingMatrix = motionEdge && !tracker?.data.disabled
+        const sourceMotion: TrackingMatrix = motionEdge && !tracker?.data.disabled
           ? trackingAt(tracks[motionEdge.source] ?? [], time).matrix : IDENTITY_TRACKING_MATRIX;
+        const motion = scaleTrackingMatrix(sourceMotion, scaleX, scaleY);
         if (node.data.kind === "transform") {
           const scale = Math.max(0.01, number(params, "scale", 100) / 100);
           const perspective = Math.abs(motion[6]) > 1e-10 || Math.abs(motion[7]) > 1e-10;
           if (!perspective) ctx.transform(motion[0], motion[3], motion[1], motion[4], motion[2], motion[5]);
-          ctx.translate(WIDTH / 2 + number(params, "x", 0), HEIGHT / 2 + number(params, "y", 0));
-          ctx.scale(scale, scale); ctx.drawImage(source, -WIDTH / 2, -HEIGHT / 2);
+          ctx.translate(width / 2 + number(params, "x", 0) * scaleX, height / 2 + number(params, "y", 0) * scaleY);
+          ctx.scale(scale, scale); ctx.drawImage(source, -width / 2, -height / 2);
           if (perspective) return warpTrackingCanvas(result, motion);
         } else if (node.data.kind === "mask") {
-          return applyCompositorMask(source, getMaskLayers(params), time, Boolean(params.invert), motion);
+          return applyCompositorMask(source, getMaskLayers(params), time, Boolean(params.invert), sourceMotion);
         } else {
           ctx.drawImage(source, 0, 0);
           if (node.data.kind === "key" || node.data.kind === "color") {
-            const pixels = ctx.getImageData(0, 0, WIDTH, HEIGHT);
+            const pixels = ctx.getImageData(0, 0, width, height);
             if (node.data.kind === "color") applyColorCorrection(pixels.data, params);
-            else applyCompositorKeyer(pixels.data, WIDTH, HEIGHT, params);
+            else applyCompositorKeyer(pixels.data, width, height, params);
             ctx.putImageData(pixels, 0, 0);
           }
         }
@@ -377,6 +391,8 @@ export default function Compositor({
   const [marks, setMarks] = useState<CompositorMarks>(EMPTY_COMPOSITOR_MARKS);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [exportResolution, setExportResolution] = useState<VideoExportResolution>("720p");
+  const [exportOrientation, setExportOrientation] = useState<VideoExportOrientation>("landscape");
   const [error, setError] = useState("");
   const [renderError, setRenderError] = useState("");
   const [status, setStatus] = useState("Loading project...");
@@ -388,6 +404,9 @@ export default function Compositor({
   const [viewerRatio, setViewerRatio] = useState(0.55);
   const [viewerAvailableHeight, setViewerAvailableHeight] = useState(COMPOSITOR_SPLIT_MIN_HEIGHT);
   const [resizingViewer, setResizingViewer] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const [layoutWidth, setLayoutWidth] = useState(0);
+  const [resizingSidebar, setResizingSidebar] = useState(false);
   const projectHandle = projectSession?.handle ?? null;
   const projectId = projectSession?.projectId ?? null;
   const smartMatteProjectRef = useRef({ projectHandle, projectId });
@@ -410,6 +429,9 @@ export default function Compositor({
   const previewRef = useRef<HTMLCanvasElement>(null);
   const channelRef = useRef<HTMLCanvasElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const layoutRef = useRef<HTMLElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const sidebarResizeRef = useRef<SidebarResizeDrag | null>(null);
   const viewerPanelRef = useRef<HTMLElement>(null);
   const viewerDividerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -492,6 +514,53 @@ export default function Compositor({
   const durationFor = (id: string) => graphDuration(id, nodes, edges, mediaDurations);
   const duration = Math.max(viewer ? durationFor(viewer.id) : 0, trackerInput ? durationFor(trackerInput.source) : 0);
   const range = compositorRange(marks, duration);
+
+  useEffect(() => {
+    const layout = layoutRef.current;
+    if (!layout) return;
+    const updateWidth = () => setLayoutWidth(layout.clientWidth);
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(layout);
+    updateWidth();
+    return () => observer.disconnect();
+  }, []);
+
+  const sidebarMaxWidth = Math.max(SIDEBAR_MIN_WIDTH, layoutWidth - SIDEBAR_DIVIDER_WIDTH - WORKSPACE_MIN_WIDTH);
+  const clampSidebarWidth = (width: number) => Math.min(sidebarMaxWidth, Math.max(SIDEBAR_MIN_WIDTH, width));
+  const handleSidebarDividerPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || busy || !sidebarRef.current) return;
+    event.preventDefault();
+    sidebarResizeRef.current = {
+      pointerId: event.pointerId, startClientX: event.clientX,
+      startWidth: sidebarRef.current.getBoundingClientRect().width,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResizingSidebar(true);
+  };
+  const handleSidebarDividerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = sidebarResizeRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    setSidebarWidth(clampSidebarWidth(drag.startWidth + event.clientX - drag.startClientX));
+  };
+  const finishSidebarDividerResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (sidebarResizeRef.current?.pointerId !== event.pointerId) return;
+    sidebarResizeRef.current = null;
+    setResizingSidebar(false);
+  };
+  const handleSidebarDividerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (busy) return;
+    const width = sidebarRef.current?.getBoundingClientRect().width ?? sidebarWidth;
+    let nextWidth: number;
+    switch (event.key) {
+      case "ArrowLeft": nextWidth = width - 24; break;
+      case "ArrowRight": nextWidth = width + 24; break;
+      case "Home": nextWidth = SIDEBAR_MIN_WIDTH; break;
+      case "End": nextWidth = sidebarMaxWidth; break;
+      default: return;
+    }
+    event.preventDefault();
+    setSidebarWidth(clampSidebarWidth(nextWidth));
+  };
 
   const measureViewerAvailableHeight = useCallback(() => {
     const workspace = workspaceRef.current;
@@ -1446,10 +1515,12 @@ export default function Compositor({
     setBusy(true);
     try {
       await drawing.current;
-      await draw(time);
-      const blob = await new Promise<Blob | null>((resolve) => previewRef.current?.toBlob(resolve, "image/png"));
+      if (!viewerId) throw new Error("Connect a Viewer before exporting.");
+      const { width, height } = getVideoExportDimensions(exportResolution, exportOrientation);
+      const rendered = await renderGraph(nodes, edges, mediaRef.current, tracks, viewerId, time, width, height);
+      const blob = await new Promise<Blob | null>((resolve) => rendered.toBlob(resolve, "image/png"));
       if (!blob) throw new Error("Could not export image.");
-      download(blob, "composite.png"); setError("");
+      download(blob, `composite-${width}x${height}.png`); setError(""); setStatus(`PNG exported · ${width} × ${height}`);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(false); }
   };
@@ -1473,15 +1544,25 @@ export default function Compositor({
   const exportVideo = async () => {
     const exportDuration = range.end - range.start;
     if (!exportDuration || exportDuration > 60) { setError("Video export requires a marked range no longer than 60 seconds."); return; }
-    if (!previewRef.current || !window.MediaRecorder || !MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
       setError("This browser does not support WebM video export."); return;
     }
-    setBusy(true); setPlaying(false); setError(""); setStatus("Exporting video...");
-    const stream = previewRef.current.captureStream(10);
+    const { width, height } = getVideoExportDimensions(exportResolution, exportOrientation);
+    const output = canvas(width, height);
+    let stream: MediaStream | undefined;
+    setBusy(true); setPlaying(false); setError(""); setStatus(`Exporting ${width} × ${height} WebM...`);
     let recorder: MediaRecorder | undefined;
     try {
       await drawing.current;
-      await draw(range.start);
+      if (!viewerId) throw new Error("Connect a Viewer before exporting.");
+      const drawOutput = async (at: number) => {
+        const frame = await renderGraph(nodes, edges, mediaRef.current, tracks, viewerId, at, width, height);
+        const outputContext = context(output);
+        outputContext.clearRect(0, 0, width, height);
+        outputContext.drawImage(frame, 0, 0);
+      };
+      await drawOutput(range.start);
+      stream = output.captureStream(10);
       recorder = new MediaRecorder(stream, { mimeType: "video/webm;codecs=vp8" });
       const chunks: Blob[] = [];
       const finished = new Promise<Blob>((resolve, reject) => {
@@ -1491,15 +1572,15 @@ export default function Compositor({
       });
       finished.catch(() => {});
       recorder.start();
-      await renderVideoFrames(range.start, exportDuration, draw);
+      await renderVideoFrames(range.start, exportDuration, drawOutput);
       recorder.stop();
       const blob = await finished;
       if (!blob.size) throw new Error("Video export returned an empty file.");
-      download(blob, "composite.webm"); setStatus("Video exported");
+      download(blob, `composite-${width}x${height}.webm`); setStatus(`WebM exported · ${width} × ${height}`);
     } catch (caught) {
       if (recorder && recorder.state !== "inactive") recorder.stop();
       setError(caught instanceof Error ? caught.message : String(caught)); setStatus("Export failed");
-    } finally { stream.getTracks().forEach((track) => track.stop()); setBusy(false); }
+    } finally { stream?.getTracks().forEach((track) => track.stop()); setBusy(false); }
   };
   const params = selectedNode?.data.params;
   const colorField = (key: string, label: string, min: number, max: number, fallback = 0, step = 1) => (
@@ -1518,13 +1599,15 @@ export default function Compositor({
   const viewerMaxValue = Math.round(
     (viewerAvailableHeight - GRAPH_MIN_HEIGHT) / viewerAvailableHeight * 100,
   );
-  return <main className="comp-layout" hidden={hidden} onKeyDownCapture={(event) => {
+  const exportDimensions = getVideoExportDimensions(exportResolution, exportOrientation);
+  const layoutStyle: CSSProperties & { "--comp-sidebar-width": string } = { "--comp-sidebar-width": `${sidebarWidth}px` };
+  return <main className="comp-layout" ref={layoutRef} style={layoutStyle} hidden={hidden} onKeyDownCapture={(event) => {
     if (busy || event.ctrlKey || event.metaKey || event.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
     const target = event.target;
     if (target instanceof HTMLElement && target.classList.contains("react-flow__node")
       && nodes.some((node) => node.selected && node.draggable !== false)) recordHistory();
   }}>
-    <aside className="comp-sidebar">
+    <aside id="comp-sidebar" className="comp-sidebar" ref={sidebarRef}>
       <h1>Compositor</h1>
       <p>Node-based compositing</p>
       <div className="comp-history">
@@ -1818,6 +1901,26 @@ export default function Compositor({
         </details>
       </section>
     </aside>
+    <div
+      className={`comp-sidebar-divider${resizingSidebar ? " comp-sidebar-divider-active" : ""}`}
+      role="separator"
+      aria-label="Resize compositor sidebar"
+      aria-orientation="vertical"
+      aria-controls="comp-sidebar"
+      aria-valuemin={SIDEBAR_MIN_WIDTH}
+      aria-valuemax={sidebarMaxWidth}
+      aria-valuenow={Math.round(clampSidebarWidth(sidebarWidth))}
+      aria-valuetext={`${Math.round(clampSidebarWidth(sidebarWidth))} pixels sidebar width`}
+      aria-disabled={busy}
+      tabIndex={busy ? -1 : 0}
+      onPointerDown={handleSidebarDividerPointerDown}
+      onPointerMove={handleSidebarDividerPointerMove}
+      onPointerUp={finishSidebarDividerResize}
+      onPointerCancel={finishSidebarDividerResize}
+      onKeyDown={handleSidebarDividerKeyDown}
+    >
+      <span aria-hidden="true" />
+    </div>
     <div className="comp-workspace" ref={workspaceRef} style={{
       gridTemplateRows: `minmax(${VIEWER_MIN_HEIGHT}px, ${currentViewerHeight}px) ${VIEWER_DIVIDER_HEIGHT}px minmax(${GRAPH_MIN_HEIGHT}px, 1fr)`,
     }}>
@@ -1912,6 +2015,28 @@ export default function Compositor({
           <button type="button" disabled={!duration || busy || !ready} onClick={() => setMarker("outPoint", Math.min(time, duration))} title="Set Out at playhead (O)">Set Out (O)</button>
           <button type="button" disabled={busy || !ready || marks.inPoint === null && marks.outPoint === null} onClick={clearMarks}>Clear In/Out</button>
           <button type="button" onClick={() => setViewerTransform(DEFAULT_VIEWER_TRANSFORM)} title="Reset Viewer zoom and pan">Fit viewer ({Math.round(viewerTransform.zoom * 100)}%)</button>
+          <label className="comp-export-setting">Resolution
+            <select aria-label="Compositor export resolution" value={exportResolution} disabled={busy}
+              onChange={(event) => {
+                if (isVideoExportResolution(event.target.value)) setExportResolution(event.target.value);
+              }}>
+              {VIDEO_EXPORT_RESOLUTIONS.map((preset) => (
+                <option key={preset.value} value={preset.value}>{preset.label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="comp-export-setting">Orientation
+            <select aria-label="Compositor export orientation" value={exportOrientation} disabled={busy}
+              onChange={(event) => {
+                if (event.target.value === "landscape" || event.target.value === "portrait") {
+                  setExportOrientation(event.target.value);
+                }
+              }}>
+              <option value="landscape">Landscape (16:9)</option>
+              <option value="portrait">Portrait (9:16)</option>
+            </select>
+          </label>
+          <span className="comp-export-dimensions">{exportDimensions.width} × {exportDimensions.height}</span>
           <button type="button" disabled={busy || !ready} onClick={() => void exportImage()}>Export PNG</button>
           <button type="button" disabled={busy || !ready || !onSendFrameToWorkflow}
             onClick={() => void sendFrameToWorkflow()}

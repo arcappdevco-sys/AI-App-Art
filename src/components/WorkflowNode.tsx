@@ -26,11 +26,7 @@ import { VFX_LIGHTING_REFERENCE_NODE_TYPE, VFX_VIDEO_REFINE_NODE_TYPE } from "@/
 import { uploadWanMedia } from "@/lib/wan-api";
 import { usePlayableVideo } from "@/lib/use-playable-video";
 import type { PortType } from "@/lib/types";
-import {
-  PROMPT_ASSISTANT_IMAGE_INPUTS,
-  PROMPT_ASSISTANT_MODELS,
-  type PromptAssistantTarget,
-} from "@/lib/prompt-assistant";
+import { OLLAMA_PROMPT_CONTEXT_MAX_LENGTH, type OllamaPromptContextInput } from "@/lib/ollama-chat";
 import { findPromptAssistantTargets, promptAssistantTargetContext } from "@/lib/prompt-assistant-profiles";
 import { CAMERA_TRACK_JSON_EXAMPLE } from "@/lib/camera-guide";
 
@@ -39,7 +35,14 @@ export const WorkflowRunContext = createContext<{
   isRunning: boolean;
   lowSettingsNodeIds: string[];
   openEditor: () => void;
+  openPromptChat: (context: OllamaPromptContextInput) => void;
 } | null>(null);
+
+const PROMPT_CONTEXT_IMAGE_INPUTS = {
+  first_frame: "First frame",
+  last_frame: "Last frame",
+  reference_images: "Reference images",
+} as const;
 
 function mediaFileType(blob: Blob, sourceUrl: string) {
   const extensions: Record<string, { type: string; extension: string }> = {
@@ -287,11 +290,7 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
   const isPreviewNode = d.type === "output/preview";
   const isPromptAssistant = d.type === "assistant/prompt";
   const isPromptNode = d.type === "input/prompt";
-  const isAssistantEnabled = isPromptAssistant || (isPromptNode && Boolean(d.params.assistant_enabled));
-  const [assistantDraft, setAssistantDraft] = useState("");
-  const [assistantLoading, setAssistantLoading] = useState(false);
-  const [assistantError, setAssistantError] = useState("");
-  const [assistantNotice, setAssistantNotice] = useState("");
+  const isAssistantEnabled = isPromptNode && Boolean(d.params.assistant_enabled);
   const isSeedance = d.type === "video/seedance";
   const seedanceAtlasTask = isSeedance
     && d.params.model === SEEDANCE_MODELS["Seedance 2.5"]
@@ -338,20 +337,6 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
       const params = { ...d.params, [key]: value };
       delete params.storyboardFrameRef;
       updateNodeData(id, { params });
-      return;
-    }
-    if ((isPromptAssistant || isPromptNode) && ["model", "target"].includes(key)) {
-      updateNodeData(id, (n: any) => ({
-        params: {
-          ...n.data.params,
-          [key]: value,
-          refined_prompt: "",
-          ...(key === "target" ? { conversation: [] } : {}),
-        },
-        outputs: {},
-        status: "idle",
-        log: "",
-      }));
       return;
     }
     if (isPromptNode && key === "text") {
@@ -1399,92 +1384,15 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
         ? "The video to edit is @video_1; other inputs are @image_N, @video_2 onward, @element_N, @voice_N"
         : "";
   const assistantIncoming = renderedEdges.filter((edge) => edge.target === id);
-  const assistantImageSetup = Object.entries(PROMPT_ASSISTANT_IMAGE_INPUTS).flatMap(([handle, label]) => {
+  const assistantImageSetup = Object.entries(PROMPT_CONTEXT_IMAGE_INPUTS).flatMap(([handle, label]) => {
     const count = assistantIncoming.filter((edge) => edge.targetHandle === handle).length;
     return count > 0 ? [handle === "reference_images" ? `${label} (${count} connected)` : label] : [];
   });
-  const assistantBriefEdge = assistantIncoming.find((edge) => edge.targetHandle === "brief");
-  const assistantBriefNode = assistantBriefEdge ? getNode(assistantBriefEdge.source) : undefined;
-  const assistantConnectedBrief = isPromptNode
-    ? String(d.params?.refined_prompt || d.params?.text || "")
-    : String(
-      (assistantBriefNode?.data as { params?: { text?: unknown } } | undefined)?.params?.text
-        ?? (assistantBriefNode?.data as { outputs?: { text?: unknown } } | undefined)?.outputs?.text
-        ?? ""
-    );
-  const assistantConversation: Array<{ role: "user" | "assistant"; content: string }> = Array.isArray(d.params?.conversation)
-    ? d.params.conversation.filter((message: unknown): message is { role: "user" | "assistant"; content: string } =>
-      typeof message === "object" && message !== null
-      && ["user", "assistant"].includes(String((message as { role?: unknown }).role))
-      && typeof (message as { content?: unknown }).content === "string")
-    : [];
-  const assistantTarget = String(d.params?.target ?? "kling-v4-text") as PromptAssistantTarget;
   const connectedAssistantTargets = isPromptNode && isAssistantEnabled
     ? findPromptAssistantTargets(id, assistantTargetNodes, renderedEdges) : [];
   const connectedAssistantContext = promptAssistantTargetContext(connectedAssistantTargets);
-  const savedAssistantModel = String(d.params?.model ?? PROMPT_ASSISTANT_MODELS["GPT-6 Luna"]);
-  const assistantModel = Object.values(PROMPT_ASSISTANT_MODELS).includes(
-    savedAssistantModel as (typeof PROMPT_ASSISTANT_MODELS)[keyof typeof PROMPT_ASSISTANT_MODELS],
-  )
-    ? savedAssistantModel
-    : PROMPT_ASSISTANT_MODELS["GPT-6 Luna"];
-
-  const sendAssistantMessage = async () => {
-    const message = assistantDraft.trim()
-      || (assistantConnectedBrief ? "Refine the connected draft prompt." : "");
-    if (!message || assistantLoading || runControl?.isRunning) return;
-    setAssistantLoading(true);
-    setAssistantError("");
-    setAssistantNotice("");
-    setParam("refined_prompt", "");
-    updateNodeData(id, { outputs: {}, status: "running", log: "Sending prompt to OpenAI…" });
-    try {
-      if (process.env.NODE_ENV === "development") {
-        for (const target of connectedAssistantTargets) {
-          if (!promptAssistantTargetContext([target])) console.warn(`No Prompt Assistant profile for ${target.type}.`);
-        }
-      }
-      const response = await fetch("/api/prompt-assistant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: assistantModel,
-          target: assistantTarget,
-          imageSetup: assistantImageSetup,
-          connectedBrief: assistantConnectedBrief,
-          history: assistantConversation,
-          message,
-          ...(connectedAssistantContext ? { connectedTargets: connectedAssistantTargets } : {}),
-        }),
-      });
-      const result = await response.json() as { content?: unknown; error?: unknown; notice?: unknown };
-      if (!response.ok || typeof result.content !== "string" || !result.content.trim()) {
-        throw new Error(typeof result.error === "string" ? result.error : "Prompt Assistant could not refine the prompt.");
-      }
-      const refinedPrompt = result.content.trim();
-      if (typeof result.notice === "string") setAssistantNotice(result.notice);
-      const conversation = [
-        ...assistantConversation.slice(-18),
-        { role: "user" as const, content: message },
-        { role: "assistant" as const, content: refinedPrompt },
-      ];
-      setParam("conversation", conversation);
-      if (isPromptNode) setParam("text", refinedPrompt);
-      setParam("refined_prompt", refinedPrompt);
-      setAssistantDraft("");
-      updateNodeData(id, {
-        outputs: { text: refinedPrompt },
-        status: "done",
-        log: "Refined prompt ready to connect.",
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setAssistantError(message);
-      updateNodeData(id, { status: "error", log: message });
-    } finally {
-      setAssistantLoading(false);
-    }
-  };
+  const promptHelpText = String(d.params?.text ?? "");
+  const promptHelpTooLong = promptHelpText.length > OLLAMA_PROMPT_CONTEXT_MAX_LENGTH;
 
   return (
     <>
@@ -1548,7 +1456,7 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
       )}
       {d.type === "openai/gpt-image" && (
         <div className="ff-node-notice">
-          Uses OPENAI_API_KEY. OpenAI API usage is billed separately; it is not part of Nano Banana&apos;s free tier.
+          Uses OPENAI_API_KEY. OpenAI image usage is billed separately.
         </div>
       )}
       {isSeedance && (
@@ -1949,7 +1857,7 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
 
       {def.params.filter((param) => {
         if (isWan || isMiniMax || isFlux3 || isFlux3Video) return false;
-        if (isPromptAssistant && ["conversation", "refined_prompt"].includes(param.key)) return false;
+        if (isPromptAssistant) return false;
         if (isPromptNode && ["conversation", "refined_prompt"].includes(param.key)) return false;
         if (param.visibleWhen && d.params[param.visibleWhen.param] !== param.visibleWhen.value) return false;
         if (isSeedance && !showSeedanceParam(param)) return false;
@@ -2084,80 +1992,47 @@ export default function WorkflowNode({ id, data, selected }: NodeProps) {
         </label>
       )}
 
+      {isPromptAssistant && (
+        <div className="ff-prompt-assistant">
+          This is a saved legacy prompt-helper node. Its saved output remains available; create a Prompt node and enable Ollama prompt help for new edits.
+        </div>
+      )}
+
       {isAssistantEnabled && (
         <section className="ff-prompt-assistant">
-          {isPromptNode && connectedAssistantContext && (
+          {connectedAssistantContext && (
             <div className="ff-param-help">
-              Optimizing for: {connectedAssistantTargets.length > 1
+              Ollama can tailor suggestions for: {connectedAssistantTargets.length > 1
                 ? `${connectedAssistantTargets.length} models`
                 : `${connectedAssistantContext.known[0].profile.label}${connectedAssistantTargets[0].task
                   ? ` · ${connectedAssistantTargets[0].task.replaceAll("-", " ")}` : ""}`}
             </div>
           )}
           <div className="ff-prompt-assistant-context">
-            <strong>Image context</strong>
+            <strong>Context shared with local Ollama</strong>
             <span>{assistantImageSetup.length ? assistantImageSetup.join(" · ") : "No image inputs connected"}</span>
-            <small>Only these setup labels are sent to OpenAI; image files are not.</small>
+            <small>The current prompt and connected model settings are shared. Image files are not sent.</small>
           </div>
-          <div className="ff-prompt-assistant-messages" aria-live="polite">
-            {assistantConversation.length === 0 ? (
-              <div className="ff-prompt-assistant-empty">
-                Ask for a prompt or describe changes. The selected media model and connected draft are included as context.
-              </div>
-            ) : assistantConversation.map((message, index) => (
-              <div className={`ff-prompt-assistant-message ff-prompt-assistant-${message.role}`} key={`${index}-${message.role}`}>
-                <span>{message.role === "user" ? "You" : "Assistant"}</span>
-                <p>{message.content}</p>
-              </div>
-            ))}
-          </div>
-          <label className="ff-prompt-assistant-compose">
-            <span>Message</span>
-            <textarea
-              className="nodrag nowheel"
-              rows={3}
-              maxLength={6000}
-              placeholder={assistantConnectedBrief ? "Ask for a prompt or changes to the connected draft…" : "Describe the video prompt you want…"}
-              value={assistantDraft}
-              onChange={(event) => setAssistantDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void sendAssistantMessage();
-                }
-              }}
-            />
-          </label>
-          {assistantError && <div className="ff-prompt-assistant-error" role="alert">{assistantError}</div>}
-          {assistantNotice && <div className="ff-param-help" role="status">{assistantNotice}</div>}
-          <div className="ff-prompt-assistant-actions">
-            <button
-              type="button"
-              className="ff-prompt-assistant-send nodrag"
-              disabled={assistantLoading || runControl?.isRunning || (!assistantDraft.trim() && !assistantConnectedBrief)}
-              onClick={() => void sendAssistantMessage()}
-            >
-              {assistantLoading ? "Refining…" : "Refine prompt"}
-            </button>
-            <button
-              type="button"
-              className="ff-prompt-assistant-clear nodrag"
-              disabled={assistantLoading || (assistantConversation.length === 0 && !d.params.refined_prompt)}
-              onClick={() => {
-                setParam("conversation", []);
-                setParam("refined_prompt", "");
-                updateNodeData(id, { outputs: {}, status: "idle", log: "" });
-                setAssistantError("");
-                setAssistantNotice("");
-                setAssistantDraft("");
-              }}
-            >
-              Clear chat
-            </button>
-          </div>
+          {promptHelpTooLong && (
+            <div className="ff-prompt-assistant-error" role="alert">
+              Prompt help supports up to {OLLAMA_PROMPT_CONTEXT_MAX_LENGTH.toLocaleString()} characters. Shorten this prompt first.
+            </div>
+          )}
+          <button
+            type="button"
+            className="ff-prompt-assistant-send nodrag"
+            disabled={runControl?.isRunning || !runControl?.openPromptChat || promptHelpTooLong}
+            onClick={() => runControl?.openPromptChat({
+              nodeId: id,
+              currentPrompt: promptHelpText,
+              imageSetup: assistantImageSetup,
+              connectedTargets: connectedAssistantTargets,
+            })}
+          >
+            Open in Ollama Chat
+          </button>
           <div className="ff-prompt-assistant-note">
-            Configure OpenAI in the app&apos;s <strong>API keys</strong> setup, then restart the app. OpenAI usage is billed separately from Atlas.
-            Connect this node’s <strong>text</strong> output to the target prompt input. Image files are never sent to OpenAI.
+            Ollama runs locally. Review its reply and apply it explicitly; generation is never started automatically.
           </div>
         </section>
       )}

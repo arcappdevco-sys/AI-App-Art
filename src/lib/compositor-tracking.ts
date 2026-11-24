@@ -72,6 +72,17 @@ export function transformTrackingPoint(matrix: TrackingMatrix, point: TrackingPo
   };
 }
 
+export function scaleTrackingMatrix(matrix: TrackingMatrix, scaleX: number, scaleY: number): TrackingMatrix {
+  if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) {
+    throw new Error("Tracking scale factors must be positive finite numbers.");
+  }
+  return [
+    matrix[0], matrix[1] * scaleX / scaleY, matrix[2] * scaleX,
+    matrix[3] * scaleY / scaleX, matrix[4], matrix[5] * scaleY,
+    matrix[6] / scaleX, matrix[7] / scaleY, matrix[8],
+  ];
+}
+
 export function multiplyTrackingMatrices(a: TrackingMatrix, b: TrackingMatrix): TrackingMatrix {
   const result = Array.from({ length: 9 }, (_, i) =>
     a[Math.floor(i / 3) * 3] * b[i % 3]

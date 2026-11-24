@@ -6,11 +6,11 @@ import { DISMISSED_KEY_SETUP } from "@/components/ApiKeySetupRedirect";
 import styles from "./page.module.css";
 
 const API_KEYS = [
-  { name: "OPENAI_API_KEY", provider: "OpenAI", description: "Storyboard generation, Prompt Assistant, and ChatGPT Image." },
-  { name: "GEMINI_API_KEY", provider: "Google Gemini", description: "Nano Banana image generation." },
-  { name: "ATLASCLOUD_API_KEY", provider: "Atlas Cloud", description: "Video generation, FLUX 3, uploads, and related models." },
-  { name: "FAL_KEY", provider: "fal", description: "fal-hosted image generation." },
-  { name: "TOPVIEW_API_KEY", provider: "Topview", description: "Key setup only; Topview model integration is not yet available." },
+  { name: "OPENAI_API_KEY", provider: "OpenAI", description: "Storyboard generation when selected and ChatGPT Image." },
+  { name: "GEMINI_API_KEY", provider: "Google Gemini", description: "Storyboard shot-list generation and Nano Banana image generation through the Gemini API; image use may be billed." },
+  { name: "ATLASCLOUD_API_KEY", provider: "Atlas Cloud", description: "Storyboard text generation with DeepSeek V3.2, video generation, FLUX 3, and uploads." },
+  { name: "FAL_KEY", provider: "fal", description: "fal-hosted image generation; its general LLM endpoint is deprecated." },
+  { name: "TOPVIEW_API_KEY", provider: "Topview", description: "Storyboard text generation with GPT-5.5 or Claude Sonnet 5.5." },
 ] as const;
 
 type ApiKeyName = (typeof API_KEYS)[number]["name"];

@@ -10,6 +10,7 @@ import {
   createMatteClipFilter,
   createMatteRefinementFilters,
 } from "@/lib/chroma-key";
+import { getVideoExportDimensions } from "@/lib/video-export-settings";
 
 export const maxDuration = 900;
 
@@ -374,6 +375,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Export format must be MOV, MP4, or PNG sequence." }, { status: 400 });
   }
   const format = requestedFormat ?? "mov";
+  let outputDimensions: { width: number; height: number };
+  try {
+    outputDimensions = getVideoExportDimensions(
+      formData.get("resolution") ?? "720p",
+      formData.get("orientation") ?? "landscape",
+    );
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Video export settings are invalid." }, { status: 400 });
+  }
   const videoFiles = files as File[];
   const audioFiles = audioEntries as File[];
   let timeline: ClipTrim[];
@@ -454,7 +464,7 @@ export async function POST(request: Request) {
       for (const path of inputPaths) args.push("-i", path);
       for (const [index, trim] of timeline.entries()) {
         filterParts.push(
-          `[${index}:v:0]trim=start=${trim.start.toFixed(3)}:end=${trim.end.toFixed(3)},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=30,settb=AVTB[base${index}]`,
+          `[${index}:v:0]trim=start=${trim.start.toFixed(3)}:end=${trim.end.toFixed(3)},setpts=PTS-STARTPTS,scale=${outputDimensions.width}:${outputDimensions.height}:force_original_aspect_ratio=decrease:force_divisible_by=2,format=rgba,pad=${outputDimensions.width}:${outputDimensions.height}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=30,settb=AVTB[base${index}]`,
         );
         if (keyers[index].enabled) {
           filterParts.push(...createKeyerFilters(keyers[index], index));
@@ -558,7 +568,7 @@ export async function POST(request: Request) {
       const start = trim.start.toFixed(3);
       const end = trim.end.toFixed(3);
       filterParts.push(
-        `[${index}:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,settb=AVTB,format=yuv420p[v${index}]`,
+        `[${index}:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=${outputDimensions.width}:${outputDimensions.height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${outputDimensions.width}:${outputDimensions.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,settb=AVTB,format=yuv420p[v${index}]`,
       );
       if (probeResults[index].streams?.some((stream) => stream.codec_type === "audio")) {
         filterParts.push(

@@ -15,8 +15,11 @@ const originalResolve = Module._resolveFilename;
 Module._resolveFilename = function (request, ...args) {
   return originalResolve.call(this, request.startsWith("@/") ? path.join(__dirname, "..", "src", request.slice(2)) : request, ...args);
 };
-const { findPromptAssistantTargets, promptAssistantTargetContext } = require("../src/lib/prompt-assistant-profiles.ts");
-const { POST } = require("../src/app/api/prompt-assistant/route.ts");
+const {
+  findPromptAssistantTargets,
+  promptAssistantTargetContext,
+  validatePromptAssistantCandidate,
+} = require("../src/lib/prompt-assistant-profiles.ts");
 Module._resolveFilename = originalResolve;
 
 const target = (type, model, task, promptExpansion = false) => ({ type, model, task, promptExpansion });
@@ -62,42 +65,23 @@ test("follows only prompt output to prompt inputs and reads current params", () 
   assert.equal(findPromptAssistantTargets("p", nodes, edges)[0].task, "reference-to-video");
 });
 
-test("target-aware responses separate notices, enforce limits and preserve legacy behavior", async () => {
-  const oldFetch = global.fetch, oldKey = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = "test-key";
-  let answer = "", sent;
-  global.fetch = async (_url, options) => {
-    sent = JSON.parse(options.body);
-    return Response.json({ output: [{ type: "message", content: [{ type: "output_text", text: answer }] }] });
-  };
-  const send = (extra = {}) => POST(new Request("http://localhost/api/prompt-assistant", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-4o", target: "kling-v4-text", imageSetup: [], message: "Refine this", history: [], connectedBrief: "", ...extra }),
-  }));
-  try {
-    answer = "Legacy prompt";
-    let response = await send();
-    assert.deepEqual(await response.json(), { content: answer });
-    assert.match(sent.instructions, /Target model: Kling 4.0/);
-    answer = JSON.stringify({ prompt: "Keep @image_1 and avoid blur", notice: "" });
-    response = await send({ connectedTargets: [wan, v3], connectedBrief: "@image_1 " + "x".repeat(3000) });
-    const result = await response.json();
-    assert.equal(result.content, "Keep @image_1 and avoid blur");
-    assert.match(result.notice, /shortened/);
-    assert.match(sent.instructions, /2500 characters/);
-    assert.doesNotMatch(sent.instructions, /Target-specific guidance:/);
-    answer = JSON.stringify({ prompt: "x".repeat(2501), notice: "" });
-    assert.equal((await send({ connectedTargets: [v3] })).status, 502);
-    answer = JSON.stringify({ prompt: "invented @image_1", notice: "" });
-    assert.equal((await send({ connectedTargets: [wan] })).status, 502);
-    answer = JSON.stringify({ prompt: "missing tag", notice: "" });
-    assert.equal((await send({ connectedTargets: [wan], connectedBrief: "use @image_1" })).status, 502);
-    answer = "Legacy fallback";
-    response = await send({ connectedTargets: [target("unknown/model", "", "")] });
-    assert.deepEqual(await response.json(), { content: answer });
-  } finally {
-    global.fetch = oldFetch;
-    if (oldKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = oldKey;
-  }
+test("validates Ollama prompt replies before explicit application", () => {
+  assert.equal(validatePromptAssistantCandidate(
+    "Use @image_1 as the opening frame.",
+    "Keep @image_1 and add a slow pan.",
+    "Slowly pan from @image_1.",
+    [wan],
+  ), null);
+  assert.match(validatePromptAssistantCandidate(
+    "Use @image_1 as the opening frame.",
+    "",
+    "Slowly pan from @image_2.",
+    [wan],
+  ), /changed or invented a reference tag/);
+  assert.match(validatePromptAssistantCandidate(
+    "",
+    "",
+    "x".repeat(2501),
+    [v3],
+  ), /2500 characters/);
 });

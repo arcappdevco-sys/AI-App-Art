@@ -13,7 +13,7 @@ const MAX_PROCESS_MS = 15 * 60 * 1000;
 
 type ProbeResult = {
   format?: { duration?: string };
-  streams?: Array<{ codec_type?: string }>;
+  streams?: Array<{ codec_type?: string; width?: number; height?: number }>;
 };
 
 class ProcessFailure extends Error {
@@ -104,13 +104,17 @@ export async function POST(request: Request) {
     await writeFile(inputPath, new Uint8Array(await file.arrayBuffer()), { flag: "wx" });
     const { stdout } = await runProcess(ffprobe, [
       "-v", "error",
-      "-show_entries", "format=duration:stream=codec_type",
+      "-show_entries", "format=duration:stream=codec_type,width,height",
       "-of", "json",
       inputPath,
     ], request.signal);
     const probe = JSON.parse(stdout) as ProbeResult;
     const duration = Number(probe.format?.duration);
-    if (!Number.isFinite(duration) || !probe.streams?.some((stream) => stream.codec_type === "video")) {
+    const videoStream = probe.streams?.find((stream) => stream.codec_type === "video");
+    const width = videoStream?.width;
+    const height = videoStream?.height;
+    if (!Number.isFinite(duration) || typeof width !== "number" || !Number.isInteger(width) || width < 1
+      || typeof height !== "number" || !Number.isInteger(height) || height < 1) {
       return NextResponse.json({ error: "This file does not contain a supported video stream." }, { status: 422 });
     }
     if (duration > MAX_VIDEO_SECONDS) {
@@ -122,7 +126,7 @@ export async function POST(request: Request) {
       "-i", inputPath,
       "-map", "0:v:0",
       "-map", "0:a:0?",
-      "-vf", "scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p",
+      "-vf", "scale=w='min(3840,iw)':h='min(3840,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,format=yuv420p",
       "-c:v", "libx264",
       "-preset", "veryfast",
       "-crf", "23",

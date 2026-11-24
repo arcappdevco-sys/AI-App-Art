@@ -228,7 +228,7 @@ export function validateWorkflow(graph: Graph, targetIds?: string[]): WorkflowVa
       }
     }
     if (node.type === "assistant/prompt" && !String(node.params.refined_prompt ?? "").trim()) {
-      addIssue("error", node, "Send a message to the Prompt Assistant to create prompt text.");
+      addIssue("error", node, "This legacy prompt-helper node has no saved prompt. Use a Prompt node with Ollama Chat instead.");
     }
     if (requiresPrompt(node)) {
       const promptEdge = nodeEdges.find((edge) => edge.targetHandle === "prompt");

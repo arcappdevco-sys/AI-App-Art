@@ -158,6 +158,41 @@ test("combines first and last shot details for a continuous video prompt", () =>
   assert.match(prompt, /Last shot storyboard duration: 4 seconds/);
 });
 
+test("video workflow prompts prefer the custom prompt without replacing descriptions", () => {
+  const prompt = buildStoryboardVideoPrompt(
+    { title: "Scene 1" },
+    {
+      title: "Robot reveal",
+      description: "A robot turns toward the camera.",
+      prompt: "The robot turns slowly as its lens catches a warm reflection.",
+      shotType: "Close-up",
+      cameraMove: "Orbit",
+      durationSeconds: 6,
+    },
+  );
+  assert.match(prompt, /Prompt: The robot turns slowly as its lens catches a warm reflection\./);
+  assert.doesNotMatch(prompt, /Description: A robot turns toward the camera/);
+});
+
+test("video prompts use the global style bible without repeating legacy description blocks", () => {
+  const prompt = buildStoryboardVideoPrompt(
+    { title: "Scene 1" },
+    {
+      title: "Robot reveal",
+      description: "A robot turns toward the camera.\n\nVisual style: Painterly sci-fi.\nCharacter continuity: UNIT-07.",
+      shotType: "Close-up",
+      cameraMove: "Static",
+      durationSeconds: 6,
+    },
+    undefined,
+    { visualStyle: "Painterly sci-fi.", recurringCharacter: "UNIT-07.", recurringLocation: "" },
+  );
+  assert.match(prompt, /Description: A robot turns toward the camera\./);
+  assert.match(prompt, /Global style bible/);
+  assert.equal((prompt.match(/Painterly sci-fi\./g) ?? []).length, 1);
+  assert.doesNotMatch(prompt, /Character continuity:/);
+});
+
 test("collects generated videos connected to storyboard frames with model and prompt provenance", () => {
   const nodes = [
     {

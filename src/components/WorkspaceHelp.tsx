@@ -9,7 +9,8 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
   storyboard: {
     title: "Storyboard",
     steps: [
-      "Add scenes and shots, or paste a script and choose Build storyboard.",
+      "Import a numbered shot list locally without an API, or choose Gemini, OpenAI, Atlas Cloud, or Topview to turn a freeform script into shots.",
+      "Use local Ollama Chat to draft or refine a storyboard, then choose Use in storyboard on a compatible response.",
       "Add a frame image to each shot or generate one. Provider usage may be billed.",
       "Choose To workflow on a shot to send its frame into the workflow builder.",
     ],
@@ -31,7 +32,9 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
       "Add a shared workflow video with +, or upload video and audio in Footage.",
       "Drag the divider below the viewer to resize the preview and timeline panels.",
       "Arrange and trim clips; choose Transition, then click between clips to add a dissolve.",
-      "Export MOV or MP4 when ready. Server export requires FFmpeg with libx264.",
+      "Add still images to Footage, choose their duration and pan/zoom, then add them as timeline clips.",
+      "Choose 720p, 1080p, or 4K UHD and landscape or portrait before exporting MOV, MP4, or PNG frames.",
+      "New still clips use the selected output dimensions. Server export requires FFmpeg with libx264.",
     ],
   },
   compositor: {
@@ -40,6 +43,7 @@ const GUIDES: Record<WorkspaceView, WorkspaceGuide> = {
       "Drag the divider below the Viewer to resize it and the node graph.",
       "Start with a template or add nodes, then connect their image ports.",
       "Send frame exports to Workflow as 640 × 360 images for use as lighting references.",
+      "Choose 720p, 1080p, or 4K UHD and landscape or portrait for PNG and WebM exports.",
       "Choose media in a Media node and preview the result in Viewer.",
       "Connect a video Media node directly to Smart Matte for paid LTX generation, or use its offline manual mask mode.",
       "Smart Matte saves its result; resume interrupted requests and check fal.ai before clearing them. PNG preserves alpha; WebM does not.",
