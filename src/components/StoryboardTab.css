@@ -423,6 +423,43 @@
   justify-content: flex-start;
 }
 
+.storyboard-character-hints {
+  display: grid;
+  gap: 7px;
+}
+
+.storyboard-character-hints h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.storyboard-character-hint {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-deep);
+}
+
+.storyboard-character-hint strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.storyboard-character-hint blockquote {
+  width: 100%;
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--line-control);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .storyboard-character-card {
   display: grid;
   gap: 8px;

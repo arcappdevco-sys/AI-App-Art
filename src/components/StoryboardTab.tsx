@@ -16,7 +16,10 @@ import {
   type StoryboardShot,
   type StoryboardStyleBible,
 } from "@/lib/StoryboardData";
-import { normalizeStoryboardCharacterAnalysis } from "@/lib/storyboard-character-analysis";
+import {
+  findStoryboardCharacterNameHints,
+  normalizeStoryboardCharacterAnalysis,
+} from "@/lib/storyboard-character-analysis";
 import {
   STORYBOARD_FRAME_MODELS,
   buildStoryboardCharacterSheetPrompt,
@@ -592,6 +595,17 @@ export default function StoryboardTab({
     () => parseStructuredStoryboardScript(scriptText),
     [scriptText],
   );
+  const possibleCharacterNameHints = useMemo(
+    () => findStoryboardCharacterNameHints(scriptText),
+    [scriptText],
+  );
+  const unreviewedCharacterNameHints = possibleCharacterNameHints.filter((hint) => {
+    const currentCast = characterAnalysisRun || characterAnalysisCandidates.length > 0
+      ? characterAnalysisCandidates : characters;
+    return !currentCast.some((character) =>
+      character.name.trim().toLocaleLowerCase() === hint.name.toLocaleLowerCase()
+      || character.aliases.some((alias) => alias.trim().toLocaleLowerCase() === hint.name.toLocaleLowerCase()));
+  });
 
   const loadCharacterAnalysisModels = useCallback(async (signal?: AbortSignal) => {
     setLoadingCharacterAnalysisModels(true);
@@ -776,6 +790,29 @@ export default function StoryboardTab({
         appearances: [],
       }];
     });
+    setCharacterAnalysisRun(true);
+    if (!characterAnalysisRun) setCharacterAnalysisSourceScript(scriptText);
+    setCharacterAnalysisSaved(false);
+    setCharacterAnalysisError("");
+  };
+
+  const addCharacterNameHint = (hint: { name: string; evidence: string[] }) => {
+    const source = characterAnalysisCandidates.length > 0
+      ? characterAnalysisCandidates
+      : characters.map((character) => ({ ...character }));
+    if (source.some((candidate) =>
+      candidate.name.trim().toLocaleLowerCase() === hint.name.toLocaleLowerCase()
+      || candidate.aliases.some((alias) => alias.trim().toLocaleLowerCase() === hint.name.toLocaleLowerCase()))) {
+      return;
+    }
+    setCharacterAnalysisCandidates([...source, {
+      id: crypto.randomUUID(),
+      name: hint.name,
+      aliases: [],
+      visualDescription: "",
+      evidence: hint.evidence,
+      appearances: [],
+    }]);
     setCharacterAnalysisRun(true);
     if (!characterAnalysisRun) setCharacterAnalysisSourceScript(scriptText);
     setCharacterAnalysisSaved(false);
@@ -1438,6 +1475,28 @@ export default function StoryboardTab({
           <p className="storyboard-character-analysis-note">
             Script analysis uses Ollama on this computer. Uploading a reference stays local; generating a sheet uses the selected storyboard image model and may cost money.
           </p>
+          {unreviewedCharacterNameHints.length > 0 && (
+            <div className="storyboard-character-hints">
+              <div>
+                <h4>Possible names and IDs found in the script</h4>
+                <p className="storyboard-character-analysis-note">
+                  These local text-pattern matches are suggestions, not confirmed characters. Add any relevant ones to the review before saving the cast.
+                </p>
+              </div>
+              {unreviewedCharacterNameHints.map((hint) => (
+                <article className="storyboard-character-hint" key={hint.name}>
+                  <strong>{hint.name}</strong>
+                  {hint.evidence.map((excerpt, evidenceIndex) => (
+                    <blockquote key={`${hint.name}-${evidenceIndex}`}>{excerpt}</blockquote>
+                  ))}
+                  <button type="button" className="storyboard-secondary-action"
+                    onClick={() => addCharacterNameHint(hint)}>
+                    Add to character review
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
           {characterAnalysisRun && characterAnalysisSourceScript !== scriptText && (
             <p className="storyboard-inline-error" role="alert">
               The script changed. Your current review is preserved, but analyze the updated script before saving it.

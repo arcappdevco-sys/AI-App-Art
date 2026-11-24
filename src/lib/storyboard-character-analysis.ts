@@ -15,6 +15,36 @@ export type StoryboardCharacterCandidate = {
   appearances: StoryboardCharacterAppearance[];
 };
 
+export type StoryboardCharacterNameHint = {
+  name: string;
+  evidence: string[];
+};
+
+const STORYBOARD_CHARACTER_HINT_MAX = 30;
+const STORYBOARD_CHARACTER_HINT_EVIDENCE_MAX = 5;
+const NON_CHARACTER_CUES = new Set([
+  "audio",
+  "camera",
+  "camera movement",
+  "characters",
+  "cut to",
+  "day",
+  "duration",
+  "ext",
+  "extreme close up",
+  "int",
+  "int ext",
+  "location",
+  "morning",
+  "night",
+  "scene",
+  "scene heading",
+  "shot",
+  "shot type",
+  "visual",
+  "visual style",
+]);
+
 export const STORYBOARD_CHARACTER_ANALYSIS_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -48,6 +78,66 @@ export const STORYBOARD_CHARACTER_ANALYSIS_SCHEMA = {
     },
   },
 } as const;
+
+function addCharacterNameHint(
+  hints: Map<string, StoryboardCharacterNameHint>,
+  name: string,
+  evidence: string,
+) {
+  const cleanName = name.trim().replace(/\s+/g, " ");
+  const sourceEvidence = evidence.trim();
+  const nameIndex = sourceEvidence.toLocaleLowerCase().indexOf(cleanName.toLocaleLowerCase());
+  const evidenceStart = sourceEvidence.length > 1000 && nameIndex >= 0
+    ? Math.max(0, nameIndex - 450)
+    : 0;
+  const cleanEvidence = sourceEvidence.slice(evidenceStart, evidenceStart + 1000).trim();
+  if (!cleanName || !cleanEvidence || NON_CHARACTER_CUES.has(cleanName.toLocaleLowerCase())) return;
+  const key = cleanName.toLocaleLowerCase();
+  const hint = hints.get(key);
+  if (hint) {
+    if (!hint.evidence.includes(cleanEvidence) && hint.evidence.length < STORYBOARD_CHARACTER_HINT_EVIDENCE_MAX) {
+      hint.evidence.push(cleanEvidence);
+    }
+    return;
+  }
+  if (hints.size < STORYBOARD_CHARACTER_HINT_MAX) {
+    hints.set(key, { name: cleanName, evidence: [cleanEvidence] });
+  }
+}
+
+export function findStoryboardCharacterNameHints(script: string): StoryboardCharacterNameHint[] {
+  const lines = script.replace(/\r\n?/g, "\n").split("\n");
+  const hints = new Map<string, StoryboardCharacterNameHint>();
+  const identifierPattern = /\b[\p{Lu}][\p{Lu}\p{N}]{0,15}(?:[-_][\p{Lu}\p{N}]{1,15})+\b/giu;
+  const characterCuePattern = /^([\p{Lu}][\p{Lu}\p{N}'’._-]*(?:\s+[\p{Lu}][\p{Lu}\p{N}'’._-]*){0,2})(?:\s+\((?:V\.O\.|O\.S\.|CONT['’]?D|CONTINUED)\))?$/u;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+
+    identifierPattern.lastIndex = 0;
+    for (const match of line.matchAll(identifierPattern)) {
+      const name = match[0];
+      const prefix = name.split(/[-_]/, 1)[0].toLocaleLowerCase();
+      if (prefix === "shot" || prefix === "scene") continue;
+      addCharacterNameHint(hints, name, line);
+    }
+
+    const cue = characterCuePattern.exec(line);
+    if (!cue) continue;
+    const name = cue[1].trim();
+    const normalizedName = name.toLocaleLowerCase();
+    if (NON_CHARACTER_CUES.has(normalizedName) || /^(?:int|ext)\b/i.test(name)
+      || /^(?:shot|scene)\s+\d+$/i.test(name)) continue;
+    const followingLine = lines.slice(index + 1).find((candidate) => candidate.trim());
+    if (!followingLine || /^\s*(?:#{1,6}\s*)?(?:shot\s+\d+|int\.|ext\.|visual\s*:|audio\s*:)/i.test(followingLine)) {
+      continue;
+    }
+    addCharacterNameHint(hints, name, `${line}\n${followingLine.trim()}`);
+  }
+
+  return [...hints.values()];
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
